@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2022 - 2023 Peter Urban, Ghent University
+#
+# SPDX-License-Identifier: CC0-1.0
+
+#wrap folders
+packagecache/*
+Catch2*/*
+date*/*
+geographiclib*
+
+#inherited wrap files
+catch2.wrap
+hinnant-date.wrap
+
+#inherited wrap and folders
+pybind11*
+eigen*
+fmt*
+magic_enum*
+xtensor*
+xsimd*
+fast_float*
+nlohman*
+indicators*
+xtensor-python*
+xxhash_cpp*
+
+#inherited repos
+tools-*
+meta-*
+echosounders-*
+

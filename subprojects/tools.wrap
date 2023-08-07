@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2022 - 2023 Peter Urban, Ghent University
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[wrap-git]
+url = https://github.com/themachinethatgoesping/tools.git
+revision = main
+directory = tools-main
+
+[provide]
+themachinethatgoesping_tools = tools_dep
+

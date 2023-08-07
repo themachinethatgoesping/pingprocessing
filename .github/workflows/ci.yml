@@ -1,0 +1,291 @@
+# SPDX-FileCopyrightText: 2022 - 2023 Peter Urban, Ghent University
+#
+# SPDX-License-Identifier: CC0-1.0
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    
+    paths-ignore:
+      - '.github/workflows/python-package*'
+      - '.github/workflows/cibuildwheels*'
+      - '.github/workflows/conda*'
+      - '.github/workflows/test_*'
+      - 'conda.recipe/*'
+      - '*.md'
+      - 'doc/*'
+    #paths:
+    #  - "**meson.build"
+    #  - "**.cpp"
+    #  - "**.c"
+    #  - "**.h"
+  pull_request:
+    branches: [ main ]
+    
+    paths-ignore:
+      - '.github/workflows/python-package*'
+      - '.github/workflows/cibuildwheels*'
+      - '.github/workflows/conda*'
+      - '.github/workflows/test_*'
+      - 'conda.recipe/*'
+      - '*.md'
+      - 'doc/*'
+    #paths:
+    #  - "**meson.build"
+    #  - "**.cpp"
+    #  - "**.c"
+    #  - "**.h"
+
+
+# make sure that multiple jobs don't run for the same action (new commits cancel old jobs when they are still running)
+# Souce Ralf Gommers (commit to meson-python)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  #BUILD_TYPE: Release
+  
+jobs:
+  linux:
+    name: ci on ${{matrix.container}}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:  
+          - { container: 'ghcr.io/themachinethatgoesping/ubuntu-dep:latest',
+              ccache: 'true',
+              pip2: 'pip install -r requirements.txt'}
+          - { container: 'ubuntu:22.04', 
+              ccache: 'true',
+              pre-dep : 'apt update && apt-get install -y sudo git git-lfs', 
+              dep : 'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential ccache pkg-config cmake python3-pip libboost-all-dev libcurl4-openssl-dev', 
+              pip : 'pip install meson meson-python ninja pytest numpy',
+              pip2: 'pip install -r requirements.txt'}
+          - { container: 'archlinux', 
+              pre-dep : 'pacman -Syu --noconfirm; pacman -Syy sudo git git-lfs --noconfirm', 
+              dep : 'sudo pacman -Syy --noconfirm base-devel ccache pkg-config cmake python-pip boost curl', 
+              pip : 'pip install meson meson-python ninja pytest numpy --break-system-packages',
+              pip2: 'pip install -r requirements.txt --break-system-packages' }
+    
+    runs-on: ubuntu-latest
+    container: ${{matrix.container}}
+
+    steps:
+    - name: install perquisites
+      if:  ${{matrix.pre-dep}}
+      run: ${{matrix.pre-dep}}
+
+    - name: checkout main repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+        lfs: false
+    
+    - name: ccache
+      if: ${{ matrix.ccache }}
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: super-ci-${{ matrix.container }}  # name for the cache
+
+    - name: install dependencies (c++)
+      if:  ${{matrix.dep}}
+      run: ${{matrix.dep}}
+      
+    - name: install dependencies (meson & python)
+      if:  ${{matrix.pip}}
+      run: ${{matrix.pip}}
+
+    - name: configure meson
+      run: meson setup builddir/; meson configure builddir -Dpython.install_env=auto -Dprefix=/usr/;
+
+    - name: compile project
+      run: meson compile -C builddir/
+
+    - name: test (cpp)
+      run: meson test -C builddir/ --print-errorlogs
+
+    - name: install project
+      run: meson install -C builddir/
+
+    - name: install pip requirements
+      if:  ${{matrix.pip2}}
+      run: ${{matrix.pip2}}
+
+    - name: test (pytest)
+      run: pytest -v
+      
+    - uses: actions/upload-artifact@v1
+      if: failure()
+      with:
+        name: ${{matrix.container}}_testlog
+        path: builddir/meson-logs/testlog.txt
+    
+
+  build-on-windows:
+    name: ci on windows
+    strategy:
+      fail-fast: false
+      matrix:
+        boost-version: [1.82.0]
+        boost-version_: [1_82_0]
+        boost-modules: [--with-iostreams]
+        include:
+          - toolset: vc143
+            compiler: clang-cl
+            cpp_std: c++20
+          # - toolset: msvc
+          #   compiler: sccache cl
+          #   cpp_std: c++20
+            
+          
+    env:
+      #CC: msvc-14.32
+      CC: ${{matrix.compiler}}
+      CXX: ${{matrix.compiler}}
+
+    runs-on: windows-latest
+    #container: python:latest #pull directly from dockerhub   
+    steps:
+
+    - uses: actions/setup-python@v3
+      with:
+        python-version: '3.11'
+
+    - name: Set up Clang
+      uses: egor-tensin/setup-clang@v1
+      with:
+        version: latest
+    
+    # make sure meson can find msvc
+    - uses: TheMrMilchmann/setup-msvc-dev@v2
+      with:
+        arch: x64
+        #toolset: 14.34
+
+    - name: checkout main repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+        lfs: false
+
+    - name: sccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: super-ci-win       # name for the cache
+        variant: sccache  # supports windows
+
+
+    - name: Cache Boost
+      id: cache-boost
+      uses: actions/cache@v3
+      with:
+        path: c:\Boost
+        #key: windows-msvc-14.32-boost-${{matrix.boost-version}}-${{matrix.boost-modules}}
+        key: windows-${{matrix.toolset}}-boost-${{matrix.boost-version}}-${{matrix.boost-modules}}
+  
+    - name: Install dependencies on windows
+      if: steps.cache-boost.outputs.cache-hit != 'true'
+      run: |
+        Invoke-WebRequest -Uri https://boostorg.jfrog.io/artifactory/main/release/${{matrix.boost-version}}/source/boost_${{matrix.boost-version_}}.7z -outfile boost.7z
+        7z x boost.7z 
+        cd .\boost_${{matrix.boost-version_}}\
+        .\bootstrap.bat ${{matrix.toolset}}
+        .\b2.exe install --variant=release --threading=multi --link=static ${{matrix.boost-modules}}
+        cd ..
+        #rm -rv boost*
+
+    # same as for linux
+
+    - name: install dependencies (meson & python)
+      run: pip install meson meson-python ninja pytest numpy
+
+    - name: configure meson
+      run: |
+        meson setup builddir/ -D"python.install_env=auto" -Ddefault_library=static -D"python.install_env=auto" -Dcpp_std=${{matrix.cpp_std}}
+
+    - name: compile project
+      run: meson compile -C builddir/
+
+    - name: test (cpp)
+      run: meson test -C builddir/ --print-errorlogs
+
+    - name: install project
+      run: meson install -C builddir/
+
+    - name: install pip requirements
+      run: pip install -r requirements.txt
+
+    - name: test (pytest)
+      run: pytest -v
+    
+    - uses: actions/upload-artifact@v1
+      if: failure()
+      with:
+        name: Windows_Meson_testlog
+        path: builddir/meson-logs/testlog.txt
+
+  macos:
+    name: ci on macOS
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx_compiler: ["$(brew --prefix llvm@16)/bin/clang++"]            
+    
+    # env does not work here because is resolved as string and not command 
+    # env:
+    #   CXX: ${{ matrix.cxx_compiler }}
+      
+    steps:
+    
+    - uses: actions/setup-python@v3
+      with:
+        python-version: '3.11'
+        
+    - name: checkout main repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+        lfs: false
+
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: super-ci-mac  # name for the cache
+        
+    # install clang 15
+    - run: brew install coreutils llvm@16
+        
+    - run: brew install libomp boost
+    
+    - run: pip install meson meson-python ninja pytest numpy
+    
+    - name: configure meson
+      run: CXX=${{ matrix.cxx_compiler }} meson setup builddir/; meson configure builddir -Dpython.install_env=auto
+
+    - name: compile project
+      run: meson compile -C builddir/
+
+    - name: test (cpp)
+      run: meson test -C builddir/ --print-errorlogs
+
+    - name: install project
+      run: meson install -C builddir/
+
+    - name: install pip requirements
+      run: pip install -r requirements.txt
+
+    - name: test (pytest)
+      run: pytest -v
+      
+    - uses: actions/upload-artifact@v1
+      if: failure()
+      with:
+        name: ${{matrix.container}}_testlog
+        path: builddir/meson-logs/testlog.txt
+
+      
