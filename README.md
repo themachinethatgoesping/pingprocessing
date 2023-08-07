@@ -10,7 +10,4 @@ SPDX-License-Identifier: CC0-1.0
 # pingprocessing
 Themachinethatgoesping library too process pings
 e.g.
- - recompute absorption/spreading loss
- - Approx range/depth
- - Raytrace
  - Build echograms
