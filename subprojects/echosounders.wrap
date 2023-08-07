@@ -8,5 +8,5 @@ revision = main
 directory = echosounders-main
 
 [provide]
-themachinethatgoesping_echosounders = echosoudners_dep
+themachinethatgoesping_echosounders = echosounders_dep
 
