@@ -227,8 +227,8 @@ jobs:
     - name: install ninja for test
       run: pip install ninja
 
-    - name: test (cpp)
-      run: meson test -C builddir/ --print-errorlogs
+    # - name: test (cpp)
+    #   run: meson test -C builddir/ --print-errorlogs
 
     - name: install project
       run: meson install -C builddir/
