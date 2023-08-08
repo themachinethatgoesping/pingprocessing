@@ -156,13 +156,6 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: download ninja long path
-      run : |
-        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile ninja.exe  
-        
-    - name: add workspace to path (to access ninja.exe)
-      run: echo "${env:GITHUB_WORKSPACE}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
     - name: Set up Clang
       uses: egor-tensin/setup-clang@v1
       with:
@@ -210,12 +203,28 @@ jobs:
       run: pip install meson meson-python pytest numpy 
       #run: pip install meson meson-python pytest numpy ninja
 
+    - name: download ninja long path
+      run : |
+        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile ninja.exe 
+        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile NINJA.exe 
+        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile NINJA  
+        
+    - name: add workspace to path (to access ninja.exe)
+      run: echo "${env:GITHUB_WORKSPACE}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: check ninja executable path
+      run: |
+        Get-Command ninja
+        Get-Command NINJA
+
     - name: configure meson
       run: |
         meson setup builddir/ -D"python.install_env=auto" -Ddefault_library=static -D"python.install_env=auto" -Dcpp_std=${{matrix.cpp_std}}
 
     - name: compile project
       run: meson compile -C builddir/
+    #- name: compile project
+    #  run: meson compile -C builddir/
 
     - name: test (cpp)
       run: meson test -C builddir/ --print-errorlogs
