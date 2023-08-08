@@ -178,6 +178,18 @@ jobs:
         key: super-ci-win       # name for the cache
         variant: sccache  # supports windows
 
+    # install ninja using git (https://github.com/peter-urban/ninja-long-path.git) in windows powershell
+    - name: install ninja 
+      run: |
+        git clone https://github.com/peter-urban/ninja-long-path.git 
+    
+    - name: install ninja 2
+      run: |
+        ninja-long-path\configure.py --bootstrap 
+
+    - name: install ninja 3
+      run: |
+        cp ninja-long-path\ninja.exe C:\Windows\System32\
 
     - name: Cache Boost
       id: cache-boost
@@ -198,14 +210,13 @@ jobs:
         cd ..
         #rm -rv boost*
 
-    # same as for linux
-
     - name: install dependencies (meson & python)
-      run: pip install meson meson-python ninja pytest numpy
+      run: pip install meson meson-python pytest numpy 
+      #run: pip install meson meson-python pytest numpy ninja
 
     - name: configure meson
       run: |
-        meson setup builddir/ --backend vs -D"python.install_env=auto" -Ddefault_library=static -D"python.install_env=auto" -Dcpp_std=${{matrix.cpp_std}}
+        meson setup builddir/ -D"python.install_env=auto" -Ddefault_library=static -D"python.install_env=auto" -Dcpp_std=${{matrix.cpp_std}}
 
     - name: compile project
       run: meson compile -C builddir/
