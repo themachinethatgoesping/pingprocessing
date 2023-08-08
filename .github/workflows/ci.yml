@@ -151,9 +151,17 @@ jobs:
     #container: python:latest #pull directly from dockerhub   
     steps:
 
-    - uses: actions/setup-python@v3
+    - name: setup python
+      uses: actions/setup-python@v3
       with:
         python-version: '3.11'
+
+    - name: download ninja long path
+      run : |
+        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile ninja.exe  
+        
+    - name: add workspace to path (to access ninja.exe)
+      run: echo "${env:GITHUB_WORKSPACE}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
     - name: Set up Clang
       uses: egor-tensin/setup-clang@v1
@@ -178,18 +186,6 @@ jobs:
         key: super-ci-win       # name for the cache
         variant: sccache  # supports windows
 
-    # install ninja using git (https://github.com/peter-urban/ninja-long-path.git) in windows powershell
-    - name: install ninja 
-      run: |
-        git clone https://github.com/peter-urban/ninja-long-path.git 
-    
-    - name: install ninja 2
-      run: |
-        ninja-long-path\configure.py --bootstrap 
-
-    - name: install ninja 3
-      run: |
-        cp ninja-long-path\ninja.exe C:\Windows\System32\
 
     - name: Cache Boost
       id: cache-boost
