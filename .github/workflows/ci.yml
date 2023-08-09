@@ -146,6 +146,8 @@ jobs:
       #CC: msvc-14.32
       CC: ${{matrix.compiler}}
       CXX: ${{matrix.compiler}}
+      #this is where we will download ninja later
+      NINJA: d:/ninja.exe
 
     runs-on: windows-latest
     #container: python:latest #pull directly from dockerhub   
@@ -205,17 +207,12 @@ jobs:
 
     - name: download ninja long path
       run : |
-        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile ninja.exe 
-        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile NINJA.exe 
-        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile NINJA  
-        
-    - name: add workspace to path (to access ninja.exe)
-      run: echo "${env:GITHUB_WORKSPACE}" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        Invoke-WebRequest -Uri https://raw.githubusercontent.com/themachinethatgoesping/tools/main/ninja-windows/ninja.exe -OutFile d:\ninja.exe
 
     - name: check ninja executable path
       run: |
-        Get-Command ninja
-        Get-Command NINJA
+        $env:NINJA
+        d:\ninja.exe --version
 
     - name: configure meson
       run: |
