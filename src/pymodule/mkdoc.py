@@ -111,6 +111,8 @@ for r, d, f in os.walk('../themachinethatgoesping/'):
     for file in f:
         if file.endswith(".doc.hpp"):
             continue
+        if "pch" in file:
+            continue
 
         if file.endswith('.hpp'):
             if file not in ignore_files:
