@@ -1,6 +1,6 @@
-# Functions to create water column images from pings
-
 import numpy as np
+
+from typing import Tuple
 
 import themachinethatgoesping.echosounders as es
 import themachinethatgoesping.algorithms.geoprocessing as gp
@@ -8,32 +8,35 @@ import themachinethatgoesping.algorithms.geoprocessing as gp
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
 
 def make_wci(
-    ping : es.filetemplates.I_Ping,
-    horizontal_res : int, 
-    from_bottom_xyz : bool = True) -> (np.ndarray, np.ndarray):
+    ping: es.filetemplates.I_Ping,
+    horizontal_res: int, 
+    from_bottom_xyz: bool = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
     
-    """Create a water column image from a ping
+    """Create a water column image from a ping.
+
+    This function creates a water column image from a ping object using the
+    get_bottom_directions_bottom or get_bottom_directions_wci function from the
+    mi_hlp module, depending on the value of the from_bottom_xyz parameter.
+
     Note: this function is an approximation (for performance reasons). As such it:
     - uses nearest neighbor instead of real interpolation
-    - use backtracing instead of raytracing and assumes a constant sound velocity profile
+    - uses backtracing instead of raytracing and assumes a constant sound velocity profile
 
     Parameters
     ----------
     ping : es.filetemplates.I_Ping
-        ping to create image from
+        The ping object to create the image from.
     horizontal_res : int
-        number of horizontal pixels
-    min_y : float, optional
-        limit minimum horizontal position 
-    max_y : float, optional
-        limit maximum horizontal position
+        The number of horizontal pixels in the resulting image.
     from_bottom_xyz : bool, optional
-        attempt to correct the beam launch angles using the pings bottom detection (if existent), by default True
+        If True, attempt to correct the beam launch angles using the ping's bottom detection (if existent).
+        If False, do not attempt to correct the beam launch angles.
+        Defaults to True.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        water column image, extent of the image (in m, for plotting)
+    Tuple[np.ndarray, Tuple[float, float, float, float]]
+        A tuple containing the resulting water column image and the extent of the image (in meters, for plotting).
     """
 
     # get sensor configuration
@@ -48,7 +51,7 @@ def make_wci(
     else:
         xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_wci(ping)
 
-    # compute limits of the create image
+    # compute limits of the created image
     hmin = 1.1 * np.nanmin(xyz.y)
     hmax = 1.1 * np.nanmax(xyz.y)
     vmin = geolocation.z
@@ -84,128 +87,47 @@ def make_wci(
     ]
     
     # return
-    return wci, extent
+    return wci, tuple(extent)
 
-# Functions to create water column images from pings
-
-import numpy as np
-
-import themachinethatgoesping.echosounders as es
-import themachinethatgoesping.algorithms.geoprocessing as gp
-
-import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
-
-def make_wci(
-    ping : es.filetemplates.I_Ping,
-    horizontal_res : int, 
-    from_bottom_xyz : bool = True) -> (np.ndarray, np.ndarray):
-    
-    """Create a water column image from a ping
+def make_wci_dual_head(
+    ping1: es.filetemplates.I_Ping, 
+    ping2: es.filetemplates.I_Ping, 
+    horizontal_res: int, 
+    from_bottom_xyz: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float, float]]: 
+    """Create a water column image from two pings.
     Note: this function is an approximation (for performance reasons). As such it:
     - uses nearest neighbor instead of real interpolation
-    - use backtracing instead of raytracing and assumes a constant sound velocity profile
-
-    Parameters
-    ----------
-    ping : es.filetemplates.I_Ping
-        ping to create image from
-    horizontal_res : int
-        number of horizontal pixels
-    from_bottom_xyz : bool, optional
-        attempt to correct the beam launch angles using the pings bottom detection (if existent), by default True
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        water column image, extent of the image (in m, for plotting)
-    """
-
-    # get sensor configuration
-    sc = ping.get_sensor_configuration()
-    pingoff = sc.get_target("Transducer")
-    posoff = sc.get_position_source()
-    geolocation = ping.get_geolocation()
-    
-    # get bottom positions/directions/sample numbers
-    if from_bottom_xyz:
-        xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_bottom(ping)
-    else:
-        xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_wci(ping)
-
-    # compute limits of the create image
-    hmin = 1.1 * np.nanmin(xyz.y)
-    hmax = 1.1 * np.nanmax(xyz.y)
-    vmin = geolocation.z
-    vmax = np.nanmax(xyz.z)
-    vmax += (vmax-vmin)*0.1
-
-    res = (hmax-hmin)/horizontal_res   
-    
-    # build array with backtraced positions (beam angle, range from transducer)
-    y = np.arange(hmin,hmax,res)
-    z = np.arange(vmin,vmax,res)
-    
-    bt = gp.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
-    
-    sd_grid = bt.backtrace_image(y,z)
-    
-    # lookup beam/sample numbers for each pixel
-    maxsn = ping.watercolumn.get_number_of_samples_per_beam()-1
-    bisi = bt.lookup_indices(bottom_directions,bottom_direction_sample_numbers, maxsn,sd_grid)
-    bi = np.array(bisi.beam_numbers)
-    si = np.array(bisi.sample_numbers )
-
-    # get amplitudes for each pixel
-    wci = ping.watercolumn.get_amplitudes()[bi,si]
-    wci [bi==np.nanmin(bi)] = np.nan
-    wci [si==0] = np.nan
-    wci [bi==np.nanmax(bi)] = np.nan
-
-    # compute the extent
-    extent = [
-        np.min(y)-res*0.5,np.max(y)+res*0.5,
-        np.max(z)+res*0.5,np.min(z)-res*0.5
-    ]
-    
-    # return
-    return wci, extent
-
-def make_wci_dual_head(ping1: es.filetemplates.I_Ping,
-                       ping2: es.filetemplates.I_Ping,
-                       horizontal_res: int, 
-                       from_bottom_xyz: bool = False) -> (np.ndarray, np.ndarray):
-    """Create a water column image from two pings
-    Note: this function is an approximation (for performance reasons). As such it:
-    - uses nearest neighbor instead of real interpolation
-    - use backtracing instead of raytracing and assumes a constant sound velocity profile
-    - do not plot samples that overlap
+    - uses backtracing instead of raytracing and assumes a constant sound velocity profile
+    - does not plot samples that overlap
 
     Parameters
     ----------
     ping1 : es.filetemplates.I_Ping
-        left ping to create image from
+        Left ping to create image from.
     ping2 : es.filetemplates.I_Ping
-        right ping to create image from
+        Right ping to create image from.
     horizontal_res : int
-        number of horizontal pixels
+        Number of horizontal pixels in the image.
     from_bottom_xyz : bool, optional
-        attempt to correct the beam launch angles using the pings bottom detection (if existent), by default True
+        Attempt to correct the beam launch angles using the pings' bottom detection (if available).
+        Default is False.
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        water column image, extent of the image (in m, for plotting)
+    Tuple[np.ndarray, Tuple[float, float, float, float]]
+        A tuple containing the water column image as a numpy array and the extent of the image for plotting.
+        The extent is a tuple of four floats: (xmin, xmax, ymax, ymin).
     """
-    
-    # get sensor configurations
+
+    # Get sensor configurations
     sc1 = ping1.get_sensor_configuration()
     sc2 = ping2.get_sensor_configuration()
     pingoff1 = sc1.get_target("Transducer")
     pingoff2 = sc2.get_target("Transducer")
     geolocation1 = ping1.get_geolocation()
     geolocation2 = ping2.get_geolocation()
-    
-    # get bottom positions/directions/sample numbers
+
+    # Get bottom positions/directions/sample numbers
     if from_bottom_xyz:
         xyz1, bottom_directions1, bottom_direction_sample_numbers1 = mi_hlp.get_bottom_directions_bottom(ping1)
         xyz2, bottom_directions2, bottom_direction_sample_numbers2 = mi_hlp.get_bottom_directions_bottom(ping2)
@@ -213,7 +135,7 @@ def make_wci_dual_head(ping1: es.filetemplates.I_Ping,
         xyz1, bottom_directions1, bottom_direction_sample_numbers1 = mi_hlp.get_bottom_directions_wci(ping1)
         xyz2, bottom_directions2, bottom_direction_sample_numbers2 = mi_hlp.get_bottom_directions_wci(ping2)
 
-    # compute limits of the create image
+    # Compute limits of the created image
     hmin = 1.1 * np.nanmin(xyz1.y)
     hmax = 1.1 * np.nanmax(xyz2.y)
     vmin = np.nanmin([geolocation1.z,geolocation2.z])
@@ -221,18 +143,18 @@ def make_wci_dual_head(ping1: es.filetemplates.I_Ping,
     vmax += (vmax-vmin)*0.1
 
     res = (hmax-hmin)/horizontal_res   
-    
-    # build array with backtraced positions (beam angle, range from transducer)
+
+    # Build array with backtraced positions (beam angle, range from transducer)
     y = np.arange(hmin,hmax,res)
     z = np.arange(vmin,vmax,res)
         
     bt1 = gp.backtracers.BTConstantSVP(geolocation1, pingoff1.x, pingoff1.y)
     bt2 = gp.backtracers.BTConstantSVP(geolocation2, pingoff2.x, pingoff2.y)
-    
+
     sd_grid1 = bt1.backtrace_image(y[y<=0],z)
     sd_grid2 = bt2.backtrace_image(y[y>0],z)
         
-    # lookup beam/sample numbers for each pixel
+    # Lookup beam/sample numbers for each pixel
     maxsn1 = ping1.watercolumn.get_number_of_samples_per_beam()-1
     maxsn2 = ping2.watercolumn.get_number_of_samples_per_beam()-1
     bisi1 = bt1.lookup_indices(bottom_directions1,bottom_direction_sample_numbers1, maxsn1,sd_grid1)
@@ -242,28 +164,25 @@ def make_wci_dual_head(ping1: es.filetemplates.I_Ping,
     si1 = np.array(bisi1.sample_numbers )
     si2 = np.array(bisi2.sample_numbers )
 
-    # get amplitudes for each pixel
+    # Get amplitudes for each pixel
     # TODO: speed up by only reading the beams that are necessary
     wci1 = ping1.watercolumn.get_amplitudes()[bi1,si1]
     wci1 [bi1==np.nanmin(bi1)] = np.nan
     wci1 [si1==0] = np.nan
-    #wci1 [bi1==np.nanmax(bi1)] = np.nan
-    
+
     wci2 = ping2.watercolumn.get_amplitudes()[bi2,si2]
-    #wci2 [bi2==np.nanmin(bi2)] = np.nan
     wci2 [bi2==np.nanmax(bi2)] = np.nan
     wci2 [si2==0] = np.nan
 
-    # compute the extent
+    # Compute the extent
     extent = [
         np.min(y)-res*0.5,np.max(y)+res*0.5,
         np.max(z)+res*0.5,np.min(z)-res*0.5
     ]
-    
-    # return
-    return np.append(wci1,wci2, axis=0), extent
 
-import themachinethatgoesping.echosounders as es
+    # Return
+    return np.append(wci1,wci2, axis=0), tuple(extent)
+
 def make_wci_stack(
     pings: list,
     horizontal_res: int, 
