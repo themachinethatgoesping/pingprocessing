@@ -10,7 +10,8 @@ import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helpe
 def make_wci(
     ping: es.filetemplates.I_Ping,
     horizontal_res: int, 
-    from_bottom_xyz: bool = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
+    from_bottom_xyz: bool = True,
+    mp_cores: int = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
     
     """Create a water column image from a ping.
 
@@ -32,6 +33,9 @@ def make_wci(
         If True, attempt to correct the beam launch angles using the ping's bottom detection (if existent).
         If False, do not attempt to correct the beam launch angles.
         Defaults to True.
+    mp_cores : int, optional
+        The number of cores to use for parallel processing.
+        Defaults to 1.
 
     Returns
     -------
@@ -44,7 +48,7 @@ def make_wci(
     pingoff = sc.get_target("Transducer")
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
-    
+
     # get bottom positions/directions/sample numbers
     if from_bottom_xyz:
         xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_bottom(ping)
@@ -59,15 +63,15 @@ def make_wci(
     vmax += (vmax-vmin)*0.1
 
     res = (hmax-hmin)/horizontal_res   
-    
+
     # build array with backtraced positions (beam angle, range from transducer)
     y = np.arange(hmin,hmax,res)
     z = np.arange(vmin,vmax,res)
-    
+
     bt = gp.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
-    
-    sd_grid = bt.backtrace_image(y,z)
-    
+
+    sd_grid = bt.backtrace_image(y,z, mp_cores = mp_cores)
+
     # lookup beam/sample numbers for each pixel
     maxsn = ping.watercolumn.get_number_of_samples_per_beam()-1
     bisi = bt.lookup_indices(bottom_directions,bottom_direction_sample_numbers, maxsn,sd_grid)
@@ -85,16 +89,19 @@ def make_wci(
         np.min(y)-res*0.5,np.max(y)+res*0.5,
         np.max(z)+res*0.5,np.min(z)-res*0.5
     ]
-    
-    # return
+
+    # return the resulting water column image and the extent of the image
     return wci, tuple(extent)
 
 def make_wci_dual_head(
     ping1: es.filetemplates.I_Ping, 
     ping2: es.filetemplates.I_Ping, 
     horizontal_res: int, 
-    from_bottom_xyz: bool = False) -> Tuple[np.ndarray, Tuple[float, float, float, float]]: 
-    """Create a water column image from two pings.
+    from_bottom_xyz: bool = False,
+    mp_cores: int = 1) -> Tuple[np.ndarray, Tuple[float, float, float, float]]: 
+    """
+    Create a water column image from two pings.
+
     Note: this function is an approximation (for performance reasons). As such it:
     - uses nearest neighbor instead of real interpolation
     - uses backtracing instead of raytracing and assumes a constant sound velocity profile
@@ -111,6 +118,8 @@ def make_wci_dual_head(
     from_bottom_xyz : bool, optional
         Attempt to correct the beam launch angles using the pings' bottom detection (if available).
         Default is False.
+    mp_cores : int, optional
+        Number of cores to use for parallel processing. Default is 1.
 
     Returns
     -------
@@ -151,8 +160,8 @@ def make_wci_dual_head(
     bt1 = gp.backtracers.BTConstantSVP(geolocation1, pingoff1.x, pingoff1.y)
     bt2 = gp.backtracers.BTConstantSVP(geolocation2, pingoff2.x, pingoff2.y)
 
-    sd_grid1 = bt1.backtrace_image(y[y<=0],z)
-    sd_grid2 = bt2.backtrace_image(y[y>0],z)
+    sd_grid1 = bt1.backtrace_image(y[y<=0],z, mp_cores = mp_cores)
+    sd_grid2 = bt2.backtrace_image(y[y>0],z, mp_cores = mp_cores)
         
     # Lookup beam/sample numbers for each pixel
     maxsn1 = ping1.watercolumn.get_number_of_samples_per_beam()-1
@@ -188,26 +197,31 @@ def make_wci_stack(
     horizontal_res: int, 
     linear_mean: bool = True,
     from_bottom_xyz: bool = False,
-    progress_bar = None):
+    progress_bar = None,
+    mp_cores: int = 1):
     
-    """Create a water column image from two pings
+    """
+    Create a water column image from a list of pings.
+
     Note: this function is an approximation (for performance reasons). As such it:
     - uses nearest neighbor instead of real interpolation
-    - use backtracing instead of raytracing and assumes a constant sound velocity profile
-    - do not plot samples that overlap
+    - uses backtracing instead of raytracing and assumes a constant sound velocity profile
+    - does not plot samples that overlap
 
     Parameters
     ----------
     pings : list(es.filetemplates.I_Ping)
-        list of pings to stack
+        List of pings to stack.
     horizontal_res : int
-        number of horizontal pixels
+        Number of horizontal pixels.
     linear_mean : bool, optional
-        use linear mean instead of geometric mean (mean of dB values), by default True
+        Use linear mean instead of geometric mean (mean of dB values), by default True.
     progress_bar : progress_bar, optional
-        tqdm style progress bar to use, by default None
+        tqdm style progress bar to use, by default None.
     from_bottom_xyz : bool, optional
-        attempt to correct the beam launch angles using the pings bottom detection (if existent), by default True
+        Attempt to correct the beam launch angles using the ping's bottom detection (if existent), by default True.
+    mp_cores : int, optional
+        Number of cores to use for parallel processing, by default 1.
 
     Returns
     -------
@@ -258,14 +272,18 @@ def make_wci_stack(
     WCI=None
     NUM=None
     
+    # initialize progress bar
     if progress_bar is None:
         progress_bar = pings
     else:
         progress_bar = progress_bar(pings)
         
+    # loop through each ping
     for pn,ping in enumerate(progress_bar):        
+        # create backtracer object
         bt = gp.backtracers.BTConstantSVP(geolocations[pn], pingoffs[pn].x, pingoffs[pn].y)
     
+        # backtrace image
         sd_grid = bt.backtrace_image(y,z)
         
         # lookup beam/sample numbers for each pixel
@@ -286,16 +304,18 @@ def make_wci_stack(
         wci.fill(np.nan)
         wci[use==1] = ping.watercolumn.get_amplitudes()[bi[use==1],si[use==1]]
                 
+        # apply linear mean if specified
         if linear_mean:
             wci[use==1] = np.power(10,wci[use==1]*0.1)
         
+        # initialize WCI and NUM arrays
         if WCI is None:
             WCI = np.empty_like(wci)
             WCI.fill(np.nan)
             NUM = np.zeros_like(wci)
             
+        # accumulate WCI and NUM arrays
         WCI[use==1] = np.nansum([WCI[use==1],wci[use==1]],axis=0)
-            
         NUM[use==1] += 1
     
     # compute the extent
@@ -304,11 +324,12 @@ def make_wci_stack(
         vmax+res*0.5,vmin-res*0.5
     ]
     
+    # compute the final WCI array
     WCI = WCI/NUM
     
+    # apply logarithmic scaling if specified
     if linear_mean:
         WCI = 10*np.log10(WCI)
     
-    # return
+    # return the WCI array and extent
     return WCI, extent
-  
