@@ -133,7 +133,11 @@ with open('mkdoc_log.log', 'w', encoding="utf-8") as ofi_log:
             filename.replace(filename.split('.')[-1], "doc.hpp")
 
         if FORCE_RENEW:
-            shutil.rmtree("/".join(output_path.split('/')[:-1]))
+            try:
+                shutil.rmtree("/".join(output_path.split('/')[:-1]))
+            except:
+                pass
+            continue
         os.makedirs("/".join(output_path.split('/')[:-1]), exist_ok=True)
 
         add_doc_line(header, output_path)
