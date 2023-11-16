@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # folders
+from . import core
+from . import filter_pings
+from . import split_pings
+from . import overview
 from . import watercolumn as watercolumn_ext  # flake8: noqa
 
 # modules

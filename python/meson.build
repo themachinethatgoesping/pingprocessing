@@ -9,6 +9,21 @@ sources = [
     'themachinethatgoesping/pingprocessing/watercolumn/helper/make_image_helper.py',
     'themachinethatgoesping/pingprocessing/watercolumn/make_image/__init__.py',
     'themachinethatgoesping/pingprocessing/watercolumn/make_image/make_wci.py',
+
+    'themachinethatgoesping/pingprocessing/core/__init__.py',
+    'themachinethatgoesping/pingprocessing/core/progress.py',
+
+    'themachinethatgoesping/pingprocessing/filter_pings/__init__.py',
+    'themachinethatgoesping/pingprocessing/filter_pings/by_region.py',
+    'themachinethatgoesping/pingprocessing/filter_pings/by_time.py',
+
+    'themachinethatgoesping/pingprocessing/overview/__init__.py',
+    'themachinethatgoesping/pingprocessing/overview/pingoverview.py',
+    'themachinethatgoesping/pingprocessing/overview/nav_plot.py',
+
+    'themachinethatgoesping/pingprocessing/split_pings/__init__.py',
+    'themachinethatgoesping/pingprocessing/split_pings/by_distance.py',
+    'themachinethatgoesping/pingprocessing/split_pings/by_time.py',
 ]
 
 if get_option('build_pythonmodule').enabled()
