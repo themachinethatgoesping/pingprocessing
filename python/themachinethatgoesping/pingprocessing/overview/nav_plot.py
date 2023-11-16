@@ -67,10 +67,8 @@ def plot_latlon(
         plot_lat = lat
         plot_lon = lon
 
-    ax.plot(plot_lat, plot_lon, label=survey_name, linewidth=0.5, marker='o', markersize=2, markevery=1, **kwargs)
+    ax.plot(plot_lon, plot_lat, label=survey_name, linewidth=0.5, marker='o', markersize=2, markevery=1, **kwargs)
 
-    # Add arrows with labels that indicate the beginning and the end of the survey
-    ax.annotate(f'Start {survey_name}', xy=(lon[0], lat[0]), xytext=(lon[0]+0.01, lat[0]+0.01),
-                arrowprops=dict(facecolor='black', arrowstyle="->"), fontsize=10)
-    ax.annotate(f'Start {survey_name}', xy=(lon[-1], lat[-1]), xytext=(lon[-1]-0.01, lat[-1]-0.01),
-                arrowprops=dict(facecolor='black', arrowstyle="->"), fontsize=10)
+    # Add label at the first point
+    if annotate:
+        ax.annotate(f'Start {survey_name}', xy=(plot_lon[0], plot_lat[0]), xytext=(plot_lon[0], plot_lat[0]))

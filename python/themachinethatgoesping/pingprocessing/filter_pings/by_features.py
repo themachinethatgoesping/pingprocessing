@@ -52,14 +52,16 @@ def by_features(
             if not ping.has_feature(f):
                 skip = True
                 break
-        for f in watercolumn_features:
-            if not ping.watercolumn.has_feature(f):
-                skip = True
-                break
-        for f in bottom_features:
-            if not ping.bottom.has_feature(f):
-                skip = True
-                break
+        else:
+            for f in watercolumn_features:
+                if not ping.watercolumn.has_feature(f):
+                    skip = True
+                    break
+            else:
+                for f in bottom_features:
+                    if not ping.bottom.has_feature(f):
+                        skip = True
+                        break
 
         if skip:
             continue

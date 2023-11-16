@@ -26,6 +26,6 @@ def get_progress_iterator(
         if progress is True:
             progress = tqdm
 
-        return progress(iteratable, **kwargs)
+        return progress(iteratable, delay = 2, **kwargs)
     else:
         return iteratable

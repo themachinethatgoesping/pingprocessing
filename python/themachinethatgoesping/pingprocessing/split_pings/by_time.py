@@ -33,7 +33,7 @@ def by_time_difference(
     it = get_progress_iterator(pings, progress, desc = "Split pings by time difference")
 
     split_pings = defaultdict(list)
-    number = 0
+    number = -1
 
     last_timestamp = np.nan
     for ping in it:
@@ -41,9 +41,10 @@ def by_time_difference(
 
         if t < last_timestamp + seconds:
             split_pings[number].append(ping)
+            last_timestamp = t
         else:
-            split_pings[number].append(ping)
             number += 1
+            split_pings[number].append(ping)
             last_timestamp = t
 
     return split_pings
