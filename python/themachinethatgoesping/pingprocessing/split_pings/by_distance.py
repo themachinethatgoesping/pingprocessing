@@ -2,15 +2,33 @@
 from collections import defaultdict
 import numpy as np
 import math
-
+from typing import Dict, List, Union
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping.navigation as nav
+from themachinethatgoesping.echosounders import filetemplates
+I_Ping = filetemplates.I_Ping
 
 def by_distance_difference(
-    pings, 
-    meters,
-    progress = False):
+    pings: List[I_Ping], 
+    meters: float,
+    progress: bool = False) -> Dict[int, List[I_Ping]]:
+    """
+    Split pings into groups based on the distance between consecutive pings.
 
+    Parameters
+    ----------
+    pings : List[I_Ping]
+        List of pings to be split.
+    meters : float
+        Distance threshold in meters.
+    progress : bool, optional
+        If True, show progress bar, by default False.
+
+    Returns
+    -------
+    Dict[int, List[I_Ping]]]
+        A dictionary with keys as group numbers and values as lists of pings belonging to that group.
+    """
     it = get_progress_iterator(pings, progress, desc = "Split pings by distance difference")
 
     split_pings = defaultdict(list)
@@ -32,8 +50,8 @@ def by_distance_difference(
 
         distance = math.dist(
             [last_geolocation_utm.easting, last_geolocation_utm.northing], 
-            [g_utm_compare.easting, g_utm_compare.northing
-            ])
+            [g_utm_compare.easting, g_utm_compare.northing]
+            )
 
         if distance > meters:
             number += 1

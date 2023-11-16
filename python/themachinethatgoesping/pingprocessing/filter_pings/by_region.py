@@ -3,21 +3,41 @@ import numpy as np
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
+from themachinethatgoesping.echosounders import filetemplates
+I_Ping = filetemplates.I_Ping
+
 def by_latlon(
-    pings, 
-    min_lat = np.nan, 
-    max_lat = np.nan,
-    min_lon = np.nan,
-    max_lon = np.nan,
-    progress = False):
+    pings: list[I_Ping], 
+    min_lat: float = np.nan, 
+    max_lat: float = np.nan,
+    min_lon: float = np.nan,
+    max_lon: float = np.nan,
+    progress: bool = False) -> list[I_Ping]:
+    """
+    Filter pings by latitude and longitude region.
 
-    if isinstance(pings, dict):
-        for k, pingitems in pings.items():
-            pings[k] = by_time(pingitems, min_timestamp, max_timestamp, progress)
+    Parameters
+    ----------
+    pings : list
+        List of pings to filter.
+    min_lat : float, optional
+        Minimum latitude value, by default np.nan.
+    max_lat : float, optional
+        Maximum latitude value, by default np.nan.
+    min_lon : float, optional
+        Minimum longitude value, by default np.nan.
+    max_lon : float, optional
+        Maximum longitude value, by default np.nan.
+    progress : bool, optional
+        Whether to show progress bar, by default False.
 
-        return pings
+    Returns
+    -------
+    list
+        List of filtered pings.
+    """
 
-    it = get_progress_iterator(pings, progress, desc = "Filter pings by lat/lon region")
+    it = get_progress_iterator(pings, progress, desc="Filter pings by lat/lon region")
 
     filtered_pings = []
 
