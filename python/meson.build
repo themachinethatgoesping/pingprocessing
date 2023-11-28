@@ -26,6 +26,7 @@ sources = [
     'themachinethatgoesping/pingprocessing/split_pings/by_distance.py',
     'themachinethatgoesping/pingprocessing/split_pings/by_time.py',
     'themachinethatgoesping/pingprocessing/split_pings/by_channel_id.py',
+    'themachinethatgoesping/pingprocessing/split_pings/by_file.py',
 
     'themachinethatgoesping/pingprocessing/group_pings/__init__.py',
     'themachinethatgoesping/pingprocessing/group_pings/dual_head.py',
