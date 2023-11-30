@@ -26,7 +26,7 @@ def dual_head(pings: List[filetemplates.I_Ping], progress: bool = False) -> List
     ping_groups = []
     ping_group_map = {}
     for ping in it:
-        key = (ping.get_file_nr(), ping.get_file_ping_counter())
+        key = (ping.file_data.get_primary_file_nr(), ping.file_data.get_file_ping_counter())
 
         if key not in ping_group_map:
             ping_group_map[key] = len(ping_groups)

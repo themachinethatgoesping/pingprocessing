@@ -45,7 +45,7 @@ def by_file_path(pings: List[I_Ping], progress: bool = True) -> Dict[str, List[I
     split_pings = defaultdict(list)
 
     for ping in it:
-        split_pings[ping.get_file_path()].append(ping)
+        split_pings[ping.file_data.get_primary_file_path()].append(ping)
 
     return split_pings
 
