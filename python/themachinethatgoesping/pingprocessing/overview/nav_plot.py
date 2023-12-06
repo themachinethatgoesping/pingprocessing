@@ -31,42 +31,40 @@ def create_figure(
 
     return fig, ax
 
-# def plot_navigation_pings(
-#     pings, 
-#     progress = False):
-
-#     overview = get_ping_overview(pings, progress)
-
-#     if isinstance(overview, dict):
-
-#     it = get_progress_iterator(pings, progress, desc = "Plot navigation")
-
-#     plot_data = defaultdict(list)
-
-#     for ping in it:
-#         g = ping.get_geolocation()
-#         plot_data['latitude'].append(g.latitude)
-#         plot_data['longitude'].append(g.longitude)
-
-#     return plot_data
-
 
 def plot_latlon(
     lat,
     lon,
     ax,
-    survey_name = 'survey',
-    annotate = True,
-    max_points = 100000, 
+    survey_name='survey',
+    annotate=True,
+    max_points=100000,
     **kwargs):
+    """
+    Plot latitude and longitude coordinates on a given axis.
 
+    Parameters:
+        lat (list): List of latitude coordinates.
+        lon (list): List of longitude coordinates.
+        ax (matplotlib.axes.Axes): The axis on which to plot the coordinates.
+        survey_name (str, optional): Name of the survey. Defaults to 'survey'.
+        annotate (bool, optional): Whether to annotate the plot with the survey name. Defaults to True.
+        max_points (int, optional): Maximum number of points to plot. Defaults to 100000.
+        **kwargs: Additional keyword arguments to be passed to the plot function.
+
+    Returns:
+        None
+    """
+
+    # Reduce the number of points if necessary
     if len(lat) > max_points:
-        plot_lat = lat[::int(len(lat)//max_points)]
-        plot_lon = lat[::int(len(lat)//max_points)]
+        plot_lat = np.array(lat)[np.round(np.linspace(0, len(lat) - 1, max_points)).astype(int)]
+        plot_lon = np.array(lon)[np.round(np.linspace(0, len(lon) - 1, max_points)).astype(int)]
     else:
         plot_lat = lat
         plot_lon = lon
 
+    # Plot the coordinates
     ax.plot(plot_lon, plot_lat, label=survey_name, linewidth=0.5, marker='o', markersize=2, markevery=1, **kwargs)
 
     # Add label at the first point
