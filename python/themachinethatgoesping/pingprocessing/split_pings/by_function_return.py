@@ -33,7 +33,7 @@ def by_function_return(
     if required_features is None:
         required_features = []
 
-    it = get_progress_iterator(pings, progress, desc="Split pings by channel id")
+    it = get_progress_iterator(pings, progress, desc="Split pings by function return")
 
     split_pings = defaultdict(list)
 
