@@ -11,6 +11,7 @@ def make_wci(
     ping: es.filetemplates.I_Ping,
     horizontal_res: int, 
     from_bottom_xyz: bool = True,
+    compute_av: bool = True,
     mp_cores: int = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
     
     """Create a water column image from a ping.
@@ -79,7 +80,10 @@ def make_wci(
     si = np.array(bisi.sample_numbers )
 
     # get amplitudes for each pixel
-    wci = ping.watercolumn.get_amplitudes()[bi,si]
+    if compute_av:
+        wci = ping.watercolumn.get_av()[bi,si]
+    else:
+        wci = ping.watercolumn.get_amplitudes()[bi,si]
     wci [bi==np.nanmin(bi)] = np.nan
     wci [si==0] = np.nan
     wci [bi==np.nanmax(bi)] = np.nan
@@ -98,6 +102,7 @@ def make_wci_dual_head(
     ping2: es.filetemplates.I_Ping, 
     horizontal_res: int, 
     from_bottom_xyz: bool = False,
+    compute_av: bool = True,
     mp_cores: int = 1) -> Tuple[np.ndarray, Tuple[float, float, float, float]]: 
     """
     Create a water column image from two pings.
@@ -175,11 +180,17 @@ def make_wci_dual_head(
 
     # Get amplitudes for each pixel
     # TODO: speed up by only reading the beams that are necessary
-    wci1 = ping1.watercolumn.get_amplitudes()[bi1,si1]
+    if compute_av:
+        wci1 = ping1.watercolumn.get_av()[bi1,si1]
+    else:
+        wci1 = ping1.watercolumn.get_amplitudes()[bi1,si1]
     wci1 [bi1==np.nanmin(bi1)] = np.nan
     wci1 [si1==0] = np.nan
 
-    wci2 = ping2.watercolumn.get_amplitudes()[bi2,si2]
+    if compute_av:
+        wci2 = ping2.watercolumn.get_av()[bi2,si2]
+    else:
+        wci2 = ping2.watercolumn.get_amplitudes()[bi2,si2]
     wci2 [bi2==np.nanmax(bi2)] = np.nan
     wci2 [si2==0] = np.nan
 
@@ -197,6 +208,7 @@ def make_wci_stack(
     horizontal_res: int, 
     linear_mean: bool = True,
     from_bottom_xyz: bool = False,
+    compute_av: bool = True,
     progress_bar = None,
     mp_cores: int = 1):
     
@@ -302,8 +314,12 @@ def make_wci_stack(
         # TODO: speed up by only reading the beams that are necessary
         wci = np.empty_like(bi,dtype=np.float32)
         wci.fill(np.nan)
-        wci[use==1] = ping.watercolumn.get_amplitudes()[bi[use==1],si[use==1]]
                 
+        if compute_av:
+            wci[use==1] = ping.watercolumn.get_av()[bi[use==1],si[use==1]]
+        else:
+            wci[use==1] = ping.watercolumn.get_amplitudes()[bi[use==1],si[use==1]]
+            
         # apply linear mean if specified
         if linear_mean:
             wci[use==1] = np.power(10,wci[use==1]*0.1)
