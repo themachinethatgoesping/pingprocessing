@@ -36,14 +36,15 @@ def dual_head(pings: List[filetemplates.I_Ping], progress: bool = False) -> List
 
         ping_groups[ping_group_map[key]][ping.get_channel_id()] = ping
         
+    return ping_groups
     # get times for each group
     # TODO: this should not be necessary ... 
-    pg_times = []
-    for ping_group in ping_groups:
-        times=[]
-        for k,v in ping_group.items():
-            times.append(v.get_timestamp())
-        pg_times.append(np.nanmin(times))
+    # pg_times = []
+    # for ping_group in ping_groups:
+    #     times=[]
+    #     for k,v in ping_group.items():
+    #         times.append(v.get_timestamp())
+    #     pg_times.append(np.nanmin(times))
               
     # return sorted by times
-    return np.array(ping_groups)[np.argsort(pg_times)]
+    # return np.array(ping_groups)[np.argsort(pg_times)]
