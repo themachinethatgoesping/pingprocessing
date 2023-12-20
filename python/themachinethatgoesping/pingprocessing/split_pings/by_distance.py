@@ -37,16 +37,16 @@ def by_distance_difference(
     last_geolocation_utm = None
     for ping in it:
         if last_geolocation_utm is None:
-            last_geolocation_utm = nav.datastructures.GeoLocationUTM(ping.get_geolocation())
+            last_geolocation_utm = nav.datastructures.GeolocationUTM(ping.get_geolocation())
             split_pings[number].append(ping)
             continue
 
         g = ping.get_geolocation()
-        g_utm = nav.datastructures.GeoLocationUTM(g)
+        g_utm = nav.datastructures.GeolocationUTM(g)
         if g_utm.utm_zone == last_geolocation_utm.utm_zone:
             g_utm_compare = g_utm
         else:
-            g_utm_compare = nav.datastructures.GeoLocationUTM(g, setzone=last_geolocation_utm.utm_zone)
+            g_utm_compare = nav.datastructures.GeolocationUTM(g, setzone=last_geolocation_utm.utm_zone)
 
         distance = math.dist(
             [last_geolocation_utm.easting, last_geolocation_utm.northing], 
