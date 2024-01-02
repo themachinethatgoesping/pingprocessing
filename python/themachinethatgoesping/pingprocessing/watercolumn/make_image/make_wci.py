@@ -296,7 +296,7 @@ def make_wci_stack(
         bt = gp.backtracers.BTConstantSVP(geolocations[pn], pingoffs[pn].x, pingoffs[pn].y)
     
         # backtrace image
-        sd_grid = bt.backtrace_image(y,z)
+        sd_grid = bt.backtrace_image(y,z,mp_cores=mp_cores)
         
         # lookup beam/sample numbers for each pixel
         maxsn = ping.watercolumn.get_number_of_samples_per_beam()-1
