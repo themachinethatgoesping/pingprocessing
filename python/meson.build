@@ -9,6 +9,8 @@ sources = [
     'themachinethatgoesping/pingprocessing/watercolumn/helper/make_image_helper.py',
     'themachinethatgoesping/pingprocessing/watercolumn/make_image/__init__.py',
     'themachinethatgoesping/pingprocessing/watercolumn/make_image/make_wci.py',
+    'themachinethatgoesping/pingprocessing/watercolumn/echograms/__init__.py',
+    'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramsection.py',
 
     'themachinethatgoesping/pingprocessing/core/__init__.py',
     'themachinethatgoesping/pingprocessing/core/progress.py',
