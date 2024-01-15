@@ -14,7 +14,7 @@ class EchogramSection(object):
     def __init__(self, data):
         self._data = data
         
-        self._pings = []
+        #self._pings = []
         self._ping_numbers = []
         self._ping_times_unix = []
         self._ping_distances = []
@@ -182,40 +182,40 @@ class EchogramSection(object):
         return self._data.shape
         
     # --- setters ---
-    def set_pings(self, pings):
-        assert len(pings) == self._data.shape[0], f"ERROR[set_pings]: len(pings) != self._data.shape[0]! [{len(pings)} != {data.shape[0]}]"
-        self._pings = pings
+    # def set_pings(self, pings):
+    #     assert len(pings) == self._data.shape[0], f"ERROR[set_pings]: len(pings) != self._data.shape[0]! [{len(pings)} != {self._data.shape[0]}]"
+    #     self._pings = pings
 
     def set_ping_parameters(self, parameter_key, parameters):
-        assert len(parameters) == self._data.shape[0], f"ERROR[set_ping_parameter]: len(set_ping_parameter) != self._data.shape[0]! [{len(parameters)} != {data.shape[0]}]"
+        assert len(parameters) == self._data.shape[0], f"ERROR[set_ping_parameter]: len(set_ping_parameter) != self._data.shape[0]! [{len(parameters)} != {self._data.shape[0]}]"
         self._ping_parameters[parameter_key] = parameters
 
     def set_ping_numbers(self, ping_numbers):
-        assert len(ping_numbers) == self._data.shape[0], f"ERROR[set_ping_numbers]: len(ping_numbers) != self._data.shape[0]! [{len(ping_numbers)} != {data.shape[0]}]"
+        assert len(ping_numbers) == self._data.shape[0], f"ERROR[set_ping_numbers]: len(ping_numbers) != self._data.shape[0]! [{len(ping_numbers)} != {self._data.shape[0]}]"
         self._ping_numbers = ping_numbers
         self._interpolator_pi_pnr = ptools.vectorinterpolators.NearestInterpolator(range(len(self.get_ping_numbers())),self.get_ping_numbers())
         self._interpolator_pnr_pi = ptools.vectorinterpolators.NearestInterpolator(self.get_ping_numbers(),range(len(self.get_ping_numbers())))
 
     def set_ping_times(self, ping_unixtimes):
-        assert len(ping_unixtimes) == self._data.shape[0], f"ERROR[set_ping_times]: len(ping_unixtimes) != self._data.shape[0]! [{len(ping_unixtimes)} != {data.shape[0]}]"
+        assert len(ping_unixtimes) == self._data.shape[0], f"ERROR[set_ping_times]: len(ping_unixtimes) != self._data.shape[0]! [{len(ping_unixtimes)} != {self._data.shape[0]}]"
         self._ping_times_unix = np.array(ping_unixtimes)
         self._interpolator_pi_time = ptools.vectorinterpolators.NearestInterpolator(range(len(self.get_ping_times_unixtimes())),self.get_ping_times_unixtimes())
         self._interpolator_time_pi = ptools.vectorinterpolators.NearestInterpolator(self.get_ping_times_unixtimes(),range(len(self.get_ping_times_unixtimes())))
 
     def set_ping_distances(self, ping_distances):
-        assert len(ping_distances) == self._data.shape[0], f"ERROR[set_ping_distances]: len(ping_distances) != self._data.shape[0]! [{len(ping_distances)} != {data.shape[0]}]"
+        assert len(ping_distances) == self._data.shape[0], f"ERROR[set_ping_distances]: len(ping_distances) != self._data.shape[0]! [{len(ping_distances)} != {self._data.shape[0]}]"
         self._ping_distances = ping_distances
         self._interpolator_pi_distance = ptools.vectorinterpolators.NearestInterpolator(range(len(self.get_ping_distances())),self.get_ping_distances())
         #self._interpolator_distance_pi = ptools.vectorinterpolators.NearestInterpolator(self.get_ping_distances(),range(len(self.get_ping_distances())))
 
     def set_sample_numbers(self, sample_numbers):
-        assert len(sample_numbers) == self._data.shape[1], f"ERROR[set_sample_numbers]: len(sample_numbers) != self._data.shape[1]! [{len(sample_numbers)} != {data.shape[1]}]"
+        assert len(sample_numbers) == self._data.shape[1], f"ERROR[set_sample_numbers]: len(sample_numbers) != self._data.shape[1]! [{len(sample_numbers)} != {self._data.shape[1]}]"
         self._sample_numbers = sample_numbers
         self._interpolator_si_snr = ptools.vectorinterpolators.NearestInterpolator(range(len(self.get_sample_numbers())),self.get_sample_numbers())
         self._interpolator_snr_si = ptools.vectorinterpolators.NearestInterpolator(self.get_sample_numbers(),range(len(self.get_sample_numbers())))
 
     def set_sample_depths(self, sample_depths):
-        assert len(sample_depths) == self._data.shape[1], f"ERROR[set_sample_depths]: len(sample_depths) != self._data.shape[1]! [{len(sample_depths)} != {data.shape[1]}]"
+        assert len(sample_depths) == self._data.shape[1], f"ERROR[set_sample_depths]: len(sample_depths) != self._data.shape[1]! [{len(sample_depths)} != {self._data.shape[1]}]"
         self._sample_depths = sample_depths
         self._interpolator_si_depth = ptools.vectorinterpolators.NearestInterpolator(range(len(self.get_sample_depths())),self.get_sample_depths())
         self._interpolator_depth_si = ptools.vectorinterpolators.NearestInterpolator(self.get_sample_depths(),range(len(self.get_sample_depths())))
@@ -236,11 +236,11 @@ class EchogramSection(object):
     def get_data(self):
         return self._data
 
-    def get_pings(self):
-        if len(self._pings) > 0:
-            return self._pings
+    # def get_pings(self):
+    #     if len(self._pings) > 0:
+    #         return self._pings
             
-        raise RuntimeError("ERROR[get_pings]: pings have not been set!")
+    #     raise RuntimeError("ERROR[get_pings]: pings have not been set!")
 
     def get_ping_indices(self):
         return np.arange(self._data.shape[0])
