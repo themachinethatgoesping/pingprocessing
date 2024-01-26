@@ -61,11 +61,19 @@ class EchogramSection(object):
 
     def get_echogram_layer(
         self,
-        upper_depth: int,
-        lower_depth: int,
+        upper_depth,
+        lower_depth,
+        depth_times=None,
         ping_numbers=None,
         ping_axis='index', 
         sample_axis='index'):
+
+        if depth_times is not None:
+            assert len(depth_times) == len(upper_depth), f"ERROR: len(depth_times) [{depth_times}] != len(upper_depth) [{upper_depth}]"
+            i_depth_up = ptools.vectorinterpolators.LinearInterpolator(depth_times,upper_depth)
+            i_depth_lo = ptools.vectorinterpolators.LinearInterpolator(depth_times,lower_depth)
+            upper_depth = i_depth_up(self.get_ping_times_unixtimes())
+            lower_depth = i_depth_lo(self.get_ping_times_unixtimes())
 
         assert len(upper_depth) == len(lower_depth), f"ERROR: len(upper_depth) [{upper_depth}] != len(lower_depth) [{lower_depth}]"
         if ping_numbers is not None:
