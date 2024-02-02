@@ -12,6 +12,9 @@ sources = [
 
 headers = [
   'helloping.hpp',
+  'watercolumn/make_image/functions/lookup_beams_and_samples.hpp',
+  'watercolumn/make_image/functions/.docstrings/lookup_beams_and_samples.doc.hpp',
+  '.docstrings/helloping.doc.hpp',
 ]
 
 # -- targets --

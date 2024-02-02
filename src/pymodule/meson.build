@@ -7,7 +7,7 @@ module_name = 'pingprocessing_cppy'
         
 # -- sources
 sources = [
-    'module.cpp',
+  'module.cpp',
 ]
 
 # define python module

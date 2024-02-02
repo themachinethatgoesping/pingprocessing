@@ -5,16 +5,13 @@
 # -- python sources --
 sources = [
   'themachinethatgoesping/pingprocessing/__init__.py',
-
   'themachinethatgoesping/pingprocessing/overview/__init__.py',
   'themachinethatgoesping/pingprocessing/overview/nav_plot.py',
   'themachinethatgoesping/pingprocessing/overview/pingoverview.py',
-
   'themachinethatgoesping/pingprocessing/filter_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_features.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_region.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_time.py',
-
   'themachinethatgoesping/pingprocessing/split_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_channel_id.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_distance.py',
@@ -22,7 +19,6 @@ sources = [
   'themachinethatgoesping/pingprocessing/split_pings/by_function_return.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_time.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_time_blocks.py',
-
   'themachinethatgoesping/pingprocessing/watercolumn/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramsection.py',
@@ -30,10 +26,8 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/make_image/make_wci.py',
   'themachinethatgoesping/pingprocessing/watercolumn/helper/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/helper/make_image_helper.py',
-
   'themachinethatgoesping/pingprocessing/core/__init__.py',
   'themachinethatgoesping/pingprocessing/core/progress.py',
-
   'themachinethatgoesping/pingprocessing/group_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/group_pings/dual_head.py',
 ]

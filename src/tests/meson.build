@@ -7,7 +7,7 @@
 testcomponent = 'pingprocessing'
 
 sources = [
-    'tutorial.test.cpp'
+  'tutorial.test.cpp',
 ]
 
 foreach source : sources
