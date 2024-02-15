@@ -23,7 +23,6 @@ if build_machine.system() != 'linux'
   pingprocessing_lib = static_library(libname,sources,
                         dependencies : [
                           boost_dep, 
-                          omp_dep,
                           echosounders_dep,
                           tools_dep
                           ],
@@ -37,7 +36,6 @@ else
   pingprocessing_lib = library(libname,sources,
                         dependencies : [
                           boost_dep, 
-                          omp_dep,
                           echosounders_dep,
                           tools_dep
                           ],
@@ -54,7 +52,6 @@ endif
 pingprocessing_dep = declare_dependency(
   dependencies : [
     boost_dep,
-    omp_dep,
     echosounders_dep,
     tools_dep
   ],
