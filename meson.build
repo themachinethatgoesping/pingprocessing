@@ -19,7 +19,13 @@ projectnamespace = 'themachinethatgoesping'
 # --- dependencies ---
 
 # system
-if  meson.get_compiler('cpp').get_id() == 'clang'
+if meson.get_compiler('cpp').get_id() == 'clang-cl'
+  libomp = meson.get_compiler('cpp').find_library('libomp')
+  omp_dep = declare_dependency(
+  compile_args : ['-fopenmp'],
+  dependencies : [libomp]
+  )
+elif  meson.get_compiler('cpp').get_id() == 'clang'
   # libomp = meson.get_compiler('cpp').find_library('libomp5')
   # omp_dep = declare_dependency(
   # compile_args : ['-fopenmp'],
