@@ -24,7 +24,7 @@ def create_figure(
         background_image_path (str, optional): Path to the background image that can be opened
                                                with rastio and contains navigation reference(e.g. geotif).
                                                Defaults to None.
-        **kwargs: Additional keyword arguments.
+        **kwargs: Additional keyword arguments for the background_image (e.g. cmap).
 
     Returns:
         Tuple[plt.Figure, plt.Axes]: The created figure and axes.
