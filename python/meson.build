@@ -10,6 +10,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/overview/pingoverview.py',
   'themachinethatgoesping/pingprocessing/filter_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_features.py',
+  'themachinethatgoesping/pingprocessing/filter_pings/by_files.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_region.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_time.py',
   'themachinethatgoesping/pingprocessing/split_pings/__init__.py',
