@@ -9,6 +9,9 @@ from typing import List
 from collections import defaultdict
 import numpy as np
 
+from . import nav_plot
+
+
 class PingOverview:
     """
     A class to represent an overview of ping statistics.
@@ -41,6 +44,7 @@ class PingOverview:
     get_median(self, key)
         Returns the median value of a variable.
     """
+
     def __init__(self, ping_list: List = None, progress: bool = False) -> None:
         """
         Constructs a PingOverview object.
@@ -57,6 +61,30 @@ class PingOverview:
 
         if ping_list is not None:
             self.add_ping_list(ping_list, progress)
+
+    def plot_navigation(self, ax, label="survey", annotate=True, max_points=100000, **kwargs):
+        """
+        Plot latitude and longitude coordinates on a given axis.
+
+        Parameters:
+            ax (matplotlib.axes.Axes): The axis on which to plot the coordinates.
+            label (str, optional): Name of the survey. Defaults to 'survey'.
+            annotate (bool, optional): Whether to annotate the plot with the survey name. Defaults to True.
+            max_points (int, optional): Maximum number of points to plot. Defaults to 100000.
+            **kwargs: Additional keyword arguments to be passed to the plot function.
+
+        Returns:
+            None
+        """
+        nav_plot.plot_latlon(
+            self.variables["latitude"],
+            self.variables["longitude"],
+            ax=ax,
+            label=label,
+            annotate=annotate,
+            max_points=max_points,
+            **kwargs
+        )
 
     def add_ping_list(self, ping_list: List, progress: bool = False) -> None:
         """
@@ -194,9 +222,13 @@ class PingOverview:
 
         return self.stats[key]["median"]
 
+
 from typing import Dict, List, Union
 
-def get_ping_overview(ping_list: Union[Dict[str, List[float]], List[float]], progress: bool = False) -> Union[Dict[str, Dict[str, Union[float, int]]], 'PingOverview']:
+
+def get_ping_overview(
+    ping_list: Union[Dict[str, List[float]], List[float]], progress: bool = False
+) -> Union[Dict[str, Dict[str, Union[float, int]]], "PingOverview"]:
     """
     Returns a summary of ping statistics for a list of pings.
 
@@ -225,4 +257,3 @@ def get_ping_overview(ping_list: Union[Dict[str, List[float]], List[float]], pro
         return statistics
 
     return PingOverview(ping_list, progress)
-
