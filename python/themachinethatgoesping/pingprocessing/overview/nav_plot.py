@@ -1,14 +1,34 @@
 from collections import defaultdict
+from typing import Tuple
 
 import numpy as np
 
-from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-
 from matplotlib import pyplot as plt
 
+import rasterio.plot as rioplt
+import rasterio as rio
 
-def create_figure(name, aspect="equal", close_plots=True):
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
+
+def create_figure(
+    name: str, aspect: str = "equal", close_plots: bool = True, background_image_path: str = None, **kwargs
+) -> Tuple[plt.Figure, plt.Axes]:
+    """
+    Create a figure with a given name and aspect ratio.
+
+    Parameters:
+        name (str): The name of the figure.
+        aspect (str, optional): The aspect ratio of the figure. Defaults to "equal".
+        close_plots (bool, optional): Whether to close existing plots. Defaults to True.
+        background_image_path (str, optional): Path to the background image that can be opened
+                                               with rastio and contains navigation reference(e.g. geotif).
+                                               Defaults to None.
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        Tuple[plt.Figure, plt.Axes]: The created figure and axes.
+    """
     if close_plots:
         plt.close(name)
     fig = plt.figure(name)
@@ -16,12 +36,18 @@ def create_figure(name, aspect="equal", close_plots=True):
 
     ax = fig.subplots()
 
-    # initialze axis
+    # initialize axis
     ax.grid(True, linestyle="--", color="gray", alpha=0.5)
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
     ax.set_title(name)
     ax.set_aspect(aspect)
+
+    if background_image_path:
+        background_map = rio.open(background_image_path)
+        _kwargs = {"cmap": "Greys_r"}
+        _kwargs.update(kwargs)
+        rioplt.show(background_map, ax=ax, **_kwargs)
 
     return fig, ax
 
