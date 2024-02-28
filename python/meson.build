@@ -22,6 +22,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/split_pings/by_time_blocks.py',
   'themachinethatgoesping/pingprocessing/watercolumn/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/__init__.py',
+  'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramgroup.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramsection.py',
   'themachinethatgoesping/pingprocessing/watercolumn/make_image/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/make_image/make_wci.py',
