@@ -47,9 +47,10 @@ def create_echogram_groups(
     for pnr,p in enumerate(pings):
         ping_time = p.get_timestamp()
         
-        if np.max(get_time_error(echogram_times, ping_time)) > max_time_diff_error or len(echogram_groups[-1]) > max_section_size:
-            echogram_times = []
-            echogram_groups.append(EchogramGroup())
+        if len(echogram_groups[-1]) >= min_num_pings_per_group:
+            if np.max(get_time_error(echogram_times, ping_time)) > max_time_diff_error or len(echogram_groups[-1]) > max_section_size:
+                echogram_times = []
+                echogram_groups.append(EchogramGroup())
 
         echogram_times.append(ping_time)
         echogram_groups[-1].add(p, pnr)
@@ -71,7 +72,7 @@ class EchogramGroup():
         self.resolution = ping.watercolumn.get_sound_speed_at_transducer() * ping.watercolumn.get_sample_interval() * 0.5
 
     def to_tuple(self):
-        return self.pnr, self.resolution, self.pings
+        return np.array(self.pnr), self.resolution, self.pings
 
     def __len__(self):
         return len(self.pings)
