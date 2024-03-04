@@ -275,8 +275,8 @@ class EchogramSection(object):
         raise RuntimeError("ERROR[get_ping_times_unixtimes]: ping times have not been set!")
 
     def get_ping_times_datetimes(self):
-        if self._ping_times_unix:
-            return np.array(map(dt.datetime.fromtimestamp, self._ping_times_unix, dt.timezone.utc))
+        if len(self._ping_times_unix) > 0:
+            return [dt.datetime.fromtimestamp(tmp_t, dt.timezone.utc) for tmp_t in self.get_ping_times_unixtimes()]
             
         raise RuntimeError("ERROR[get_ping_times_datetimes]: ping times have not been set!")
 
