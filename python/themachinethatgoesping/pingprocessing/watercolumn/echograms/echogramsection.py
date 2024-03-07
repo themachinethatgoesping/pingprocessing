@@ -47,6 +47,27 @@ class EchogramSection(object):
         self._interpolator_time_bottom_depth = None
         self._interpolator_time_echosounder_depth = None
 
+    def get_downsampled(self, downsample_factor):
+        echogram_section = EchogramSection(self._data[:,::downsample_factor])
+        
+        if len(self._ping_numbers) > 0:
+            echogram_section.set_ping_numbers(self.get_ping_numbers())
+        if len(self._ping_times_unix) > 0:
+            echogram_section.set_ping_times(self.get_ping_times_unixtimes())
+        if len(self._ping_distances) > 0:
+            echogram_section.set_ping_distances(self.get_ping_distances())
+        if len(self._sample_numbers) > 0:
+            echogram_section.set_sample_numbers(self.get_sample_numbers()[::downsample_factor])
+        if len(self._sample_depths) > 0:
+            echogram_section.set_sample_depths(self.get_sample_depths()[::downsample_factor])
+        if len(self._bottom_depths) > 0:
+            echogram_section.set_bottom_depths(self._bottom_depths, self._bottom_depths_times)
+        if len(self._echosounder_depths) > 0:
+            echogram_section.set_echosounder_depths(self._echosounder_depths, self._echosounder_depths_times)
+        if len(list(self._ping_parameters.keys())) > 0:
+            echogram_section._ping_parameters = self._ping_parameters
+        return echogram_section
+
     # --- plotting ---
     def get_echogram(
         self,
@@ -64,20 +85,23 @@ class EchogramSection(object):
         upper_depth,
         lower_depth,
         depth_times=None,
-        ping_numbers=None,
+        ping_indices=None,
         ping_axis='index', 
         sample_axis='index'):
+
+        if ping_indices is None:
+            ping_indices = self.get_ping_indices()
 
         if depth_times is not None:
             assert len(depth_times) == len(upper_depth), f"ERROR: len(depth_times) [{depth_times}] != len(upper_depth) [{upper_depth}]"
             i_depth_up = ptools.vectorinterpolators.LinearInterpolator(depth_times,upper_depth)
             i_depth_lo = ptools.vectorinterpolators.LinearInterpolator(depth_times,lower_depth)
-            upper_depth = i_depth_up(self.get_ping_times_unixtimes())
-            lower_depth = i_depth_lo(self.get_ping_times_unixtimes())
+            upper_depth = i_depth_up(self.get_ping_times_unixtimes()[ping_indices])
+            lower_depth = i_depth_lo(self.get_ping_times_unixtimes()[ping_indices])
+
 
         assert len(upper_depth) == len(lower_depth), f"ERROR: len(upper_depth) [{upper_depth}] != len(lower_depth) [{lower_depth}]"
-        if ping_numbers is not None:
-            assert len(ping_numbers) == len(lower_depth), f"ERROR: len(ping_numbers) [{ping_numbers}] != len(lower_depth) [{lower_depth}]"      
+        assert len(ping_indices) == len(lower_depth), f"ERROR: len(ping_indices) [{ping_indices}] != len(lower_depth) [{lower_depth}]"      
 
         upper_sn_bound = self.sample_depth_to_sample_index(upper_depth)
         lower_sn_bound = self.sample_depth_to_sample_index(lower_depth)
@@ -92,28 +116,20 @@ class EchogramSection(object):
         upper_sn_bound = upper_sn_bound - min_sn
         lower_sn_bound = lower_sn_bound - min_sn
 
-        if ping_numbers is None:
-            echo_filtered = self.get_data()[:,min_sn:max_sn].copy()
-            extent_filtered = self.get_extent(
-                ping_axis=ping_axis,
-                sample_axis=sample_axis,
-                min_sample_index=min_sn,
-                max_sample_index=max_sn)
-        else:
-            echo_filtered = (self.get_data()[:,min_sn:max_sn])[ping_numbers].copy()
-            extent_filtered = self.get_extent(
-                ping_axis=ping_axis,
-                sample_axis=sample_axis,
-                min_sample_index=min_sn,
-                max_sample_index=max_sn,
-                min_ping_index = ping_numbers[0], 
-                max_ping_index = ping_numbers[-1])
+        echo_filtered = (self.get_data()[:,min_sn:max_sn])[ping_indices].copy()
+        extent_filtered = self.get_extent(
+            ping_axis=ping_axis,
+            sample_axis=sample_axis,
+            min_sample_index=min_sn,
+            max_sample_index=max_sn,
+            min_ping_index = ping_indices[0], 
+            max_ping_index = ping_indices[-1])
         
         mask = \
             np.greater.outer(upper_sn_bound, np.arange(echo_filtered.shape[1])) \
             | np.less.outer(lower_sn_bound, np.arange(echo_filtered.shape[1]))
 
-        #print(len(ping_numbers),mask.shape,echo_filtered.shape,upper_sn_bound.shape,lower_sn_bound.shape,np.min(upper_sn_bound),np.max(upper_sn_bound),np.min(lower_sn_bound),np.max(lower_sn_bound),np.max(upper_sn_bound>=lower_sn_bound))
+        #print(len(ping_indices),mask.shape,echo_filtered.shape,upper_sn_bound.shape,lower_sn_bound.shape,np.min(upper_sn_bound),np.max(upper_sn_bound),np.min(lower_sn_bound),np.max(lower_sn_bound),np.max(upper_sn_bound>=lower_sn_bound))
         
         echo_filtered[mask] = np.nan
 
