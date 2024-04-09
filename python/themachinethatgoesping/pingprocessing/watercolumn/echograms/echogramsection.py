@@ -116,7 +116,7 @@ class EchogramSection(object):
         upper_sn_bound = upper_sn_bound - min_sn
         lower_sn_bound = lower_sn_bound - min_sn
 
-        echo_filtered = (self.get_data()[:,min_sn:max_sn])[ping_indices].copy()
+        echo_filtered = (self.get_data()[:,min_sn:max_sn+1])[ping_indices].copy()
         extent_filtered = self.get_extent(
             ping_axis=ping_axis,
             sample_axis=sample_axis,
