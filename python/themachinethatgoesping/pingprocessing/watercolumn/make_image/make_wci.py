@@ -11,7 +11,7 @@ def make_wci(
     ping: es.filetemplates.I_Ping,
     horizontal_res: int, 
     from_bottom_xyz: bool = True,
-    compute_av: bool = True,
+    wci_value: str = 'av',
     mp_cores: int = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
     
     """Create a water column image from a ping.
@@ -34,6 +34,11 @@ def make_wci(
         If True, attempt to correct the beam launch angles using the ping's bottom detection (if existent).
         If False, do not attempt to correct the beam launch angles.
         Defaults to True.
+    wci_value : str, optional
+        The value to use for the water column image. Can be:
+        - 'av' for uncalibrated volume scattering strength (default)
+        - 'sv' for calibrated volume scattering strength (if available)
+        - 'amp' for raw amplitude values
     mp_cores : int, optional
         The number of cores to use for parallel processing.
         Defaults to 1.
@@ -80,10 +85,16 @@ def make_wci(
     si = np.array(bisi.sample_numbers )
 
     # get amplitudes for each pixel
-    if compute_av:
-        wci = ping.watercolumn.get_av()[bi,si]
-    else:
-        wci = ping.watercolumn.get_amplitudes()[bi,si]
+    match wci_value:
+        case 'av':
+            wci = ping.watercolumn.get_av()[bi,si]
+        case 'amp':
+            wci = ping.watercolumn.get_amplitudes()[bi,si]
+        case 'sv':
+            wci = ping.watercolumn.get_sv()[bi,si]
+        case _:
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
+
     wci [bi==np.nanmin(bi)] = np.nan
     wci [si==0] = np.nan
     wci [bi==np.nanmax(bi)] = np.nan
@@ -102,7 +113,7 @@ def make_wci_dual_head(
     ping2: es.filetemplates.I_Ping, 
     horizontal_res: int, 
     from_bottom_xyz: bool = False,
-    compute_av: bool = True,
+    wci_value: str = 'av',
     mp_cores: int = 1) -> Tuple[np.ndarray, Tuple[float, float, float, float]]: 
     """
     Create a water column image from two pings.
@@ -122,7 +133,12 @@ def make_wci_dual_head(
         Number of horizontal pixels in the image.
     from_bottom_xyz : bool, optional
         Attempt to correct the beam launch angles using the pings' bottom detection (if available).
-        Default is False.
+        Default is False.    
+    wci_value : str, optional
+        The value to use for the water column image. Can be:
+        - 'av' for uncalibrated volume scattering strength (default)
+        - 'sv' for calibrated volume scattering strength (if available)
+        - 'amp' for raw amplitude values
     mp_cores : int, optional
         Number of cores to use for parallel processing. Default is 1.
 
@@ -180,18 +196,25 @@ def make_wci_dual_head(
 
     # Get amplitudes for each pixel
     # TODO: speed up by only reading the beams that are necessary
-    if compute_av:
-        wci1 = ping1.watercolumn.get_av()[bi1,si1]
-    else:
-        wci1 = ping1.watercolumn.get_amplitudes()[bi1,si1]
-    wci1 [bi1==np.nanmin(bi1)] = np.nan
-    wci1 [si1==0] = np.nan
+    
+    # get amplitudes for each pixel
+    match wci_value:
+        case 'av':
+            wci1 = ping1.watercolumn.get_av()[bi1,si1]
+            wci2 = ping1.watercolumn.get_av()[bi2,si2]
+        case 'amp':
+            wci1 = ping.watercolumn.get_amplitudes()[bi1,si1]
+            wci2 = ping.watercolumn.get_amplitudes()[bi2,si2]
+        case 'sv':
+            wci1 = ping.watercolumn.get_sv()[bi1,si1]
+            wci2 = ping.watercolumn.get_sv()[bi2,si2]
+        case _:
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
 
-    if compute_av:
-        wci2 = ping2.watercolumn.get_av()[bi2,si2]
-    else:
-        wci2 = ping2.watercolumn.get_amplitudes()[bi2,si2]
+    wci1 [bi1==np.nanmin(bi1)] = np.nan
     wci2 [bi2==np.nanmax(bi2)] = np.nan
+
+    wci1 [si1==0] = np.nan
     wci2 [si2==0] = np.nan
 
     # Compute the extent
@@ -208,7 +231,7 @@ def make_wci_stack(
     horizontal_res: int, 
     linear_mean: bool = True,
     from_bottom_xyz: bool = False,
-    compute_av: bool = True,
+    wci_value: str = 'av',
     progress_bar = None,
     mp_cores: int = 1):
     
@@ -232,6 +255,11 @@ def make_wci_stack(
         tqdm style progress bar to use, by default None.
     from_bottom_xyz : bool, optional
         Attempt to correct the beam launch angles using the ping's bottom detection (if existent), by default True.
+    wci_value : str, optional
+        The value to use for the water column image. Can be:
+        - 'av' for uncalibrated volume scattering strength (default)
+        - 'sv' for calibrated volume scattering strength (if available)
+        - 'amp' for raw amplitude values
     mp_cores : int, optional
         Number of cores to use for parallel processing, by default 1.
 
@@ -315,10 +343,16 @@ def make_wci_stack(
         wci = np.empty_like(bi,dtype=np.float32)
         wci.fill(np.nan)
                 
-        if compute_av:
-            wci[use==1] = ping.watercolumn.get_av()[bi[use==1],si[use==1]]
-        else:
-            wci[use==1] = ping.watercolumn.get_amplitudes()[bi[use==1],si[use==1]]
+        # get amplitudes for each pixel
+        match wci_value:
+            case 'av':
+                wci[use==1] = ping.watercolumn.get_av()[bi[use==1],si[use==1]]
+            case 'amp':
+                wci[use==1] = ping.watercolumn.get_amplitudes()[bi[use==1],si[use==1]]
+            case 'sv':
+                wci[use==1] = ping.watercolumn.get_sv()[bi[use==1],si[use==1]]
+            case _:
+                raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
             
         # apply linear mean if specified
         if linear_mean:
