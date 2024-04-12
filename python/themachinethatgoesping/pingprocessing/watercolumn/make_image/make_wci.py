@@ -109,8 +109,7 @@ def make_wci(
     return wci, tuple(extent)
 
 def make_wci_dual_head(
-    ping1: es.filetemplates.I_Ping, 
-    ping2: es.filetemplates.I_Ping, 
+    ping_group: es.filetemplates.I_Ping, 
     horizontal_res: int, 
     from_bottom_xyz: bool = False,
     wci_value: str = 'av',
@@ -125,10 +124,8 @@ def make_wci_dual_head(
 
     Parameters
     ----------
-    ping1 : es.filetemplates.I_Ping
-        Left ping to create image from.
-    ping2 : es.filetemplates.I_Ping
-        Right ping to create image from.
+    ping_group : 
+        dict with two pings to stack
     horizontal_res : int
         Number of horizontal pixels in the image.
     from_bottom_xyz : bool, optional
@@ -148,6 +145,16 @@ def make_wci_dual_head(
         A tuple containing the water column image as a numpy array and the extent of the image for plotting.
         The extent is a tuple of four floats: (xmin, xmax, ymax, ymin).
     """
+
+    pings = list(ping_group.values())
+    if len(pings) == 1:
+        return make_wci(pings[0], horizontal_res, from_bottom_xyz, wci_value, mp_cores)
+    if len(pings) != 2:
+        raise ValueError("ping_group must contain exactly one or two pings.")
+
+    ping1, ping2 = pings
+    if (np.nanmedian(ping1.watercolumn.get_beam_crosstrack_angles()) < np.nanmedian(ping2.watercolumn.get_beam_crosstrack_angles())):
+        ping1, ping2 = ping2, ping1
 
     # Get sensor configurations
     sc1 = ping1.get_sensor_configuration()
@@ -201,13 +208,13 @@ def make_wci_dual_head(
     match wci_value:
         case 'av':
             wci1 = ping1.watercolumn.get_av()[bi1,si1]
-            wci2 = ping1.watercolumn.get_av()[bi2,si2]
+            wci2 = ping2.watercolumn.get_av()[bi2,si2]
         case 'amp':
-            wci1 = ping.watercolumn.get_amplitudes()[bi1,si1]
-            wci2 = ping.watercolumn.get_amplitudes()[bi2,si2]
+            wci1 = ping1.watercolumn.get_amplitudes()[bi1,si1]
+            wci2 = ping2.watercolumn.get_amplitudes()[bi2,si2]
         case 'sv':
-            wci1 = ping.watercolumn.get_sv()[bi1,si1]
-            wci2 = ping.watercolumn.get_sv()[bi2,si2]
+            wci1 = ping1.watercolumn.get_sv()[bi1,si1]
+            wci2 = ping2.watercolumn.get_sv()[bi2,si2]
         case _:
             raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
 
