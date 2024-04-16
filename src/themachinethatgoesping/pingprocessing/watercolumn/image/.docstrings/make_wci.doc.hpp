@@ -1,4 +1,4 @@
-//sourcehash: 066bceb6d1fc55f5040876744ca399cac5325ca9f2d31521296f5d7f0a9db55d
+//sourcehash: f053c2f903eb29c1af6f809e4988c4e49b82e3f449b5395881af324425bbc25b
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -38,7 +38,7 @@
 #endif
 
 
-static const char *__doc_themachinethatgoesping_pingprocessing_watercolumn_wci_make_wci = R"doc()doc";
+static const char *__doc_themachinethatgoesping_pingprocessing_watercolumn_image_make_wci = R"doc()doc";
 
 #if defined(__GNUG__)
 #pragma GCC diagnostic pop

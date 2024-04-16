@@ -11,8 +11,7 @@ sources = [
 ]
 
 headers = [
-  'watercolumn/wci/make_image.hpp',
-  'watercolumn/wci/.docstrings/make_image.doc.hpp',
+  'watercolumn/image/make_wci.hpp',
 ]
 
 # -- targets --

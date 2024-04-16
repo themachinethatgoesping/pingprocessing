@@ -2,5 +2,5 @@
 from . import helper
 
 # modules
-from . import wci
+from . import image
 from . import echograms

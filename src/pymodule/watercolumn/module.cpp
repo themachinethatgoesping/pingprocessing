@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "module.hpp"
-#include "wci/module.hpp"
+#include "image/module.hpp"
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
@@ -21,7 +21,7 @@ void init_m_watercolumn(py::module& m)
     // module description
     auto subm = m.def_submodule("watercolumn", "Functions for processing watercolumn data.");
 
-    py_wci::init_m_wci(subm);
+    py_image::init_m_image(subm);
 }
 
 }

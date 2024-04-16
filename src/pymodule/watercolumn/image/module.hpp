@@ -10,10 +10,10 @@ namespace pingprocessing {
 namespace pymodule {
 
 namespace py_watercolumn {
-namespace py_wci {
+namespace py_image {
 
 // -- initialize module --
-void init_m_wci(pybind11::module& m);
+void init_m_image(pybind11::module& m);
 
 }
 }

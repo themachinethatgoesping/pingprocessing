@@ -23,7 +23,7 @@
 namespace themachinethatgoesping {
 namespace pingprocessing {
 namespace watercolumn {
-namespace wci {
+namespace image {
 
 
 xt::xtensor<float, 2> make_wci(
