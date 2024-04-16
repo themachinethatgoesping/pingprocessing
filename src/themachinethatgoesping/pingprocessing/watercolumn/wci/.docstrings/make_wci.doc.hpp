@@ -1,4 +1,4 @@
-//sourcehash: c42c4c0ce3db6a7e495d2b935b95e8cdf21ff97a81b587ddb6640115442c5971
+//sourcehash: 066bceb6d1fc55f5040876744ca399cac5325ca9f2d31521296f5d7f0a9db55d
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -37,6 +37,8 @@
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 
+
+static const char *__doc_themachinethatgoesping_pingprocessing_watercolumn_wci_make_wci = R"doc()doc";
 
 #if defined(__GNUG__)
 #pragma GCC diagnostic pop

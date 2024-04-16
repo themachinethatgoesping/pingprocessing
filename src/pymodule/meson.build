@@ -8,6 +8,8 @@ module_name = 'pingprocessing_cppy'
 # -- sources
 sources = [
   'module.cpp',
+  'watercolumn/module.cpp',
+  'watercolumn/wci/module.cpp',
 ]
 
 # define python module
