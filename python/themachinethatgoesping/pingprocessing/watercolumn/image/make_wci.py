@@ -7,6 +7,117 @@ import themachinethatgoesping.algorithms.geoprocessing as gp
 
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
 
+def make_wci2(
+    ping: es.filetemplates.I_Ping,
+    horizontal_res: int, 
+    from_bottom_xyz: bool = True,
+    wci_value: str = 'av',
+    mp_cores: int = True) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
+    
+    """Create a water column image from a ping.
+
+    This function creates a water column image from a ping object using the
+    get_bottom_directions_bottom or get_bottom_directions_wci function from the
+    mi_hlp module, depending on the value of the from_bottom_xyz parameter.
+
+    Note: this function is an approximation (for performance reasons). As such it:
+    - uses nearest neighbor instead of real interpolation
+    - uses backtracing instead of raytracing and assumes a constant sound velocity profile
+
+    Parameters
+    ----------
+    ping : es.filetemplates.I_Ping
+        The ping object to create the image from.
+    horizontal_res : int
+        The number of horizontal pixels in the resulting image.
+    from_bottom_xyz : bool, optional
+        If True, attempt to correct the beam launch angles using the ping's bottom detection (if existent).
+        If False, do not attempt to correct the beam launch angles.
+        Defaults to True.
+    wci_value : str, optional
+        The value to use for the water column image. Can be:
+        - 'av' for uncalibrated volume scattering strength (default)
+        - 'sv' for calibrated volume scattering strength (if available)
+        - 'amp' for raw amplitude values
+    mp_cores : int, optional
+        The number of cores to use for parallel processing.
+        Defaults to 1.
+
+    Returns
+    -------
+    Tuple[np.ndarray, Tuple[float, float, float, float]]
+        A tuple containing the resulting water column image and the extent of the image (in meters, for plotting).
+    """
+    from time import time
+    t = []
+    t.append(time()) # 1
+    # get sensor configuration
+    sc = ping.get_sensor_configuration()
+    pingoff = sc.get_target("Transducer")
+    posoff = sc.get_position_source()
+    geolocation = ping.get_geolocation()
+
+    t.append(time()) # 2
+    # get bottom positions/directions/sample numbers
+    if from_bottom_xyz:
+        xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_bottom(ping)
+    else:
+        xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_wci(ping)
+
+    t.append(time()) # 3
+    # compute limits of the created image
+    hmin = 1.1 * np.nanmin(xyz.y)
+    hmax = 1.1 * np.nanmax(xyz.y)
+    vmin = geolocation.z
+    vmax = np.nanmax(xyz.z)
+    vmax += (vmax-vmin)*0.1
+
+    res = (hmax-hmin)/horizontal_res   
+
+    # build array with backtraced positions (beam angle, range from transducer)
+    y = np.arange(hmin,hmax+res,res)
+    z = np.arange(vmin,vmax+res,res)
+
+    t.append(time()) # 4
+    bt = gp.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
+
+    t.append(time()) # 5
+    sd_grid = bt.backtrace_image(y,z, mp_cores = mp_cores)
+
+    t.append(time()) # 6
+    # get amplitudes for each pixel
+    match wci_value:
+        case 'av':
+            wci = ping.watercolumn.get_av()
+        case 'amp':
+            wci = ping.watercolumn.get_amplitudes()
+        case 'sv':
+            wci = ping.watercolumn.get_sv()
+        case _:
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
+
+    t.append(time()) # 7
+    # lookup beam/sample numbers for each pixel
+    maxsn = ping.watercolumn.get_number_of_samples_per_beam()-1
+    wci = bt.lookup(wci,bottom_directions,bottom_direction_sample_numbers, maxsn,sd_grid,mp_cores=mp_cores)
+
+    #wci [bi==np.nanmin(bi)] = np.nan
+    #wci [si==0] = np.nan
+    #wci [bi==np.nanmax(bi)] = np.nan
+
+    t.append(time()) # 8
+    # compute the extent
+    extent = [
+        np.min(y)-res*0.5,np.max(y)+res*0.5,
+        np.max(z)+res*0.5,np.min(z)-res*0.5
+    ]
+
+    for i in range(1,len(t)):
+        print(f"Time {i}: {t[i]-t[i-1]}, {t[i]-t[0]}")
+
+    # return the resulting water column image and the extent of the image
+    return wci, tuple(extent)
+
 def make_wci(
     ping: es.filetemplates.I_Ping,
     horizontal_res: int, 
@@ -48,19 +159,23 @@ def make_wci(
     Tuple[np.ndarray, Tuple[float, float, float, float]]
         A tuple containing the resulting water column image and the extent of the image (in meters, for plotting).
     """
-
+    from time import time
+    t = []
+    t.append(time()) # 1
     # get sensor configuration
     sc = ping.get_sensor_configuration()
     pingoff = sc.get_target("Transducer")
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
 
+    t.append(time()) # 2
     # get bottom positions/directions/sample numbers
     if from_bottom_xyz:
         xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_bottom(ping)
     else:
         xyz, bottom_directions, bottom_direction_sample_numbers = mi_hlp.get_bottom_directions_wci(ping)
 
+    t.append(time()) # 3
     # compute limits of the created image
     hmin = 1.1 * np.nanmin(xyz.y)
     hmax = 1.1 * np.nanmax(xyz.y)
@@ -71,19 +186,24 @@ def make_wci(
     res = (hmax-hmin)/horizontal_res   
 
     # build array with backtraced positions (beam angle, range from transducer)
-    y = np.arange(hmin,hmax,res)
-    z = np.arange(vmin,vmax,res)
+    y = np.arange(hmin,hmax+res,res)
+    z = np.arange(vmin,vmax+res,res)
 
+    t.append(time()) # 4
     bt = gp.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
 
+    t.append(time()) # 5
     sd_grid = bt.backtrace_image(y,z, mp_cores = mp_cores)
 
+    t.append(time()) # 6
     # lookup beam/sample numbers for each pixel
     maxsn = ping.watercolumn.get_number_of_samples_per_beam()-1
     bisi = bt.lookup_indices(bottom_directions,bottom_direction_sample_numbers, maxsn,sd_grid)
     bi = np.array(bisi.beam_numbers)
-    si = np.array(bisi.sample_numbers )
+    si = np.array(bisi.sample_numbers)
 
+
+    t.append(time()) # 7
     # get amplitudes for each pixel
     match wci_value:
         case 'av':
@@ -95,15 +215,19 @@ def make_wci(
         case _:
             raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
 
-    wci [bi==np.nanmin(bi)] = np.nan
-    wci [si==0] = np.nan
-    wci [bi==np.nanmax(bi)] = np.nan
+    #wci [bi==np.nanmin(bi)] = np.nan
+    #wci [si==0] = np.nan
+    #wci [bi==np.nanmax(bi)] = np.nan
 
+    t.append(time()) # 8
     # compute the extent
     extent = [
         np.min(y)-res*0.5,np.max(y)+res*0.5,
         np.max(z)+res*0.5,np.min(z)-res*0.5
     ]
+
+    for i in range(1,len(t)):
+        print(f"Time {i}: {t[i]-t[i-1]}, {t[i]-t[0]}")
 
     # return the resulting water column image and the extent of the image
     return wci, tuple(extent)
@@ -313,8 +437,8 @@ def make_wci_stack(
     res = (hmax-hmin)/horizontal_res   
     
     # build array with backtraced positions (beam angle, range from transducer)
-    y = np.arange(hmin,hmax,res)
-    z = np.arange(vmin,vmax,res)
+    y = np.arange(hmin,hmax+res,res)
+    z = np.arange(vmin,vmax+res,res)
     
     WCI=None
     NUM=None

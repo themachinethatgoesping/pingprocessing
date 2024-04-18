@@ -49,7 +49,7 @@ def get_bottom_directions_wci(
     bottomdirections.two_way_travel_time = bottom_direction_sample_numbers * ping.watercolumn.get_sample_interval()
 
     # TODO: Get sound velocity from SVP.
-    c = 1450
+    c = ping.watercolumn.get_sound_speed_at_transducer()
 
     # Raytrace to bottom assuming constant sound velocity profile.
     rt = gp.raytracers.RTConstantSVP(geolocation, c)
@@ -87,7 +87,7 @@ def get_bottom_directions_bottom(ping: es.filetemplates.I_Ping) -> (gp.datastruc
     
     bt = gp.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
     bottom_directions = bt.backtrace_points(xyz)
-    bottom_direction_sample_numbers = ping.watercolumn.get_bottom_sample_numbers()
+    bottom_direction_sample_numbers = ping.watercolumn.get_bottom_range_samples()
     
     return xyz, bottom_directions, bottom_direction_sample_numbers
 
