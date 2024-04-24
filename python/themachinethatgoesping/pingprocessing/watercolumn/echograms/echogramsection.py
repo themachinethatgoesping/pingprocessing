@@ -4,10 +4,12 @@ from typing import Tuple
 from collections import defaultdict
 import datetime as dt
 
+from matplotlib import pyplot as plt
 import matplotlib as mpl
 import matplotlib.dates as mdates
 
 import themachinethatgoesping.tools as ptools
+import themachinethatgoesping.pingprocessing.core as pcore
 
 class EchogramSection(object):
     
@@ -204,6 +206,44 @@ class EchogramSection(object):
     @property
     def shape(self):
         return self._data.shape
+
+    def plot(
+        self, 
+        ping_axis = 'time', 
+        sample_axis = 'depth',
+        ax = None,
+        fig_size = (15,4),
+        name = 'Echogram',
+        colorbar = True,
+        plot_bottom = True,
+        **kwargs):
+    
+        image,extent = self.get_echogram(ping_axis=ping_axis, sample_axis=sample_axis)
+        
+        plot_args = {
+        "vmin" : np.nanquantile(image, 0.05),
+        "vmax" : np.nanquantile(image, 0.95),
+        "aspect" : "auto",
+        "cmap" : "YlGnBu_r"
+        }
+        plot_args.update(kwargs)
+
+        if ax is None:
+            fig,ax = pcore.helper.create_figure(name)
+            fig.set_size_inches(15,4)
+            pcore.helper.set_ax_timeformat(ax)
+            
+        mapable = ax.imshow(image.transpose(), extent = extent, **plot_args)
+
+        if plot_bottom and len(self._bottom_depths) > 0:
+            times = self.get_ping_times_unixtimes()
+            bottom = self.bottom_depth_per_ping_time(times)
+            ax.plot(self.get_ping_times_datetimes(), bottom, color='black')
+
+        if colorbar:
+            ax.get_figure().colorbar(mapable,ax=ax)
+
+        return ax.get_figure(),ax
         
     # --- setters ---
     # def set_pings(self, pings):
