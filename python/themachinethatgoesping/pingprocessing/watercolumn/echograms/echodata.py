@@ -472,9 +472,9 @@ class EchoData:
 
         self.set_y_coordinates("Range (m)", y_coordinates, y_res, self.min_ranges, self.max_ranges)
 
-    def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_pings=np.nan):
+    def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_steps=np.nan):
 
-        self.x_kwargs = {"min_ping_nr": min_ping_nr, "max_ping_nr": max_ping_nr, "max_pings": max_pings}
+        self.x_kwargs = {"min_ping_nr": min_ping_nr, "max_ping_nr": max_ping_nr, "max_steps": max_steps}
         self.x_axis_function = self.set_x_axis_ping_nr
 
         if not np.isfinite(max_ping_nr):
@@ -488,8 +488,8 @@ class EchoData:
         if npings > len(self.wc_data):
             npings = len(self.wc_data)
 
-        if npings > max_pings:
-            npings = max_pings
+        if npings > max_steps:
+            npings = max_steps
 
         x_coordinates = np.linspace(min_ping_nr, max_ping_nr, npings)
         if npings > 1:
@@ -505,7 +505,7 @@ class EchoData:
         max_timestamp=np.nan,
         time_resolution=np.nan,
         time_interpolation_limit=np.nan,
-        max_timesteps=20000,
+        max_steps=20000,
     ):
 
         self.x_kwargs = {
@@ -513,7 +513,7 @@ class EchoData:
             "max_timestamp": max_timestamp,
             "time_resolution": time_resolution,
             "time_interpolation_limit": time_interpolation_limit,
-            "max_timesteps": max_timesteps,
+            "max_steps": max_steps,
         }
         self.x_axis_function = self.set_x_axis_ping_time
 
@@ -541,19 +541,19 @@ class EchoData:
 
         try:
             arange = False
-            if (max_timestamp + time_resolution - min_timestamp) / time_resolution + 1 <= max_timesteps:
+            if (max_timestamp + time_resolution - min_timestamp) / time_resolution + 1 <= max_steps:
                 x_coordinates = np.arange(min_timestamp, max_timestamp + time_resolution, time_resolution)
             else:
                 arange = True
 
-            if arange or len(x_coordinates) > max_timesteps:
-                x_coordinates = np.linspace(min_timestamp, max_timestamp, max_timesteps)
-                if max_timesteps > 1:
+            if arange or len(x_coordinates) > max_steps:
+                x_coordinates = np.linspace(min_timestamp, max_timestamp, max_steps)
+                if max_steps > 1:
                     time_resolution = x_coordinates[1] - x_coordinates[0]
                 else:
                     time_resolution = 1
         except Exception as e:
-            message = f"{e}\n -min_timestamp: {min_timestamp}\n -max_timestamp: {max_timestamp}\n -time_resolution: {time_resolution}\n -max_timesteps: {max_timesteps}"
+            message = f"{e}\n -min_timestamp: {min_timestamp}\n -max_timestamp: {max_timestamp}\n -time_resolution: {time_resolution}\n -max_steps: {max_steps}"
 
             raise RuntimeError(message)
 
@@ -565,7 +565,7 @@ class EchoData:
         max_ping_time=np.nan,
         time_resolution=np.nan,
         time_interpolation_limit=np.nan,
-        max_timesteps=20000,
+        max_steps=20000,
     ):
 
         x_kwargs = {
@@ -573,7 +573,7 @@ class EchoData:
             "max_ping_time": max_ping_time,
             "time_resolution": time_resolution,
             "time_interpolation_limit": time_interpolation_limit,
-            "max_timesteps": max_timesteps,
+            "max_steps": max_steps,
         }
 
         if isinstance(min_ping_time, dt.datetime):
@@ -593,7 +593,7 @@ class EchoData:
             max_timestamp=max_ping_time,
             time_resolution=time_resolution,
             time_interpolation_limit=time_interpolation_limit,
-            max_timesteps=max_timesteps,
+            max_steps=max_steps,
         )
 
         self.x_extent[0] = dt.datetime.fromtimestamp(self.x_extent[0], self.time_zone)
