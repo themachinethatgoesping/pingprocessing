@@ -68,7 +68,7 @@ class EchoData:
         Ping.pingprocessing.core.asserts.assert_length("add_ping_param", self.wc_data, [param])
         self.param[name] = reference, param
 
-    def get_ping_param(self, name, use_x_coordinates = True):
+    def get_ping_param(self, name, use_x_coordinates=True):
         self.reinit()
         assert name in self.param.keys(), f"ERROR[get_ping_param]: name '{name}' not registered"
         # x_coordinates = self.indice_to_x_coordinate_interpolator(np.arange(len(self.wc_data)))
@@ -312,8 +312,31 @@ class EchoData:
                 message = f"{e}\n- nr {nr}\n- y1 {y1}\n -y2 {y2}\n -len(wci) {len(wci)}"
                 raise RuntimeError(message)
 
-    def get_filtered_by_y_extent(self, vec_min_y, vec_max_y):
-        Ping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", self.wc_data, [vec_min_y, vec_max_y])
+    def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
+        Ping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+
+        # convert datetimes to timestamps
+        if isinstance(vec_x_val[0], dt.datetime):
+            vec_x_val = [x.timestamp() for x in vec_x_val]
+
+        # convert to numpy arrays
+        vec_x_val = np.array(vec_x_val)
+        vec_min_y = np.array(vec_min_y)
+        vec_max_y = np.array(vec_max_y)
+
+        # filter nans and infs
+        arg = np.where(np.isfinite(vec_min_y))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
+        arg = np.where(np.isfinite(vec_max_y))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
+
+        # convert to to represent indices
+        vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y)(self.vec_x_val)
+        vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y)(self.vec_x_val)
 
         wc_data = [np.empty(0) for _ in self.wc_data]
         min_r = np.empty(len(self.wc_data), dtype=np.float32)
@@ -452,7 +475,7 @@ class EchoData:
 
         if not np.isfinite(max_ping_nr):
             max_ping_nr = np.max(self.ping_numbers)
-            
+
         if not np.isfinite(max_ping_nr):
             max_ping_nr = np.max(self.ping_numbers)
 
