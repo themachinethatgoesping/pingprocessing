@@ -15,14 +15,14 @@ def create_figure(name: str, return_ax: bool = True):
         return fig, fig.subplots()
     return fig
 
-def set_ax_timeformat(ax, timeformat = "%d-%m-%Y %H:%M:%S"):
+def set_ax_timeformat(ax, timeformat = "%d-%m-%Y %H:%M:%S", rotation = 10):
     if not hasattr(ax, '__iter__'):
         ax = [ax]
     
     for a in ax:
         a.xaxis.set_major_formatter(mdates.DateFormatter(timeformat))
         a.xaxis.set_major_locator(mdates.AutoDateLocator())
-        a.tick_params(axis='x', rotation=30)
+        a.tick_params(axis='x', rotation=rotation)
 
 # 
 def clear_memory():
