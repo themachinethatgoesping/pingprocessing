@@ -68,7 +68,7 @@ class EchoData:
         Ping.pingprocessing.core.asserts.assert_length("add_ping_param", self.wc_data, [param])
         self.param[name] = reference, param
 
-    def get_ping_param(self, name, use_x_coordinates=True):
+    def get_ping_param(self, name, use_x_coordinates=False):
         self.reinit()
         assert name in self.param.keys(), f"ERROR[get_ping_param]: name '{name}' not registered"
         # x_coordinates = self.indice_to_x_coordinate_interpolator(np.arange(len(self.wc_data)))
@@ -325,6 +325,10 @@ class EchoData:
         vec_max_y = np.array(vec_max_y)
 
         # filter nans and infs
+        arg = np.where(np.isfinite(vec_x_val))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
         arg = np.where(np.isfinite(vec_min_y))[0]
         vec_min_y = vec_min_y[arg]
         vec_max_y = vec_max_y[arg]
