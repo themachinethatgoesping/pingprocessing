@@ -61,12 +61,31 @@ class EchoData:
         self.has_depths = True
         self.initialized = False
 
-    def add_ping_param(self, name, reference, param):
+    def add_ping_param(self, name, reference, vec_x_val, vec_y_val):
         Ping.pingprocessing.core.asserts.assert_valid_argument(
             "add_ping_param", reference, ["Sample number", "Depth (m)", "Range (m)"]
         )
-        Ping.pingprocessing.core.asserts.assert_length("add_ping_param", self.wc_data, [param])
-        self.param[name] = reference, param
+
+        # convert datetimes to timestamps
+        if isinstance(vec_x_val[0], dt.datetime):
+            vec_x_val = [x.timestamp() for x in vec_x_val]
+
+        # convert to numpy arrays
+        vec_x_val = np.array(vec_x_val)
+        vec_y_val = np.array(vec_y_val)
+
+        # filter nans and infs
+        arg = np.where(np.isfinite(vec_x_val))[0]
+        vec_x_val = vec_x_val[arg]
+        vec_y_val = vec_y_val[arg]
+        arg = np.where(np.isfinite(vec_y_val))[0]
+        vec_x_val = vec_x_val[arg]
+        vec_y_val = vec_y_val[arg]
+
+        # convert to to represent indices
+        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(self.vec_x_val)
+
+        self.param[name] = reference, vec_y_val
 
     def get_ping_param(self, name, use_x_coordinates=False):
         self.reinit()
@@ -139,12 +158,15 @@ class EchoData:
         max_r = np.empty(len(pings), dtype=np.float32)
         min_d = np.empty(len(pings), dtype=np.float32)
         max_d = np.empty(len(pings), dtype=np.float32)
-        bottom_d = np.empty(len(pings), dtype=np.float32)
-        minslant_d = np.empty(len(pings), dtype=np.float32)
         times = np.empty(len(pings), dtype=np.float64)
-        echosounder_z = np.empty(len(pings), dtype=np.float32)
 
-        for arg in [min_r, max_r, min_d, max_d, bottom_d, minslant_d, times, echosounder_z]:
+        bottom_d_times = []
+        bottom_d = []
+        minslant_d = []
+        echosounder_d_times = []
+        echosounder_d = []
+
+        for arg in [min_r, max_r, min_d, max_d, times]:
             arg.fill(np.nan)
 
         for nr, ping in enumerate(tqdm(pings, disable=(not verbose), delay=1)):
@@ -174,7 +196,9 @@ class EchoData:
             max_r[nr] = np.max(ping.watercolumn.get_number_of_samples_per_beam(sel)) * range_res + min_r[nr]
             min_d[nr] = z + min_r[nr] * angle_factor
             max_d[nr] = z + max_r[nr] * angle_factor
-            echosounder_z[nr] = z
+
+            echosounder_d_times.append(times[nr])
+            echosounder_d.append(z)
 
             if max_d[nr] > 6000:
                 print(f"ERROR [{nr}], r1{min_r[nr]}, r1{max_r[nr]}, d1{min_d[nr]}, d1{max_d[nr]}", z, angle_factor)
@@ -190,8 +214,9 @@ class EchoData:
                     md = mr + z
                     # bd = minslant_d
 
-                bottom_d[nr] = bd
-                minslant_d[nr] = md
+                bottom_d_times.append(times[nr])
+                bottom_d.append(bd)
+                minslant_d.append(md)
 
             match wci_value:
                 case "av":
@@ -219,9 +244,11 @@ class EchoData:
         data = cls(wc_data, times)
         data.set_range_extent(min_r, max_r)
         data.set_depth_extent(min_d, max_d)
-        data.add_ping_param("bottom", "Depth (m)", bottom_d)
-        data.add_ping_param("minslant", "Depth (m)", minslant_d)
-        data.add_ping_param("echosounder", "Depth (m)", echosounder_z)
+        if len(bottom_d) > 0:
+            data.add_ping_param("bottom", "Depth (m)", bottom_d_times, bottom_d)
+            data.add_ping_param("minslant", "Depth (m)", bottom_d_times, minslant_d)
+        if len(echosounder_d) > 0:
+            data.add_ping_param("echosounder", "Depth (m)", echosounder_d_times, echosounder_d)
 
         data.verbose = verbose
         return data
@@ -339,8 +366,8 @@ class EchoData:
         vec_x_val = vec_x_val[arg]
 
         # convert to to represent indices
-        vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y)(self.vec_x_val)
-        vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y)(self.vec_x_val)
+        vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+        vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
 
         wc_data = [np.empty(0) for _ in self.wc_data]
         min_r = np.empty(len(self.wc_data), dtype=np.float32)
