@@ -61,9 +61,12 @@ class EchoData:
         self.has_depths = True
         self.initialized = False
 
-    def add_ping_param(self, name, reference, vec_x_val, vec_y_val):
+    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
         Ping.pingprocessing.core.asserts.assert_valid_argument(
-            "add_ping_param", reference, ["Sample number", "Depth (m)", "Range (m)"]
+            "add_ping_param", x_reference, ["Ping number", "Ping time", "Date Time"]
+        )
+        Ping.pingprocessing.core.asserts.assert_valid_argument(
+            "add_ping_param", y_reference, ["Sample number", "Depth (m)", "Range (m)"]
         )
 
         # convert datetimes to timestamps
@@ -82,10 +85,18 @@ class EchoData:
         vec_x_val = vec_x_val[arg]
         vec_y_val = vec_y_val[arg]
 
-        # convert to to represent indices
-        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(self.vec_x_val)
+        match x_reference:
+            case "Ping number":
+                comp_vec_x_val = self.ping_numbers
+            case "Ping time":
+                comp_vec_x_val = self.ping_times
+            case "Date time":
+                comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
 
-        self.param[name] = reference, vec_y_val
+        # convert to to represent indices
+        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(comp_vec_x_val)
+
+        self.param[name] = y_reference, vec_y_val
 
     def get_ping_param(self, name, use_x_coordinates=False):
         self.reinit()
@@ -214,9 +225,9 @@ class EchoData:
                     md = mr + z
                     # bd = minslant_d
 
-                bottom_d_times.append(times[nr])
-                bottom_d.append(bd)
-                minslant_d.append(md)
+                    bottom_d_times.append(times[nr])
+                    bottom_d.append(bd)
+                    minslant_d.append(md)
 
             match wci_value:
                 case "av":
@@ -245,10 +256,10 @@ class EchoData:
         data.set_range_extent(min_r, max_r)
         data.set_depth_extent(min_d, max_d)
         if len(bottom_d) > 0:
-            data.add_ping_param("bottom", "Depth (m)", bottom_d_times, bottom_d)
-            data.add_ping_param("minslant", "Depth (m)", bottom_d_times, minslant_d)
+            data.add_ping_param("bottom", "Ping time", "Depth (m)", bottom_d_times, bottom_d)
+            data.add_ping_param("minslant", "Ping time", "Depth (m)", bottom_d_times, minslant_d)
         if len(echosounder_d) > 0:
-            data.add_ping_param("echosounder", "Depth (m)", echosounder_d_times, echosounder_d)
+            data.add_ping_param("echosounder", "Ping time", "Depth (m)", echosounder_d_times, echosounder_d)
 
         data.verbose = verbose
         return data
