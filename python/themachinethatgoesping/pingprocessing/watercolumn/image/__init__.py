@@ -4,5 +4,6 @@
 
 # functions
 from .make_wci import make_wci, make_wci_dual_head, make_wci_stack
+from .imagebuilder import *
 
-from themachinethatgoesping.pingprocessing_cppy.watercolumn.image import make_wci as make_wci_cppy
+#from themachinethatgoesping.pingprocessing_cppy.watercolumn.image import make_wci as make_wci_cppy

@@ -4,6 +4,7 @@
 
 # folders
 from . import core
+from . import widgets
 from . import filter_pings
 from . import split_pings
 from . import group_pings
