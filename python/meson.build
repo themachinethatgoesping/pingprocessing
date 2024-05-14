@@ -7,6 +7,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/__init__.py',
   'themachinethatgoesping/pingprocessing/widgets/__init__.py',
   'themachinethatgoesping/pingprocessing/widgets/tqdmwidget.py',
+  'themachinethatgoesping/pingprocessing/widgets/wciviewer.py',
   'themachinethatgoesping/pingprocessing/overview/__init__.py',
   'themachinethatgoesping/pingprocessing/overview/nav_plot.py',
   'themachinethatgoesping/pingprocessing/overview/pingoverview.py',

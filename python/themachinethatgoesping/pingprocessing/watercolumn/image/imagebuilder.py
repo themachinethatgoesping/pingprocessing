@@ -21,6 +21,11 @@ class ImageBuilder:
         self.use_beam_sample_view = use_beam_sample_view
         self.progress = progress
 
+        # if isinstance(self.pings, dict):
+        #     self.dual_head = True
+        # else:
+        #     self.dual_head = False
+
     def update_args(self, **kwargs):
         self.default_args.update(kwargs)
 
@@ -46,9 +51,13 @@ class ImageBuilder:
                 progress=self.progress,
                 **_kwargs)
 
-        return make_wci(
+        return make_wci_dual_head(
             self.pings[index],
             **_kwargs)
+
+        # return make_wci(
+        #     self.pings[index],
+        #     **_kwargs)
 
         
         
