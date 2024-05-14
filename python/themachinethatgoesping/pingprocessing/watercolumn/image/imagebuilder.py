@@ -19,6 +19,7 @@ class ImageBuilder:
         }
         self.default_args.update(kwargs)
         self.use_beam_sample_view = use_beam_sample_view
+        self.progress = progress
 
     def update_args(self, **kwargs):
         self.default_args.update(kwargs)
@@ -42,7 +43,7 @@ class ImageBuilder:
                         
             return make_wci_stack(
                 stack_pings,
-                #progress_bar=progress_bar,
+                progress=self.progress,
                 **_kwargs)
 
         return make_wci(

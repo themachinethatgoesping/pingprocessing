@@ -376,7 +376,7 @@ def make_wci_stack(
     from_bottom_xyz: bool = False,
     wci_value: str = "av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
-    progress_bar=None,
+    progress=None,
     mp_cores: int = 1,
     **kwargs,
 ):
@@ -387,14 +387,10 @@ def make_wci_stack(
     WCI = None
     NUM = None
 
-    # initialize progress bar
-    if progress_bar is None:
-        progress_bar = pings
-    else:
-        progress_bar = progress_bar(pings)
+    it = get_progress_iterator(pings, progress, desc="Stacking pings")
 
     # loop through each ping
-    for pn, ping in enumerate(progress_bar):
+    for pn, ping in enumerate(it):
         # create backtracer object
         wci, extent = make_wci_dual_head(
             ping,
