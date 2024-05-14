@@ -6,6 +6,7 @@ import themachinethatgoesping.echosounders as es
 import themachinethatgoesping.algorithms.geoprocessing as gp
 
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
  
 
