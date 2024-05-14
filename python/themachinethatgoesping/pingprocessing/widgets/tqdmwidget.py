@@ -11,14 +11,18 @@ class TqdmWidget(IntProgress):
             "description" : "Idle",
             "orientation" : "horizontal",
         }
+        #_kwargs.update((k, kwargs[k]) for k in _kwargs.keys() & kwargs.keys())
         _kwargs.update(kwargs)
         super().__init__(**_kwargs)
         
-    def __call__(self, list_like):
+    def __call__(self, list_like, **kwargs):
         self.list_like = list_like
         self.list_iter = iter(list_like)
         self.index = 0
         self.total = len(list_like)
+
+        if 'desc' in kwargs:
+            self.description = kwargs['desc']
 
         #IntProgress values
         self.max = self.total
