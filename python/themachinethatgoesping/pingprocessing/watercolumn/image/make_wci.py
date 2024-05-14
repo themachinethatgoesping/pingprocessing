@@ -216,6 +216,7 @@ def make_wci(
     wci_value: str = "av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
     mp_cores: int = 1,
+    **kwargs,
 ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
 
     if (y_coordinates is None and z_coordinates is not None) \
@@ -279,70 +280,6 @@ def make_wci(
     # return the resulting water column image and the extent of the image
     return wci, tuple(scaling_infos.extent)
 
-def make_wci_stack(
-    pings: list,
-    horizontal_pixels: int,
-    linear_mean: bool = True,
-    hmin: float = None,
-    hmax: float = None,
-    vmin: float = None,
-    vmax: float = None,
-    from_bottom_xyz: bool = False,
-    wci_value: str = "av",
-    progress_bar=None,
-    mp_cores: int = 1,
-):
-
-    # Loop preprocess ping infos
-    scaling_infos = __WCI_scaling_infos.from_pings_and_limits(pings, horizontal_pixels, hmin, hmax, vmin, vmax, from_bottom_xyz)
-
-    WCI = None
-    NUM = None
-
-    # initialize progress bar
-    if progress_bar is None:
-        progress_bar = pings
-    else:
-        progress_bar = progress_bar(pings)
-
-    # loop through each ping
-    for pn, ping in enumerate(progress_bar):
-        # create backtracer object
-        wci, extent = make_wci(
-            ping = ping,
-            horizontal_pixels = horizontal_pixels,
-            y_coordinates= scaling_infos.y_coordinates,
-            z_coordinates= scaling_infos.z_coordinates,
-            from_bottom_xyz = from_bottom_xyz,
-            wci_value = wci_value,
-            mp_cores=mp_cores,
-        )
-
-        use = np.isfinite(wci).astype(bool)
-
-        # apply linear mean if specified
-        if linear_mean:
-            wci[use] = np.power(10, wci[use] * 0.1)
-
-        # initialize WCI and NUM arrays
-        if WCI is None:
-            WCI = np.empty_like(wci)
-            WCI.fill(np.nan)
-            NUM = np.zeros_like(wci)
-
-        # accumulate WCI and NUM arrays
-        WCI[use] = np.nansum([WCI[use], wci[use]], axis=0)
-        NUM[use] += 1
-
-    # compute the final WCI array
-    WCI = WCI / NUM
-
-    # apply logarithmic scaling if specified
-    if linear_mean:
-        WCI = 10 * np.log10(WCI)
-
-    # return the WCI array and extent
-    return WCI, tuple(scaling_infos.extent)
     
 def make_wci_dual_head(
     ping_group: es.filetemplates.I_Ping,
@@ -357,6 +294,7 @@ def make_wci_dual_head(
     wci_value: str = "av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
     mp_cores: int = 1,
+    **kwargs,
 ) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
    
     if not isinstance(ping_group, dict):
@@ -437,8 +375,10 @@ def make_wci_stack(
     vmax: float = None,
     from_bottom_xyz: bool = False,
     wci_value: str = "av",
+    ping_sample_selector=es.pingtools.PingSampleSelector(),
     progress_bar=None,
     mp_cores: int = 1,
+    **kwargs,
 ):
 
     # Loop preprocess ping infos
@@ -463,6 +403,7 @@ def make_wci_stack(
             z_coordinates= scaling_infos.z_coordinates,
             from_bottom_xyz = from_bottom_xyz,
             wci_value = wci_value,
+            ping_sample_selector=ping_sample_selector,
             mp_cores=mp_cores,
         )
 
