@@ -214,7 +214,7 @@ def make_wci(
     y_coordinates: float = None,
     z_coordinates: float = None,
     from_bottom_xyz: bool = False,
-    wci_value: str = "av",
+    wci_value: str = "sv/av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
     mp_cores: int = 1,
     **kwargs,
@@ -257,14 +257,19 @@ def make_wci(
     # t.append(time()) # 6
     # get amplitudes for each pixel
     match wci_value:
+        case 'sv/av':
+            if ping.watercolumn.has_sv():
+                wci = ping.watercolumn.get_sv(selection)
+            else:
+                wci = ping.watercolumn.get_av(selection)
         case "av":
             wci = ping.watercolumn.get_av(selection)
-        case "amp":
-            wci = ping.watercolumn.get_amplitudes(selection)
         case "sv":
             wci = ping.watercolumn.get_sv(selection)
+        case "amp":
+            wci = ping.watercolumn.get_amplitudes(selection)
         case _:
-            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['sv/av', 'av', 'amp', 'sv'].")
 
     # t.append(time()) # 7
     # lookup beam/sample numbers for each pixel
@@ -292,7 +297,7 @@ def make_wci_dual_head(
     y_coordinates=None,
     z_coordinates=None,
     from_bottom_xyz: bool = False,
-    wci_value: str = "av",
+    wci_value: str = "sv/av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
     mp_cores: int = 1,
     **kwargs,
@@ -375,7 +380,7 @@ def make_wci_stack(
     vmin: float = None,
     vmax: float = None,
     from_bottom_xyz: bool = False,
-    wci_value: str = "av",
+    wci_value: str = "sv/av",
     ping_sample_selector=es.pingtools.PingSampleSelector(),
     progress=None,
     mp_cores: int = 1,

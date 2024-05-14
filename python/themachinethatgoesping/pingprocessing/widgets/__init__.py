@@ -4,3 +4,4 @@
 
 # folders
 from .tqdmwidget import *
+from .wciviewer import *
