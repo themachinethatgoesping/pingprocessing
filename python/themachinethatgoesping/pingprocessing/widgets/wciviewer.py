@@ -31,6 +31,11 @@ class WCIViewer:
             "mp_cores" : 1
             
         }
+
+        self.mapable = None
+        self.wci = None
+        self.extent = None
+
         self.args_imagebuilder.update((k, kwargs[k]) for k in self.args_imagebuilder.keys() & kwargs.keys())
         for k in self.args_imagebuilder.keys():
             if k in kwargs.keys():
@@ -73,14 +78,14 @@ class WCIViewer:
 
         self.w_fix_xy = ipywidgets.Button(description="fix x/y")
         self.w_unfix_xy = ipywidgets.Button(description="unfix x/y")
-        self.w_time = ipywidgets.Text(description="proc time")
-        self.w_rate = ipywidgets.Text(description="proc rate")
+        self.w_proctime = ipywidgets.Text(description="proc time")
+        self.w_procrate = ipywidgets.Text(description="proc rate")
 
         self.w_fix_xy.on_click(self.fix_xy)
         self.w_unfix_xy.on_click(self.unfix_xy)
 
         if self.display_progress:
-            box_progress = ipywidgets.HBox([self.progress, self.w_fix_xy, self.w_unfix_xy, self.w_time, self.w_rate])
+            box_progress = ipywidgets.HBox([self.progress, self.w_fix_xy, self.w_unfix_xy, self.w_proctime, self.w_procrate])
         else:
             box_progress = ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_time])
 
@@ -99,12 +104,15 @@ class WCIViewer:
             max=len(pings)-1, 
             step=1, 
             value = 0)
+
+        self.w_date = ipywidgets.Text(layout=ipywidgets.Layout(width='10%'))
+        self.w_time = ipywidgets.Text(layout=ipywidgets.Layout(width='10%'))
         
         self.w_stack = ipywidgets.IntText(value=1, description='stack:',layout=ipywidgets.Layout(width='15%'))
         self.w_stack_step = ipywidgets.IntText(value=1, description='stack step:',layout=ipywidgets.Layout(width='15%'))
         self.w_mp_cores = ipywidgets.IntText(value=1, description='mp_cores:',layout=ipywidgets.Layout(width='15%'))
         
-        box_index = ipywidgets.HBox([self.w_index, self.w_stack, self.w_stack_step, self.w_mp_cores])
+        box_index = ipywidgets.HBox([self.w_index, self.w_date, self.w_time, self.w_stack, self.w_stack_step, self.w_mp_cores])
 
         # basic plotting setup
         self.w_vmin = ipywidgets.FloatSlider(description='vmin', min=-150, max=100, step=5, value = self.args_plot['vmin'])
@@ -203,18 +211,39 @@ class WCIViewer:
         t1 = time()
         self.update_view(w)
         t2 = time()
-        self.w_time.value = f'{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s'
-        self.w_rate.value = f'{round(1/(t1-t0),1)} / {round(1/(t2-t1),1)} / [{round(1/(t2-t0),1)}] Hz'
+        ping = self.imagebuilder.pings[self.w_index.value]
+        if not isinstance(ping, Ping.echosounders.filetemplates.I_Ping):
+            ping = next(iter(ping.values()))
+
+        self.w_date.value = ping.get_datetime().strftime('%Y-%m-%d')
+        self.w_time.value = ping.get_datetime().strftime('%H:%M:%S')
+
+        self.w_proctime.value = f'{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s'
+        self.w_procrate.value = f'{round(1/(t1-t0),1)} / {round(1/(t2-t1),1)} / [{round(1/(t2-t0),1)}] Hz'
 
             
     #@self.output.capture()
     def update_view(self,w):      
-        self.args_plot['vmin'] = self.w_vmin.value
-        self.args_plot['vmax'] = self.w_vmax.value
-        self.args_plot['interpolation'] = self.w_interpolation.value
-        self.args_plot['aspect'] = self.w_aspect.value
+        #detect changes in view settings
+        for n,v in [
+            ('vmin', self.w_vmin.value), 
+            ('vmax', self.w_vmax.value), 
+            ('interpolation', self.w_interpolation.value), 
+            ('aspect', self.w_aspect.value)]:
+            if self.args_plot[n] != v:
+                self.args_plot[n] = v
+                self.mapable = None
         
-        try:               
+        try:
+            self.w_fix_xy.button_style = 'warning'
+            if self.mapable is not None:
+                if self.mapable.get_array().shape == self.wci.transpose().shape:               
+                    if self.mapable.get_extent() == list(self.extent):
+                        self.w_fix_xy.button_style = 'success'    
+                        self.mapable.set_data(self.wci.transpose())
+                        self.fig.canvas.draw()
+                        return        
+
             self.ax.clear()
                 
             self.mapable = self.ax.imshow(
