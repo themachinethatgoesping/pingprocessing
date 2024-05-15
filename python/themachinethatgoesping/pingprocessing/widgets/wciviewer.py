@@ -241,6 +241,7 @@ class WCIViewer:
                     if self.mapable.get_extent() == list(self.extent):
                         self.w_fix_xy.button_style = 'success'    
                         self.mapable.set_data(self.wci.transpose())
+                        self.callback_view()
                         self.fig.canvas.draw()
                         return        
 
@@ -262,7 +263,12 @@ class WCIViewer:
             else:
                 self.colorbar.update_normal(self.mapable)
             self.fig.canvas.draw()
+
+            self.callback_view()
             
         except Exception as e:
             with self.output:
                 raise (e)
+
+    def callback_view(self):
+        pass
