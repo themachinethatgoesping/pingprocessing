@@ -63,13 +63,26 @@ class WCIViewer:
             else:
                 self.ax = self.fig.subplots()
 
-        #setup progressbar
+        #setup progressbar and buttons
         if progress is None:
             self.progress = Ping.pingprocessing.widgets.TqdmWidget()
             self.display_progress = True
         else:
             self.progress = progress
             self.display_progress = False
+
+        self.w_fix_xy = ipywidgets.Button(description="fix x/y")
+        self.w_unfix_xy = ipywidgets.Button(description="unfix x/y")
+        self.w_time = ipywidgets.Text(description="proc time")
+        self.w_rate = ipywidgets.Text(description="proc rate")
+
+        self.w_fix_xy.on_click(self.fix_xy)
+        self.w_unfix_xy.on_click(self.unfix_xy)
+
+        if self.display_progress:
+            box_progress = ipywidgets.HBox([self.progress, self.w_fix_xy, self.w_unfix_xy, self.w_time, self.w_rate])
+        else:
+            box_progress = ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_time])
 
         #setup image builder
         self.imagebuilder = Ping.pingprocessing.watercolumn.image.ImageBuilder(
@@ -117,7 +130,7 @@ class WCIViewer:
 
 
         layout = [self.fig.canvas]
-        if self.display_progress: layout.append(self.progress)
+        layout.append(box_progress)
         layout.append(box_process)
         layout.append(box_plot)
         layout.append(box_index)
@@ -143,12 +156,31 @@ class WCIViewer:
         
         if show:
             display(self.layout)
+
+    def fix_xy(self, w):
+        with self.output:
+            xlim = self.ax.get_xlim()
+            ylim = self.ax.get_ylim()
+            self.args_imagebuilder["hmin"] = xlim[0]
+            self.args_imagebuilder["hmax"] = xlim[1]
+            self.args_imagebuilder["vmin"] = ylim[1]
+            self.args_imagebuilder["vmax"] = ylim[0]
         
+            self.update_data(0)
+
+    def unfix_xy(self, w):
+        with self.output:
+            self.args_imagebuilder["hmin"] = None
+            self.args_imagebuilder["hmax"] = None
+            self.args_imagebuilder["vmin"] = None
+            self.args_imagebuilder["vmax"] = None
+        
+            self.update_data(0)
 
     #@self.output.capture()
     def update_data(self,w):
         self.output.clear_output()
-        t = time()
+        t0 = time()
 
         self.args_imagebuilder['wci_value'] = self.w_wci_value.value
         self.args_imagebuilder['linear_mean'] = self.w_stack_linear.value
@@ -168,7 +200,11 @@ class WCIViewer:
             with self.output:
                 raise(e)
 
+        t1 = time()
         self.update_view(w)
+        t2 = time()
+        self.w_time.value = f'{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s'
+        self.w_rate.value = f'{round(1/(t1-t0),1)} / {round(1/(t2-t1),1)} / [{round(1/(t2-t0),1)}] Hz'
 
             
     #@self.output.capture()
