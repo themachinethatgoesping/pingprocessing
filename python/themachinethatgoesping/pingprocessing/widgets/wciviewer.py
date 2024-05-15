@@ -256,11 +256,11 @@ class WCIViewer:
                             self.fig.canvas.restore_region(self.background)
                             self.w_fix_xy.button_style = 'success'    
                             self.mapable.set_data(self.wci.transpose())
-                            self.callback_view()
                             #self.fig.canvas.draw()
                             self.ax.draw_artist(self.mapable)
                             self.fig.canvas.blit(self.fig.bbox)
                             self.fig.canvas.flush_events()
+                            self.callback_view()
                             return        
         
                 self.ax.clear()
