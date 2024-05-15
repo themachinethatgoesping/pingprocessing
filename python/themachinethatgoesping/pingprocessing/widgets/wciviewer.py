@@ -1,6 +1,8 @@
-import ipywidgets
 from time import time
+import types
+import numpy as np
 
+import ipywidgets
 import matplotlib.pyplot as plt
 from IPython.display import display
 
@@ -222,52 +224,69 @@ class WCIViewer:
         self.w_procrate.value = f'{round(1/(t1-t0),1)} / {round(1/(t2-t1),1)} / [{round(1/(t2-t0),1)}] Hz'
 
             
-    #@self.output.capture()
-    def update_view(self,w):      
-        #detect changes in view settings
-        for n,v in [
-            ('vmin', self.w_vmin.value), 
-            ('vmax', self.w_vmax.value), 
-            ('interpolation', self.w_interpolation.value), 
-            ('aspect', self.w_aspect.value)]:
-            if self.args_plot[n] != v:
-                self.args_plot[n] = v
-                self.mapable = None
-        
-        try:
-            self.w_fix_xy.button_style = 'warning'
-            if self.mapable is not None:
-                if self.mapable.get_array().shape == self.wci.transpose().shape:               
-                    if self.mapable.get_extent() == list(self.extent):
-                        self.w_fix_xy.button_style = 'success'    
-                        self.mapable.set_data(self.wci.transpose())
-                        self.callback_view()
-                        self.fig.canvas.draw()
-                        return        
+    def save_background(self):
+        empty = np.empty(self.wci.transpose().shape)
+        empty.fill(np.nan)
+        self.mapable.set_data(empty)
+        self.fig.canvas.draw()
+        self.background = self.fig.canvas.copy_from_bbox(self.fig.bbox)
+        #self.mapable.set_data(self.wci.transpose())
 
-            self.ax.clear()
-                
-            self.mapable = self.ax.imshow(
-                self.wci.transpose(),
-                extent = self.extent, 
-                **self.args_plot
-            )
-
-            self.ax.set_xlim(self.xmin, self.xmax)
-            self.ax.set_ylim(self.ymax, self.ymin)
-                                   
-            #w_text_num_active.value = str(int(w_text_num_active.value) -1)
-            #w_text_execution_time.value = str(round(time()-t,3))
-            if self.colorbar is None:
-                self.colorbar = self.fig.colorbar(self.mapable)
-            else:
-                self.colorbar.update_normal(self.mapable)
-            self.fig.canvas.draw()
-
-            self.callback_view()
+    def update_view(self,w):  
+        with self.output:
+            #detect changes in view settings
+            for n,v in [
+                ('vmin', self.w_vmin.value), 
+                ('vmax', self.w_vmax.value), 
+                ('interpolation', self.w_interpolation.value), 
+                ('aspect', self.w_aspect.value)]:
+                if self.args_plot[n] != v:
+                    self.args_plot[n] = v
+                    self.mapable = None
             
-        except Exception as e:
-            with self.output:
+            try:
+                self.w_fix_xy.button_style = 'warning'
+                if self.mapable is not None:
+                    if self.mapable.get_array().shape == self.wci.transpose().shape:               
+                        if self.mapable.get_extent() == list(self.extent):
+                            if self.first_blit:
+                                self.save_background()
+                                self.first_blit = False
+                            
+                            self.fig.canvas.restore_region(self.background)
+                            self.w_fix_xy.button_style = 'success'    
+                            self.mapable.set_data(self.wci.transpose())
+                            self.callback_view()
+                            #self.fig.canvas.draw()
+                            self.ax.draw_artist(self.mapable)
+                            self.fig.canvas.blit(self.fig.bbox)
+                            self.fig.canvas.flush_events()
+                            return        
+        
+                self.ax.clear()
+                self.first_blit = True
+                
+                    
+                self.mapable = self.ax.imshow(
+                    self.wci.transpose(),
+                    extent = self.extent, 
+                    **self.args_plot,
+                    animated=True
+                )
+        
+                self.ax.set_xlim(self.xmin, self.xmax)
+                self.ax.set_ylim(self.ymax, self.ymin)
+                                    
+                if self.colorbar is None:
+                    self.colorbar = self.fig.colorbar(self.mapable)
+                else:
+                    self.colorbar.update_normal(self.mapable)
+                
+                self.fig.canvas.draw()    
+        
+                self.callback_view()
+                
+            except Exception as e:
                 raise (e)
 
     def callback_view(self):
