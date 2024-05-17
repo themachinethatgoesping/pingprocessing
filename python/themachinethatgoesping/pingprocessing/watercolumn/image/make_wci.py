@@ -7,6 +7,7 @@ import themachinethatgoesping.algorithms.geoprocessing as gp
 
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+import themachinethatgoesping as Ping
 
  
 
@@ -203,6 +204,56 @@ class __WCI_scaling_infos:
                 extent=extent,
 
     )
+
+def make_beam_sample_image(
+    ping: Ping.echosounders.filetemplates.I_Ping,
+    hmin: float = None,
+    hmax: float = None,
+    vmin: float = None,
+    vmax: float = None,
+    wci_value: str = "sv/av",
+    ping_sample_selector=Ping.echosounders.pingtools.PingSampleSelector(),
+    **kwargs):
+
+    #dual head case
+    if isinstance(ping, dict):
+        W = []
+        nbeams = 0
+        nsamples = 0
+        for p in reversed(sorted(ping.values(), key=lambda p : np.mean(p.watercolumn.get_beam_crosstrack_angles()))):
+            w, e = make_beam_sample_image(p, hmin=hmin, hmax=hmax,vmin = vmin, wci_value=wci_value, ping_sample_selector=ping_sample_selector, **kwargs)
+            nbeams += w.shape[0]
+            nsamples = max([nsamples, w.shape[1]])
+            W.append(w)
+
+        wci = np.empty((nbeams,nsamples))
+        wci.fill(np.nan)
+        b = 0
+        for w in W:
+            wci[b:b+w.shape[0],:w.shape[1]] = w
+            b += w.shape[0]
+
+        return wci, [-0.5, nbeams+0.5, nsamples+0.5, -0.5]
+        
+
+    selection = ping_sample_selector.apply_selection(ping.watercolumn)
+    
+    match wci_value:
+        case 'sv/av':
+            if ping.watercolumn.has_sv():
+                wci = ping.watercolumn.get_sv(selection)
+            else:
+                wci = ping.watercolumn.get_av(selection)
+        case "av":
+            wci = ping.watercolumn.get_av(selection)
+        case "sv":
+            wci = ping.watercolumn.get_sv(selection)
+        case "amp":
+            wci = ping.watercolumn.get_amplitudes(selection)
+        case _:
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['sv/av', 'av', 'amp', 'sv'].")
+
+    return wci, [-0.5, wci.shape[0]+0.5, wci.shape[1]+0.5, -0.5]
 
 def make_wci(
     ping: es.filetemplates.I_Ping,
@@ -434,3 +485,4 @@ def make_wci_stack(
 
     # return the WCI array and extent
     return WCI, tuple(scaling_infos.extent)
+

@@ -29,6 +29,7 @@ class WCIViewer:
             "vmax" : None,
             "from_bottom_xyz" : False,
             "wci_value" : 'sv/av',
+            "wci_render" : 'linear',
             "ping_sample_selector" : Ping.echosounders.pingtools.PingSampleSelector(),
             "mp_cores" : 1
             
@@ -119,7 +120,7 @@ class WCIViewer:
         # basic plotting setup
         self.w_vmin = ipywidgets.FloatSlider(description='vmin', min=-150, max=100, step=5, value = self.args_plot['vmin'])
         self.w_vmax = ipywidgets.FloatSlider(description='vmax', min=-150, max=100, step=5, value = self.args_plot['vmax'])
-        self.w_aspect = ipywidgets.Dropdown(description="stack_linear", 
+        self.w_aspect = ipywidgets.Dropdown(description="aspect", 
                                             options=['auto', 'equal'], 
                                             value=self.args_plot["aspect"])
         self.w_interpolation = ipywidgets.Dropdown(description="interpolation", 
@@ -135,8 +136,11 @@ class WCIViewer:
         self.w_wci_value = ipywidgets.Dropdown(description="wci value", 
                                                options=['sv/av', 'av', 'sv', 'amp'], 
                                                value=self.args_imagebuilder["wci_value"])
+        self.w_wci_render = ipywidgets.Dropdown(description="wci render", 
+                                               options=['linear', 'beamsample'], 
+                                               value=self.args_imagebuilder["wci_render"])
         
-        box_process = ipywidgets.HBox([self.w_stack_linear, self.w_wci_value, self.w_horizontal_pixels])
+        box_process = ipywidgets.HBox([self.w_stack_linear, self.w_wci_value, self.w_wci_render, self.w_horizontal_pixels])
 
 
         layout = [self.fig.canvas]
@@ -149,7 +153,7 @@ class WCIViewer:
         self.layout = ipywidgets.VBox(layout)
 
         # observers for data changers
-        for w in [self.w_index, self.w_stack, self.w_stack_step, self.w_mp_cores, self.w_stack_linear, self.w_wci_value, self.w_horizontal_pixels]:
+        for w in [self.w_index, self.w_stack, self.w_stack_step, self.w_mp_cores, self.w_stack_linear, self.w_wci_value, self.w_wci_render, self.w_horizontal_pixels]:
             w.observe(self.update_data, names=['value'])
             
         # observers for view changers
@@ -193,6 +197,7 @@ class WCIViewer:
         t0 = time()
 
         self.args_imagebuilder['wci_value'] = self.w_wci_value.value
+        self.args_imagebuilder['wci_render'] = self.w_wci_render.value
         self.args_imagebuilder['linear_mean'] = self.w_stack_linear.value
         self.args_imagebuilder['horizontal_pixels'] = self.w_horizontal_pixels.value
         self.args_imagebuilder['mp_cores'] = self.w_mp_cores.value
