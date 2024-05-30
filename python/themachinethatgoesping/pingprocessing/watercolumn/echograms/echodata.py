@@ -63,7 +63,7 @@ class EchoData:
 
     def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
         Ping.pingprocessing.core.asserts.assert_valid_argument(
-            "add_ping_param", x_reference, ["Ping number", "Ping time", "Date Time"]
+            "add_ping_param", x_reference, ["Ping number", "Ping time", "Date time"]
         )
         Ping.pingprocessing.core.asserts.assert_valid_argument(
             "add_ping_param", y_reference, ["Sample number", "Depth (m)", "Range (m)"]
@@ -91,7 +91,8 @@ class EchoData:
             case "Ping time":
                 comp_vec_x_val = self.ping_times
             case "Date time":
-                comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
+                comp_vec_x_val = self.ping_times
+                #comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
 
         # convert to to represent indices
         vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(comp_vec_x_val)
@@ -158,7 +159,7 @@ class EchoData:
         cls,
         pings,
         pss=echosounders.pingtools.PingSampleSelector(),
-        wci_value: str = "av",
+        wci_value: str = "sv/av",
         linear_mean=True,
         apply_pss_to_bottom=False,
         verbose=True,
@@ -230,6 +231,11 @@ class EchoData:
                     minslant_d.append(md)
 
             match wci_value:
+                case "sv/av":
+                    if ping.watercolumn.has_sv():
+                        wci = ping.watercolumn.get_sv(sel)
+                    else:
+                        wci = ping.watercolumn.get_av(sel)
                 case "av":
                     wci = ping.watercolumn.get_av(sel)
                 case "amp":
