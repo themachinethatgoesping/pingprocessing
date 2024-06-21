@@ -10,7 +10,7 @@ subdir('themachinethatgoesping')
 
 # -- catch2 tests --
 if get_option('build_tests').enabled()
-    catch2 = subproject('catch2')
+    catch2 = subproject('catch2', default_options: ['tests=false'])
     catch2 = catch2.get_variable('catch2_with_main_dep')
     
     subdir('tests')
