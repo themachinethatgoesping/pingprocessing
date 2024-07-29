@@ -6,13 +6,50 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 import rasterio.plot as rioplt
+import rasterio.warp as riowarp
 import rasterio as rio
+from rasterio.io import MemoryFile
+from contextlib import contextmanager  
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
+#Adapted from: https://gis.stackexchange.com/questions/443822/how-do-you-reproject-a-raster-using-rasterio-in-memory
+@contextmanager  
+def reproject_raster(src, dst_crs):
+    
+    src_crs = src.crs
+    transform, width, height = riowarp.calculate_default_transform(src_crs, dst_crs, src.width, src.height, *src.bounds)
+    kwargs = src.meta.copy()
+
+    kwargs.update({
+        'crs': dst_crs,
+        'transform': transform,
+        'width': width,
+        'height': height})
+
+    with MemoryFile() as memfile:
+        with memfile.open(**kwargs) as dst:
+            for i in range(1, src.count + 1):
+                riowarp.reproject(
+                    source=rio.band(src, i),
+                    destination=rio.band(dst, i),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=dst_crs,
+                    resampling=riowarp.Resampling.nearest)
+        with memfile.open() as dataset:  # Reopen as DatasetReader
+            yield dataset  # Note yield not return as we're a contextmanager
+
 
 def create_figure(
-    name: str, aspect: str = "equal", close_plots: bool = True, background_image_path: str = None, **kwargs
+    name: str, 
+    aspect: str = "equal", 
+    close_plots: bool = True, 
+    background_image_path: str = None, 
+    dst_crs = 'EPSG:4326', 
+    return_crs = False,
+    **kwargs
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
     Create a figure with a given name and aspect ratio.
@@ -38,8 +75,6 @@ def create_figure(
 
     # initialize axis
     ax.grid(True, linestyle="--", color="gray", alpha=0.5)
-    ax.set_xlabel("longitude")
-    ax.set_ylabel("latitude")
     ax.set_title(name)
     ax.set_aspect(aspect)
 
@@ -47,8 +82,25 @@ def create_figure(
         background_map = rio.open(background_image_path)
         _kwargs = {"cmap": "Greys_r"}
         _kwargs.update(kwargs)
-        rioplt.show(background_map, ax=ax, **_kwargs)
 
+
+        if dst_crs is None or dst_crs == background_map.crs:
+            rioplt.show(background_map, ax=ax, **_kwargs)
+            dst_crs = background_map.crs
+        else:
+            with reproject_raster(background_map, dst_crs) as reprojected_map:            
+                rioplt.show(reprojected_map, ax=ax, **_kwargs)
+                dst_crs = reprojected_map.crs
+
+    if dst_crs.is_geographic:
+        ax.set_xlabel("longitude")
+        ax.set_ylabel("latitude")
+    elif dst_crs.is_projected:
+        ax.set_xlabel("easting")
+        ax.set_ylabel("northing")
+
+    if return_crs:
+        return fig, ax, dst_crs
     return fig, ax
 
 
