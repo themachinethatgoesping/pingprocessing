@@ -14,6 +14,12 @@ class TestNavPlot:
         src_utm = os.path.join(os.path.dirname(__file__), src_utm)
         src_latlon = os.path.join(os.path.dirname(__file__), src_latlon)
 
+        # make sure this does not crash with no figure provided
+        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True)
+        _,_ = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False)
+        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True, dst_crs = None)
+        _,_ = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False, dst_crs = None)
+
         # default projection should be EPSG:4326
         _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True)
         assert crs == rio.crs.CRS.from_epsg(4326)

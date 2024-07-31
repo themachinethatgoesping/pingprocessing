@@ -92,12 +92,12 @@ def create_figure(
                 rioplt.show(reprojected_map, ax=ax, **_kwargs)
                 dst_crs = reprojected_map.crs
 
-    if dst_crs.is_geographic:
-        ax.set_xlabel("longitude")
-        ax.set_ylabel("latitude")
-    elif dst_crs.is_projected:
-        ax.set_xlabel("easting")
-        ax.set_ylabel("northing")
+        if dst_crs.is_geographic:
+            ax.set_xlabel("longitude")
+            ax.set_ylabel("latitude")
+        elif dst_crs.is_projected:
+            ax.set_xlabel("easting")
+            ax.set_ylabel("northing")
 
     if return_crs:
         return fig, ax, dst_crs
