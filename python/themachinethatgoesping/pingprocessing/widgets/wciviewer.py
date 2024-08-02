@@ -35,6 +35,9 @@ class WCIViewer:
             
         }
 
+        if len(pings) < 1:
+            raise ValueError('No pings provided')
+
         self.mapable = None
         self.wci = None
         self.extent = None
