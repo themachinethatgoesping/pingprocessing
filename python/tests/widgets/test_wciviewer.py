@@ -16,7 +16,7 @@ class TestWCIViewer:
         dirname = os.path.dirname(__file__)
         self.test_folders = os.path.join(dirname, "../../../../echosounders/unittest_data/")
         if not os.path.exists(self.test_folders):
-            self.test_folders = os.path.join(dirname, "../../../subprojects/echosounders/unittest_data/")
+            self.test_folders = os.path.join(dirname, "../../../subprojects/echosounders-main/unittest_data/")
         assert os.path.exists(self.test_folders)
 
         LOGGER.info(f"findings test files in {self.test_folders}")

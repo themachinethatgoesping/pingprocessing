@@ -4,8 +4,8 @@
 
 #wrap folders
 packagecache/*
-Catch2*/*
-date*/*
+Catch2*/**
+date-*
 geographiclib*
 
 #inherited wrap files
@@ -13,6 +13,12 @@ catch2.wrap
 hinnant-date.wrap
 
 #inherited wrap and folders
+flat_map*
+algorithms*
+frozen*
+navigation*
+sse2neon*
+pugixml*
 pybind11*
 eigen*
 fmt*
