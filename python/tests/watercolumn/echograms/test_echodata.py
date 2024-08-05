@@ -1,4 +1,3 @@
-
 import os
 import logging
 import themachinethatgoesping as Ping
@@ -6,14 +5,17 @@ from themachinethatgoesping.echosounders import kongsbergall, simradraw
 
 LOGGER = logging.getLogger(__name__)
 
+
 class TestWCIViewer:
     test_files_per_ending_per_folder = None
 
     def find_files(self):
         if self.test_files_per_ending_per_folder is not None:
             return self.test_files_per_ending_per_folder
-        
-        self.test_files_per_ending_per_folder = Ping.pingprocessing.testing.find_test_files()
+
+        self.test_files_per_ending_per_folder = Ping.pingprocessing.testing.find_test_files(
+            os.path.join(os.path.dirname(__file__), "../../../")
+        )
         return self.test_files_per_ending_per_folder
 
     def clean_cache(self):
@@ -24,17 +26,18 @@ class TestWCIViewer:
     def get_pings(self, files, cache=True):
         endings = set()
         for file in files:
-            ending = ('.' + file.split(".")[-1])
-            if ending == '.wcd': ending = '.all'
+            ending = "." + file.split(".")[-1]
+            if ending == ".wcd":
+                ending = ".all"
             endings.add(ending)
 
         if len(endings) > 1:
             raise ValueError(f"Can only open files with the same type of datagrams!, got {endings}")
-        
+
         match list(endings)[0]:
             case ".all":
                 FileHandler = kongsbergall.KongsbergAllFileHandler
-            case '.raw':
+            case ".raw":
                 FileHandler = simradraw.SimradRawFileHandler
             case _:
                 raise ValueError(f"Unknown file ending {list(endings)[0]}")
@@ -52,7 +55,6 @@ class TestWCIViewer:
         assert len(pings) > 0
 
         return pings
-        
 
     def test_creating_echograms_should_not_crash(self):
         for ending, items in self.find_files().items():
@@ -60,22 +62,21 @@ class TestWCIViewer:
                 try:
                     self.get_pings(files)
                     pings = self.get_pings(files)
-                    pings = Ping.pingprocessing.filter_pings.by_features(pings, ['watercolumn.av'])
+                    pings = Ping.pingprocessing.filter_pings.by_features(pings, ["watercolumn.av"])
                     if len(pings) == 0:
                         continue
-                    
+
                     echodata = Ping.pingprocessing.watercolumn.echograms.EchoData.from_pings(pings)
 
                     # / samplenr pingnr case
                     echodata.set_y_axis_sample_nr(max_samples=100)
                     echodata.set_x_axis_ping_nr(max_steps=500)
-                    image,extent = echodata.build_image()
+                    image, extent = echodata.build_image()
 
-                    #depth / ping time case
+                    # depth / ping time case
                     echodata.set_y_axis_depth(max_samples=100)
                     echodata.set_x_axis_date_time(max_steps=500)
-                    image,extent = echodata.build_image()
+                    image, extent = echodata.build_image()
                 except:
                     LOGGER.error(f"Failed to create echograms from {files} in {folder}")
                     raise
-

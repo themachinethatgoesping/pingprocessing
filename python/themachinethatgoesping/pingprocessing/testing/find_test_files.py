@@ -2,17 +2,19 @@ import os
 import themachinethatgoesping as Ping
 from collections import defaultdict
 
-def find_test_files():
+def find_test_files(base_path):
     test_files_per_ending = {}
     
-    dirname = os.path.dirname(__file__)
-    test_folders = os.path.join(dirname, "../../../../../echosounders/unittest_data/")
-    if not os.path.exists(test_folders):
-        test_folders = os.path.join(dirname, "../../../../subprojects/echosounders-main/unittest_data/")
-    print(test_folders)
-    print(__file__)
-    print(os.path.abspath(test_folders))
-    assert os.path.exists(test_folders)
+    dirname = os.path.dirname(os.path.abspath(base_path))
+    test_folders1 = os.path.abspath(os.path.join(dirname, "../echosounders/unittest_data/"))
+    test_folders2 = os.path.abspath(os.path.join(dirname, "./subprojects/echosounders-main/unittest_data/"))
+
+    if os.path.exists(test_folders1):
+        test_folders = test_folders1
+    else :
+        test_folders = test_folders2
+
+    assert os.path.exists(test_folders), f"ERROR finding paths!\nTest folders {test_folders1} and \nTest folders {test_folders2} not found \n(base_path:  {base_path})"
 
     for ending in ['.all', '.wcd', '.all,.wcd', 'raw']:
         test_files_per_ending[ending] = Ping.echosounders.index_functions.find_files(test_folders, ending.split(','))
