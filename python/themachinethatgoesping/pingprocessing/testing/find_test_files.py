@@ -9,6 +9,9 @@ def find_test_files():
     test_folders = os.path.join(dirname, "../../../../../echosounders/unittest_data/")
     if not os.path.exists(test_folders):
         test_folders = os.path.join(dirname, "../../../../subprojects/echosounders-main/unittest_data/")
+    print(test_folders)
+    print(__file__)
+    print(os.path.abspath(test_folders))
     assert os.path.exists(test_folders)
 
     for ending in ['.all', '.wcd', '.all,.wcd', 'raw']:
