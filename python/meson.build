@@ -41,6 +41,8 @@ sources = [
   'themachinethatgoesping/pingprocessing/core/asserts.py',
   'themachinethatgoesping/pingprocessing/core/helper.py',
   'themachinethatgoesping/pingprocessing/core/progress.py',
+  'themachinethatgoesping/pingprocessing/testing/__init__.py',
+  'themachinethatgoesping/pingprocessing/testing/find_test_files.py',
   'themachinethatgoesping/pingprocessing/group_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/group_pings/dual_head.py',
 ]

@@ -94,6 +94,18 @@ class EchoData:
                 comp_vec_x_val = self.ping_times
                 #comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
 
+        # average vec_y_val for all double vec_x_vals
+        unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
+        averaged_y_vals = np.zeros(len(unique_x_vals))
+        counts = np.bincount(indices)
+        for i in range(len(unique_x_vals)):
+            start_index = np.where(indices == i)[0][0]
+            end_index = start_index + counts[i]
+            averaged_y_vals[i] = np.mean(vec_y_val[start_index:end_index])
+        
+        vec_x_val = unique_x_vals
+        vec_y_val = averaged_y_vals
+
         # convert to to represent indices
         vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(comp_vec_x_val)
 
@@ -271,7 +283,7 @@ class EchoData:
         return data
 
     @staticmethod
-    def sample_y_coordinates(vec_min_y, vec_max_y, vec_res_y, min_y, max_y, max_samples=np.nan):
+    def sample_y_coordinates(vec_min_y, vec_max_y, vec_res_y, min_y, max_y, max_samples=2048):
         vec_min_y = np.array(vec_min_y)
         vec_max_y = np.array(vec_max_y)
 
@@ -464,7 +476,7 @@ class EchoData:
             np.arange(len(self.wc_data)), vec_x_val
         )
 
-    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=np.nan):
+    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=2048):
         vec_min_y = np.zeros((len(self.wc_data)))
         vec_max_y = self.max_sample_numbers
 
@@ -482,7 +494,7 @@ class EchoData:
 
         self.set_y_coordinates("Sample number", y_coordinates, y_res, vec_min_y, vec_max_y)
 
-    def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_samples=np.nan):
+    def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_samples=2048):
         assert self.has_depths, "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
 
         self.y_kwargs = {"min_depth": min_depth, "max_depth": max_depth, "max_samples": max_samples}
@@ -499,7 +511,7 @@ class EchoData:
 
         self.set_y_coordinates("Depth (m)", y_coordinates, y_res, self.min_depths, self.max_depths)
 
-    def set_y_axis_range(self, min_range=np.nan, max_range=np.nan, max_samples=np.nan):
+    def set_y_axis_range(self, min_range=np.nan, max_range=np.nan, max_samples=2048):
         assert self.has_ranges, "ERROR: Range values not initialized for ech data, call set_angess method"
 
         self.y_kwargs = {"min_range": min_range, "max_range": max_range, "max_samples": max_samples}
@@ -516,7 +528,7 @@ class EchoData:
 
         self.set_y_coordinates("Range (m)", y_coordinates, y_res, self.min_ranges, self.max_ranges)
 
-    def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_steps=np.nan):
+    def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_steps=8096):
 
         self.x_kwargs = {"min_ping_nr": min_ping_nr, "max_ping_nr": max_ping_nr, "max_steps": max_steps}
         self.x_axis_function = self.set_x_axis_ping_nr

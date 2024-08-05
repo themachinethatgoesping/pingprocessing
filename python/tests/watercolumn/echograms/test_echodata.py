@@ -52,14 +52,30 @@ class TestWCIViewer:
         assert len(pings) > 0
 
         return pings
+        
 
+    def test_creating_echograms_should_not_crash(self):
+        for ending, items in self.find_files().items():
+            for folder, files in items.items():
+                try:
+                    self.get_pings(files)
+                    pings = self.get_pings(files)
+                    pings = Ping.pingprocessing.filter_pings.by_features(pings, ['watercolumn.av'])
+                    if len(pings) == 0:
+                        continue
+                    
+                    echodata = Ping.pingprocessing.watercolumn.echograms.EchoData.from_pings(pings)
 
-    def test_viewing_pings_in_wci_viewer_should_not_crash(self):
-        for ending, subfolders in self.find_files().items():
-            for folder, files in subfolders.items():
-                LOGGER.info(f"Testing {ending} files in {folder}")
-                pings = self.get_pings(files)
-                #viewer = Ping.pingprocessing.widgets.WCIViewer(pings)
+                    # / samplenr pingnr case
+                    echodata.set_y_axis_sample_nr(max_samples=100)
+                    echodata.set_x_axis_ping_nr(max_steps=500)
+                    image,extent = echodata.build_image()
 
-        #viewer = Ping.pingprocessing.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))
+                    #depth / ping time case
+                    echodata.set_y_axis_depth(max_samples=100)
+                    echodata.set_x_axis_date_time(max_steps=500)
+                    image,extent = echodata.build_image()
+                except:
+                    LOGGER.error(f"Failed to create echograms from {files} in {folder}")
+                    raise
 
