@@ -29,6 +29,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogrambuilder.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramgroup.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramsection.py',
+  'themachinethatgoesping/pingprocessing/watercolumn/echograms/echoproxy.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echoimagebuilders/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echoimagebuilders/echodata.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echoimagebuilders/timeimagebuilder.py',
