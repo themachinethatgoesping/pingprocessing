@@ -128,17 +128,17 @@ with open('mkdoc_log.log', 'w', encoding="utf-8") as ofi_log:
         else:
             prg.set_postfix_str(header)
 
-        filename = header.split("/")[-1]
-        output_path = "/".join(header.split("/")[:-1]) + "/.docstrings/" + \
+        filepath, filename = os.path.split(header)
+        output_path = str(filepath) + "/.docstrings/" + \
             filename.replace(filename.split('.')[-1], "doc.hpp")
 
         if FORCE_RENEW:
             try:
-                shutil.rmtree("/".join(output_path.split('/')[:-1]))
+                shutil.rmtree(os.path.split(output_path)[0])
             except:
                 pass
             continue
-        os.makedirs("/".join(output_path.split('/')[:-1]), exist_ok=True)
+        os.makedirs(os.path.split(output_path)[0], exist_ok=True)
 
         add_doc_line(header, output_path)
 
