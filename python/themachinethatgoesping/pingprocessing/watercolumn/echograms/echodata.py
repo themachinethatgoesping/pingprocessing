@@ -343,8 +343,10 @@ class EchoData:
         vec_min_y = np.array(vec_min_y)
         vec_max_y = np.array(vec_max_y)
 
-        vec_min_y = vec_min_y[vec_min_y >= 0]
-        vec_max_y = vec_max_y[vec_max_y > 0]
+        #vec_min_y = vec_min_y[vec_min_y >= 0]
+        #vec_max_y = vec_max_y[vec_max_y > 0]
+        vec_min_y = vec_min_y[np.isfinite(vec_min_y)]
+        vec_max_y = vec_max_y[np.isfinite(vec_max_y)]
 
         # filter
         if not np.isfinite(min_y):
