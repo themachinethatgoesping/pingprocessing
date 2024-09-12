@@ -92,7 +92,7 @@ class EchoData:
                 comp_vec_x_val = self.ping_times
             case "Date time":
                 comp_vec_x_val = self.ping_times
-                #comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
+                # comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
 
         # average vec_y_val for all double vec_x_vals
         unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
@@ -102,12 +102,14 @@ class EchoData:
             start_index = np.where(indices == i)[0][0]
             end_index = start_index + counts[i]
             averaged_y_vals[i] = np.mean(vec_y_val[start_index:end_index])
-        
+
         vec_x_val = unique_x_vals
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(comp_vec_x_val)
+        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(
+            vec_x_val, vec_y_val, extrapolation_mode="nearest"
+        )(comp_vec_x_val)
 
         self.param[name] = y_reference, vec_y_val
 
@@ -248,14 +250,30 @@ class EchoData:
                         wci = ping.watercolumn.get_sv(sel)
                     else:
                         wci = ping.watercolumn.get_av(sel)
-                case "av":
-                    wci = ping.watercolumn.get_av(sel)
+                case "sp/ap":
+                    if ping.watercolumn.has_sp():
+                        wci = ping.watercolumn.get_sp(sel)
+                    else:
+                        wci = ping.watercolumn.get_ap(sel)
+                case "power/amp":
+                    if ping.watercolumn.has_power():
+                        wci = ping.watercolumn.get_power(sel)
+                    else:
+                        wci = ping.watercolumn.get_amplitudes(sel)
                 case "amp":
                     wci = ping.watercolumn.get_amplitudes(sel)
+                case "av":
+                    wci = ping.watercolumn.get_av(sel)
+                case "ap":
+                    wci = ping.watercolumn.get_ap(sel)
+                case "power":
+                    wci = ping.watercolumn.get_power(sel)
+                case "sp":
+                    wci = ping.watercolumn.get_sp(sel)
                 case "sv":
                     wci = ping.watercolumn.get_sv(sel)
                 case _:
-                    raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
+                    raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
 
             if wci.shape[0] == 1:
                 wci = wci[0]
@@ -282,9 +300,9 @@ class EchoData:
         data.verbose = verbose
         return data
 
-    #classmethod
+    # classmethod
     def concat(cls, echodata_list):
-        #concatenate data
+        # concatenate data
         new_wc_data = []
         new_ping_times = []
         new_min_ranges = []
@@ -294,7 +312,7 @@ class EchoData:
         new_params = {}
         x_axis_functions = []
         y_axis_functions = []
-        
+
         for e in echodata_list:
             x_axis_functions.append(e.self.x_axis_function, e.self.x_kwargs)
             x_axis_functions.append(e.self.y_axis_function, e.self.y_kwargs)
@@ -316,7 +334,7 @@ class EchoData:
                     new_params[name][0].extend(p[0])
                     new_params[name][1].extend(p[1])
 
-        #sort data by new_ping_times
+        # sort data by new_ping_times
         sorted_ping_args = np.argsort(np.array(new_ping_times))
         new_wc_data = list(np.array(new_wc_data)[sorted_ping_args])
         new_ping_times = list(np.array(new_ping_times)[sorted_ping_args])
@@ -325,26 +343,25 @@ class EchoData:
         new_min_depths = list(np.array(new_min_depths)[sorted_ping_args])
         new_max_depths = list(np.array(new_max_depths)[sorted_ping_args])
 
-        for name,param in new_params.items():
+        for name, param in new_params.items():
             sorted_param_args = np.argsort(np.array(param[0]))
             new_params[name] = [np.array(param[0])[sorted_param_args], np.array(param[1])[sorted_param_args]]
 
         new_data = cls(new_wc_data, new_ping_times)
         new_data.set_range_extent(new_min_ranges, new_max_ranges)
         new_data.set_depth_extent(new_min_depths, new_max_depths)
-        for name,param in new_params.items():
+        for name, param in new_params.items():
             new_data.add_ping_param(name, "Ping time", "Depth (m)", param[0], param[1])
 
         return new_data
-
 
     @staticmethod
     def sample_y_coordinates(vec_min_y, vec_max_y, vec_res_y, min_y, max_y, max_samples=2048):
         vec_min_y = np.array(vec_min_y)
         vec_max_y = np.array(vec_max_y)
 
-        #vec_min_y = vec_min_y[vec_min_y >= 0]
-        #vec_max_y = vec_max_y[vec_max_y > 0]
+        # vec_min_y = vec_min_y[vec_min_y >= 0]
+        # vec_max_y = vec_max_y[vec_max_y > 0]
         vec_min_y = vec_min_y[np.isfinite(vec_min_y)]
         vec_max_y = vec_max_y[np.isfinite(vec_max_y)]
 
@@ -453,8 +470,12 @@ class EchoData:
         vec_x_val = vec_x_val[arg]
 
         # convert to to represent indices
-        vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
-        vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+        vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(
+            vec_x_val, vec_min_y, extrapolation_mode="nearest"
+        )(self.vec_x_val)
+        vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(
+            vec_x_val, vec_max_y, extrapolation_mode="nearest"
+        )(self.vec_x_val)
 
         wc_data = [np.empty(0) for _ in self.wc_data]
         min_r = np.empty(len(self.wc_data), dtype=np.float32)

@@ -237,21 +237,37 @@ def make_beam_sample_image(
         
 
     selection = ping_sample_selector.apply_selection(ping.watercolumn)
-    
+
     match wci_value:
-        case 'sv/av':
+        case "sv/av":
             if ping.watercolumn.has_sv():
-                wci = ping.watercolumn.get_sv(selection)
+                wci = ping.watercolumn.get_sv(sel)
             else:
-                wci = ping.watercolumn.get_av(selection)
-        case "av":
-            wci = ping.watercolumn.get_av(selection)
-        case "sv":
-            wci = ping.watercolumn.get_sv(selection)
+                wci = ping.watercolumn.get_av(sel)
+        case "sp/ap":
+            if ping.watercolumn.has_sp():
+                wci = ping.watercolumn.get_sp(sel)
+            else:
+                wci = ping.watercolumn.get_ap(sel)
+        case "power/amp":
+            if ping.watercolumn.has_power():
+                wci = ping.watercolumn.get_power(sel)
+            else:
+                wci = ping.watercolumn.get_amplitudes(sel)
         case "amp":
-            wci = ping.watercolumn.get_amplitudes(selection)
+            wci = ping.watercolumn.get_amplitudes(sel)
+        case "av":
+            wci = ping.watercolumn.get_av(sel)
+        case "ap":
+            wci = ping.watercolumn.get_ap(sel)
+        case "power":
+            wci = ping.watercolumn.get_power(sel)
+        case "sp":
+            wci = ping.watercolumn.get_sp(sel)
+        case "sv":
+            wci = ping.watercolumn.get_sv(sel)
         case _:
-            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['sv/av', 'av', 'amp', 'sv'].")
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
 
     return wci, [-0.5, wci.shape[0]+0.5, wci.shape[1]+0.5, -0.5]
 
@@ -308,19 +324,35 @@ def make_wci(
     # t.append(time()) # 6
     # get amplitudes for each pixel
     match wci_value:
-        case 'sv/av':
+        case "sv/av":
             if ping.watercolumn.has_sv():
-                wci = ping.watercolumn.get_sv(selection)
+                wci = ping.watercolumn.get_sv(sel)
             else:
-                wci = ping.watercolumn.get_av(selection)
-        case "av":
-            wci = ping.watercolumn.get_av(selection)
-        case "sv":
-            wci = ping.watercolumn.get_sv(selection)
+                wci = ping.watercolumn.get_av(sel)
+        case "sp/ap":
+            if ping.watercolumn.has_sp():
+                wci = ping.watercolumn.get_sp(sel)
+            else:
+                wci = ping.watercolumn.get_ap(sel)
+        case "power/amp":
+            if ping.watercolumn.has_power():
+                wci = ping.watercolumn.get_power(sel)
+            else:
+                wci = ping.watercolumn.get_amplitudes(sel)
         case "amp":
-            wci = ping.watercolumn.get_amplitudes(selection)
+            wci = ping.watercolumn.get_amplitudes(sel)
+        case "av":
+            wci = ping.watercolumn.get_av(sel)
+        case "ap":
+            wci = ping.watercolumn.get_ap(sel)
+        case "power":
+            wci = ping.watercolumn.get_power(sel)
+        case "sp":
+            wci = ping.watercolumn.get_sp(sel)
+        case "sv":
+            wci = ping.watercolumn.get_sv(sel)
         case _:
-            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['sv/av', 'av', 'amp', 'sv'].")
+            raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
 
     # t.append(time()) # 7
     # lookup beam/sample numbers for each pixel

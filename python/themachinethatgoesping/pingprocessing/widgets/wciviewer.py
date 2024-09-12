@@ -137,7 +137,7 @@ class WCIViewer:
         self.w_stack_linear = ipywidgets.Checkbox(description="stack_linear", 
                                                   value=self.args_imagebuilder["stack_linear"])
         self.w_wci_value = ipywidgets.Dropdown(description="wci value", 
-                                               options=['sv/av', 'av', 'sv', 'amp'], 
+                                               options=['sv/av', 'sp/ap', 'power/amp', 'av', 'ap', 'amp', 'sv', 'sp', 'power'], 
                                                value=self.args_imagebuilder["wci_value"])
         self.w_wci_render = ipywidgets.Dropdown(description="wci render", 
                                                options=['linear', 'beamsample'], 

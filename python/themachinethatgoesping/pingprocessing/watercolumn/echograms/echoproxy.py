@@ -249,34 +249,6 @@ class EchoProxy:
                     bottom_d.append(bd)
                     minslant_d.append(md)
 
-            # match wci_value:
-            #     case "sv/av":
-            #         if ping.watercolumn.has_sv():
-            #             wci = ping.watercolumn.get_sv(sel)
-            #         else:
-            #             wci = ping.watercolumn.get_av(sel)
-            #     case "av":
-            #         wci = ping.watercolumn.get_av(sel)
-            #     case "amp":
-            #         wci = ping.watercolumn.get_amplitudes(sel)
-            #     case "sv":
-            #         wci = ping.watercolumn.get_sv(sel)
-            #     case _:
-            #         raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
-
-            # if wci.shape[0] == 1:
-            #     wci = wci[0]
-            # else:
-            #     if linear_mean:
-            #         wci = np.power(10, wci * 0.1)
-
-            #     wci = np.nanmean(wci, axis=0)
-
-            #     if linear_mean:
-            #         wci = 10 * np.log10(wci)
-
-            # wc_data[nr] = wci
-
         data = cls(pings, times, beam_sample_selections, wci_value)
         data.set_range_extent(min_r, max_r)
         data.set_depth_extent(min_d, max_d)
@@ -292,20 +264,36 @@ class EchoProxy:
     def get_wci(self, nr):
         sel = self.beam_sample_selections[nr]
         ping = self.pings[nr]
-        match self.wci_value:
+        match wci_value:
             case "sv/av":
                 if ping.watercolumn.has_sv():
                     wci = ping.watercolumn.get_sv(sel)
                 else:
                     wci = ping.watercolumn.get_av(sel)
-            case "av":
-                wci = ping.watercolumn.get_av(sel)
+            case "sp/ap":
+                if ping.watercolumn.has_sp():
+                    wci = ping.watercolumn.get_sp(sel)
+                else:
+                    wci = ping.watercolumn.get_ap(sel)
+            case "power/amp":
+                if ping.watercolumn.has_power():
+                    wci = ping.watercolumn.get_power(sel)
+                else:
+                    wci = ping.watercolumn.get_amplitudes(sel)
             case "amp":
                 wci = ping.watercolumn.get_amplitudes(sel)
+            case "av":
+                wci = ping.watercolumn.get_av(sel)
+            case "ap":
+                wci = ping.watercolumn.get_ap(sel)
+            case "power":
+                wci = ping.watercolumn.get_power(sel)
+            case "sp":
+                wci = ping.watercolumn.get_sp(sel)
             case "sv":
                 wci = ping.watercolumn.get_sv(sel)
             case _:
-                raise ValueError(f"Invalid value for self.wci_value: {self.wci_value}. Choose any of ['av', 'amp', 'sv'].")
+                raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
 
         if wci.shape[0] == 1:
             return wci[0]
