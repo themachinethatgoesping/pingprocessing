@@ -1,4 +1,5 @@
 import numpy as np
+import themachinethatgoesping as Ping
 import themachinethatgoesping.echosounders as es
 import themachinethatgoesping.algorithms.geoprocessing as gp
 
@@ -29,7 +30,11 @@ def get_bottom_directions_wci(
         
     # Get sensor configuration.
     sc = ping.get_sensor_configuration()
-    pingoff = sc.get_target("Transducer")
+    try:
+        pingoff = sc.get_target("Transducer")
+    except:
+        print("Warning: No transducer target found in sensor configuration. Using default values.")
+        pingoff = Ping.navigation.datastructures.PositionalOffsets()
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
 
@@ -76,7 +81,12 @@ def get_bottom_directions_bottom(ping: es.filetemplates.I_Ping) -> (gp.datastruc
         A tuple containing the bottom positions, directions, and sample numbers.
     """
     sc = ping.get_sensor_configuration()
-    pingoff = sc.get_target("Transducer")
+    try:
+        pingoff = sc.get_target("Transducer")
+    except:
+        print("Warning: No transducer target found in sensor configuration. Using default values.")
+        pingoff = Ping.navigation.datastructures.PositionalOffsets()
+
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
     

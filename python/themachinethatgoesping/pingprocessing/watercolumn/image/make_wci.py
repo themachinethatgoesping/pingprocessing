@@ -236,7 +236,7 @@ def make_beam_sample_image(
         return wci, [-0.5, nbeams+0.5, nsamples+0.5, -0.5]
         
 
-    selection = ping_sample_selector.apply_selection(ping.watercolumn)
+    sel = ping_sample_selector.apply_selection(ping.watercolumn)
 
     match wci_value:
         case "sv/av":
@@ -319,7 +319,7 @@ def make_wci(
     # t.append(time()) # 5
     sd_grid = bt.backtrace_image(scaling_infos.y_coordinates, scaling_infos.z_coordinates, mp_cores=mp_cores)
 
-    selection = ping_sample_selector.apply_selection(ping.watercolumn)
+    sel = ping_sample_selector.apply_selection(ping.watercolumn)
 
     # t.append(time()) # 6
     # get amplitudes for each pixel

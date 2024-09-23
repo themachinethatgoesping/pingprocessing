@@ -13,7 +13,7 @@ import themachinethatgoesping as Ping
 
 
 class EchoProxy:
-    def __init__(self, pings, times, beam_sample_selections, wci_value):
+    def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean):
         Ping.pingprocessing.core.asserts.assert_length("EchoData", pings, [times])
         if len(pings) == 0:
             raise RuntimeError("ERROR[EchoData]: trying to initialize empty data (no valid pings)")
@@ -21,6 +21,7 @@ class EchoProxy:
         assert len(pings) == len(beam_sample_selections), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
         self.beam_sample_selections = beam_sample_selections
 
+        self.linear_mean = linear_mean
         self.wci_value = wci_value
         self.pings = pings
         #self.wc_data = wc_data
@@ -36,6 +37,10 @@ class EchoProxy:
         self.set_y_axis_sample_nr()
         self.set_x_axis_ping_nr()
         self.initialized = True
+
+    def set_linear_mean(self, linear_mean):
+        self.linear_mean = linear_mean
+        self.initialized = False
 
     def set_ping_numbers(self, ping_numbers):
         Ping.pingprocessing.core.asserts.assert_length("set_ping_numbers", self.pings, [ping_numbers])
@@ -249,7 +254,7 @@ class EchoProxy:
                     bottom_d.append(bd)
                     minslant_d.append(md)
 
-        data = cls(pings, times, beam_sample_selections, wci_value)
+        data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean)
         data.set_range_extent(min_r, max_r)
         data.set_depth_extent(min_d, max_d)
         if len(bottom_d) > 0:
@@ -264,7 +269,7 @@ class EchoProxy:
     def get_wci(self, nr):
         sel = self.beam_sample_selections[nr]
         ping = self.pings[nr]
-        match wci_value:
+        match self.wci_value:
             case "sv/av":
                 if ping.watercolumn.has_sv():
                     wci = ping.watercolumn.get_sv(sel)
@@ -293,17 +298,17 @@ class EchoProxy:
             case "sv":
                 wci = ping.watercolumn.get_sv(sel)
             case _:
-                raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
+                raise ValueError(f"Invalid value for wci_value: {self.wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
 
         if wci.shape[0] == 1:
             return wci[0]
         else:
-            if linear_mean:
+            if self.linear_mean:
                 wci = np.power(10, wci * 0.1)
 
             wci = np.nanmean(wci, axis=0)
 
-            if linear_mean:
+            if self.linear_mean:
                 wci = 10 * np.log10(wci)
 
             return wci
