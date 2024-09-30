@@ -7,7 +7,7 @@
 
 #define FORCE_IMPORT_ARRAY // this is needed for xtensor-python but must only be included once
 
-#include <xtensor-python/pyarray.hpp> // Numpy bindings
+#include <xtensor-python/pytensor.hpp> // Numpy bindings
 
 #include "watercolumn/module.hpp"
 

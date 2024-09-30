@@ -11,7 +11,7 @@
 
 #include <xtensor/xmath.hpp>
 #include <xtensor/xtensor.hpp>
-#include <xtensor-python/pyarray.hpp> // Numpy bindings
+#include <xtensor-python/pytensor.hpp> // Numpy bindings
 
 #include <themachinethatgoesping/echosounders/filetemplates/datatypes/i_ping.hpp>
 
