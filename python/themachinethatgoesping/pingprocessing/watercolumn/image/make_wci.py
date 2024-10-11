@@ -312,8 +312,12 @@ def make_wci(
         )
 
     # t.append(time()) # 4
+    # bt = gp.backtracers.BTConstantSVP(
+    #     scaling_infos.geolocation, scaling_infos.ping_offsets.x, scaling_infos.ping_offsets.y
+    # )
+    # geolocation x is x location in image as well for now
     bt = gp.backtracers.BTConstantSVP(
-        scaling_infos.geolocation, scaling_infos.ping_offsets.x, scaling_infos.ping_offsets.y
+        scaling_infos.geolocation, 0, scaling_infos.ping_offsets.y
     )
 
     # t.append(time()) # 5
