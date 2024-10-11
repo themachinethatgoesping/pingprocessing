@@ -51,7 +51,7 @@ class WCIViewer:
                 "cmap" : 'YlGnBu_r',
                 "aspect" : 'equal', 
                 "vmin" : -90, 
-                "vmax" : -50,
+                "vmax" : -25,
                 "interpolation" : "nearest"
         }
         self.args_plot.update(kwargs)
