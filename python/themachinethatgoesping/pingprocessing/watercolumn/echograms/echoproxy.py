@@ -18,15 +18,19 @@ class EchoProxy:
         if len(pings) == 0:
             raise RuntimeError("ERROR[EchoData]: trying to initialize empty data (no valid pings)")
 
-        assert len(pings) == len(beam_sample_selections), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
+        assert len(pings) == len(
+            beam_sample_selections
+        ), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
         self.beam_sample_selections = beam_sample_selections
 
         self.linear_mean = linear_mean
         self.wci_value = wci_value
         self.pings = pings
-        #self.wc_data = wc_data
+        # self.wc_data = wc_data
         self.x_axis_name = None
-        self.max_sample_numbers = np.array([sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections])
+        self.max_sample_numbers = np.array(
+            [sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections]
+        )
         self.set_ping_times(times)
         self.ping_numbers = np.arange(len(self.pings))
 
@@ -100,7 +104,7 @@ class EchoProxy:
                 comp_vec_x_val = self.ping_times
             case "Date time":
                 comp_vec_x_val = self.ping_times
-                #comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
+                # comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
 
         # average vec_y_val for all double vec_x_vals
         unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
@@ -110,12 +114,14 @@ class EchoProxy:
             start_index = np.where(indices == i)[0][0]
             end_index = start_index + counts[i]
             averaged_y_vals[i] = np.mean(vec_y_val[start_index:end_index])
-        
+
         vec_x_val = unique_x_vals
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_y_val, extrapolation_mode = 'nearest')(comp_vec_x_val)
+        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(
+            vec_x_val, vec_y_val, extrapolation_mode="nearest"
+        )(comp_vec_x_val)
 
         self.param[name] = y_reference, vec_y_val
 
@@ -179,13 +185,13 @@ class EchoProxy:
         cls,
         pings,
         pss=echosounders.pingtools.PingSampleSelector(),
-        wci_value: str = "sv/av",
+        wci_value: str = "sv/av/pv/rv",
         linear_mean=True,
         apply_pss_to_bottom=False,
         verbose=True,
     ):
 
-        #wc_data = [np.empty(0) for _ in pings]
+        # wc_data = [np.empty(0) for _ in pings]
         min_r = np.empty(len(pings), dtype=np.float32)
         max_r = np.empty(len(pings), dtype=np.float32)
         min_d = np.empty(len(pings), dtype=np.float32)
@@ -270,16 +276,24 @@ class EchoProxy:
         sel = self.beam_sample_selections[nr]
         ping = self.pings[nr]
         match self.wci_value:
-            case "sv/av":
+            case "sv/av/pv/rv":
                 if ping.watercolumn.has_sv():
                     wci = ping.watercolumn.get_sv(sel)
-                else:
+                elif ping.watercolumn.has_av():
                     wci = ping.watercolumn.get_av(sel)
-            case "sp/ap":
+                elif ping.watercolumn.has_pv():
+                    wci = ping.watercolumn.get_pv(sel)
+                else:
+                    wci = ping.watercolumn.get_rv(sel)
+            case "sp/ap/pp/rp":
                 if ping.watercolumn.has_sp():
                     wci = ping.watercolumn.get_sp(sel)
-                else:
+                elif ping.watercolumn.has_ap():
                     wci = ping.watercolumn.get_ap(sel)
+                elif ping.watercolumn.has_pp():
+                    wci = ping.watercolumn.get_pp(sel)
+                else:
+                    wci = ping.watercolumn.get_rp(sel)
             case "power/amp":
                 if ping.watercolumn.has_power():
                     wci = ping.watercolumn.get_power(sel)
@@ -297,8 +311,18 @@ class EchoProxy:
                 wci = ping.watercolumn.get_sp(sel)
             case "sv":
                 wci = ping.watercolumn.get_sv(sel)
+            case "pv":
+                wci = ping.watercolumn.get_pv(sel)
+            case "rv":
+                wci = ping.watercolumn.get_rv(sel)
+            case "rp":
+                wci = ping.watercolumn.get_rp(sel)
+            case "pp":
+                wci = ping.watercolumn.get_pp(sel)
             case _:
-                raise ValueError(f"Invalid value for wci_value: {self.wci_value}. Choose any of ['amp', 'ap', 'av', 'power', 'sp', 'sv', 'power/amp', 'sp/ap', sv/av'].")
+                raise ValueError(
+                    f"Invalid value for wci_value: {self.wci_value}. Choose any of ['amp','power', 'rp', 'rv',  'pp', 'pv',  'ap', 'av',  'sp', 'sv', 'power/amp', 'sp/ap/pp/rp', 'sv/av/pv/rv']."
+                )
 
         if wci.shape[0] == 1:
             return wci[0]
@@ -318,8 +342,8 @@ class EchoProxy:
         vec_min_y = np.array(vec_min_y)
         vec_max_y = np.array(vec_max_y)
 
-        #vec_min_y = vec_min_y[vec_min_y >= 0]
-        #vec_max_y = vec_max_y[vec_max_y > 0]
+        # vec_min_y = vec_min_y[vec_min_y >= 0]
+        # vec_max_y = vec_max_y[vec_max_y > 0]
         vec_min_y = vec_min_y[np.isfinite(vec_min_y)]
         vec_max_y = vec_max_y[np.isfinite(vec_max_y)]
 
