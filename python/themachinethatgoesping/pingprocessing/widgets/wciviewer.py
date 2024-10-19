@@ -253,6 +253,7 @@ class WCIViewer:
             self.wci, self.extent = self.imagebuilder.build(
                 index=self.w_index.value, stack=self.w_stack.value, stack_step=self.w_stack_step.value
             )
+            self.callback_data()
 
             # w_text_execution_time.value = str(round(time()-t,3))
 
@@ -334,4 +335,7 @@ class WCIViewer:
                 raise (e)
 
     def callback_view(self):
+        pass
+
+    def callback_data(self):
         pass

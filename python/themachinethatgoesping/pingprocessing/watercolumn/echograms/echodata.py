@@ -543,7 +543,7 @@ class EchoData:
         if self.has_depths:
             out.set_depth_extent(min_d, max_d)
         if self.has_ranges:
-            out.set_range_extent(min_d, max_d)
+            out.set_range_extent(min_r, max_r)
 
         out.set_ping_times(self.ping_times, self.time_zone)
         out.set_ping_numbers(self.ping_numbers)
@@ -575,7 +575,11 @@ class EchoData:
 
     def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=2048):
         vec_min_y = np.zeros((len(self.wc_data)))
-        vec_max_y = self.max_sample_numbers
+
+        # avoid -1 values
+        vec_max_y = self.max_sample_numbers.astype(float)
+        vec_max_y[vec_max_y < 0] = np.nan
+
 
         self.y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_samples": max_samples}
         self.y_axis_function = self.set_y_axis_sample_nr
@@ -589,7 +593,11 @@ class EchoData:
             max_samples=max_samples,
         )
 
-        self.set_y_coordinates("Sample number", y_coordinates, y_res, vec_min_y, vec_max_y)
+        y_coordinates[np.isnan(y_coordinates)] = -1
+        vec_min_y[np.isnan(vec_min_y)] = -1
+        vec_max_y[np.isnan(vec_max_y)] = -1
+
+        self.set_y_coordinates("Sample number", y_coordinates.astype(int), y_res, vec_min_y.astype(int), vec_max_y.astype(int))
 
     def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_samples=2048):
         assert self.has_depths, "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
