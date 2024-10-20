@@ -157,7 +157,11 @@ class WCIViewer:
             description="wci value",
             options=[
                 "sv/av/pv/rv",
+                "sv/av/pv",
+                "sv/av",
                 "sp/ap/pp/rp",
+                "sp/ap/pp",
+                "sp/ap",
                 "power/amp",
                 "av",
                 "ap",

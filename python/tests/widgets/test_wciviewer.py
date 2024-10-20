@@ -61,6 +61,6 @@ class TestWCIViewer:
             for folder, files in subfolders.items():
                 LOGGER.info(f"Testing {ending} files in {folder}")
                 pings = self.get_pings(files)
-                # viewer = Ping.pingprocessing.widgets.WCIViewer(pings)
+                #viewer = Ping.pingprocessing.widgets.WCIViewer(pings)
 
-        # viewer = Ping.pingprocessing.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))
+        #viewer = Ping.pingprocessing.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))

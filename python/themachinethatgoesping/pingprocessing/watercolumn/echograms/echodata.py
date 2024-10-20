@@ -244,54 +244,8 @@ class EchoData:
                     bottom_d.append(bd)
                     minslant_d.append(md)
 
-            match wci_value:
-                case "sv/av/pv/rv":
-                    if ping.watercolumn.has_sv():
-                        wci = ping.watercolumn.get_sv(sel)
-                    elif ping.watercolumn.has_av():
-                        wci = ping.watercolumn.get_av(sel)
-                    elif ping.watercolumn.has_pv():
-                        wci = ping.watercolumn.get_pv(sel)
-                    else:
-                        wci = ping.watercolumn.get_rv(sel)
-                case "sp/ap/pp/rp":
-                    if ping.watercolumn.has_sp():
-                        wci = ping.watercolumn.get_sp(sel)
-                    elif ping.watercolumn.has_ap():
-                        wci = ping.watercolumn.get_ap(sel)
-                    elif ping.watercolumn.has_pp():
-                        wci = ping.watercolumn.get_pp(sel)
-                    else:
-                        wci = ping.watercolumn.get_rp(sel)
-                case "power/amp":
-                    if ping.watercolumn.has_power():
-                        wci = ping.watercolumn.get_power(sel)
-                    else:
-                        wci = ping.watercolumn.get_amplitudes(sel)
-                case "amp":
-                    wci = ping.watercolumn.get_amplitudes(sel)
-                case "av":
-                    wci = ping.watercolumn.get_av(sel)
-                case "ap":
-                    wci = ping.watercolumn.get_ap(sel)
-                case "power":
-                    wci = ping.watercolumn.get_power(sel)
-                case "sp":
-                    wci = ping.watercolumn.get_sp(sel)
-                case "sv":
-                    wci = ping.watercolumn.get_sv(sel)
-                case "pv":
-                    wci = ping.watercolumn.get_pv(sel)
-                case "rv":
-                    wci = ping.watercolumn.get_rv(sel)
-                case "rp":
-                    wci = ping.watercolumn.get_rp(sel)
-                case "pp":
-                    wci = ping.watercolumn.get_pp(sel)
-                case _:
-                    raise ValueError(
-                        f"Invalid value for wci_value: {wci_value}. Choose any of ['amp','power', 'rp', 'rv',  'pp', 'pv',  'ap', 'av',  'sp', 'sv', 'power/amp', 'sp/ap/pp/rp', 'sv/av/pv/rv']."
-                    )
+            # select which ping.watercolumn.get_ function to call based on wci_value
+            wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, wci_value)
 
             if wci.shape[0] == 1:
                 wci = wci[0]

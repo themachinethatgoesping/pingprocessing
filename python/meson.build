@@ -38,6 +38,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/image/make_wci.py',
   'themachinethatgoesping/pingprocessing/watercolumn/helper/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/helper/make_image_helper.py',
+  'themachinethatgoesping/pingprocessing/watercolumn/helper/select_get_wci_image.py',
   'themachinethatgoesping/pingprocessing/core/__init__.py',
   'themachinethatgoesping/pingprocessing/core/asserts.py',
   'themachinethatgoesping/pingprocessing/core/helper.py',
