@@ -221,6 +221,10 @@ class WCIViewer:
         if show:
             display(self.layout)
 
+    def set_ping_sample_selector(self, ping_sample_selector):
+        self.args_imagebuilder["ping_sample_selector"] = ping_sample_selector
+        self.update_data(0)
+
     def fix_xy(self, w):
         with self.output:
             xlim = self.ax.get_xlim()

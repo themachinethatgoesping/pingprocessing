@@ -163,8 +163,9 @@ class __WCI_scaling_infos:
                 ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
 
                 # compute limits of the create image
-                if hmin is None: _hmin = np.nanmin([_hmin, np.nanmin(xyz.y)])
-                if hmax is None: _hmax = np.nanmax([_hmax, np.nanmax(xyz.y)])
+                tr_y = ping_offsets[-1].y
+                if hmin is None: _hmin = np.nanmin([_hmin, np.nanmin(xyz.y), tr_y])
+                if hmax is None: _hmax = np.nanmax([_hmax, np.nanmax(xyz.y), tr_y])
                 if vmax is None: _vmax = np.nanmax([_vmax, np.nanmax(xyz.z)])
 
         if hmin is None: hmin = _hmin * 1.1
