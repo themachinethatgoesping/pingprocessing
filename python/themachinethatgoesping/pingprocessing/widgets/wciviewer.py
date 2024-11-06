@@ -280,7 +280,11 @@ class WCIViewer:
         self.w_time.value = ping.get_datetime().strftime("%H:%M:%S")
 
         self.w_proctime.value = f"{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s"
-        self.w_procrate.value = f"{round(1/(t1-t0),1)} / {round(1/(t2-t1),1)} / [{round(1/(t2-t0),1)}] Hz"
+        r1 = 1/(t1-t0) if t1-t0 > 0 else 0
+        r2 = 1/(t2-t1) if t2-t1 > 0 else 0
+        r3 = 1/(t2-t0) if t2-t0 > 0 else 0
+
+        self.w_procrate.value = f"r1: {round(r1,1)} / r2: {round(r2,1)} / r3: [{round(r3,1)}] Hz"
 
     def save_background(self):
         empty = np.empty(self.wci.transpose().shape)
