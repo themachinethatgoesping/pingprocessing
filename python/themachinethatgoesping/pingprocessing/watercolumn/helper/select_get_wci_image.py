@@ -1,4 +1,6 @@
 def select_get_wci_image(ping, selection, wci_value):
+    if callable(wci_value):
+        return wci_value(ping, selection)
 
     wci_values = wci_value.split("/")
 
