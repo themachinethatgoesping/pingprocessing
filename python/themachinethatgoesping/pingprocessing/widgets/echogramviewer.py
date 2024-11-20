@@ -7,11 +7,10 @@ import matplotlib.pyplot as plt
 from IPython.display import display
 
 import themachinethatgoesping as Ping
-import themachinethatgoesping.pingprocessing.watercolumn.image as mi
-import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
+import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
 
-class WCIViewer:
+class EchogramViewer:
     def __init__(self, pings, horizontal_pixels=1024, name="WCI", figure=None, progress=None, show=True, **kwargs):
 
         self.args_imagebuilder = {

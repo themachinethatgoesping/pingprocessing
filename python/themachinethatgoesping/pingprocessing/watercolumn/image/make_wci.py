@@ -307,7 +307,13 @@ def make_wci(
     # t.append(time()) # 7
     # lookup beam/sample numbers for each pixel
     wci = bt.lookup(
-        wci, scaling_infos.bottom_directions, scaling_infos.bottom_direction_sample_numbers, sd_grid, mp_cores=mp_cores
+        wci, 
+        scaling_infos.bottom_directions, 
+        scaling_infos.bottom_direction_sample_numbers, 
+        sd_grid, 
+        wci_first_sample_number = sel.get_first_sample_number_ensemble(), 
+        wci_sample_number_step = sel.get_sample_step_ensemble(),
+        mp_cores=mp_cores
     )
 
     # t.append(time()) # 8
