@@ -63,22 +63,3 @@ class ImageBuilder:
         return make_wci_dual_head(
             self.pings[index],
             **_kwargs)
-
-        # return make_wci(
-        #     self.pings[index],
-        #     **_kwargs)
-
-        
-        
-# progress_bar.description = "Idle"
-# if heads == 'split_dual_rect':
-#     match w_av.value:
-#         case 'amp':
-#             wci = ping.watercolumn.get_amplitudes()
-#         case 'sv':
-#             wci = ping.watercolumn.get_sv()
-#         case 'av':
-#             wci = ping.watercolumn.get_av()
-#         case _:
-#             raise ValueError(f"Invalid value for wci_value: {wci_value}. Choose any of ['av', 'amp', 'sv'].")
-#     extent = [0, ping.watercolumn.get_number_of_beams(),0, ping.watercolumn.get_number_of_samples_per_beam()[0]]

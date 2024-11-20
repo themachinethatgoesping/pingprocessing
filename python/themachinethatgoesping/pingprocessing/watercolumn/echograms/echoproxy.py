@@ -234,8 +234,8 @@ class EchoProxy:
             angle_factor = np.cos(
                 np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
             )
-            min_r[nr] = np.max(ping.watercolumn.get_first_sample_offset_per_beam()[sel.get_beam_numbers()]) * range_res
-            max_r[nr] = np.max(ping.watercolumn.get_number_of_samples_per_beam(sel)) * range_res + min_r[nr]
+            min_r[nr] = sel.get_first_sample_number_ensemble() * range_res
+            max_r[nr] = sel.get_last_sample_number_ensemble() * range_res            
             min_d[nr] = z + min_r[nr] * angle_factor
             max_d[nr] = z + max_r[nr] * angle_factor
 

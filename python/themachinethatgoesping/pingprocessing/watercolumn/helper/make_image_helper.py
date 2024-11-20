@@ -38,7 +38,6 @@ def get_bottom_directions_wci(
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
 
-    #bottom_direction_sample_numbers = ping.watercolumn.get_number_of_samples_per_beam(selection)
     bottom_direction_sample_numbers = np.array(selection.get_last_sample_number_per_beam())
     
     bottomdirections = gp.datastructures.SampleDirectionsTime_1([selection.get_number_of_beams()])
