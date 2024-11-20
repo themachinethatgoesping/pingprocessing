@@ -5,3 +5,4 @@
 # folders
 from .tqdmwidget import *
 from .wciviewer import *
+from .echogramviewer import *

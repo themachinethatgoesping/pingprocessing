@@ -22,10 +22,18 @@ def get_progress_iterator(
     Returns:
         An iterator that optionally displays a progress bar.
     """
-    if progress is not False:
+    if progress is not False and progress is not None:
         if progress is True:
             progress = tqdm
+            _kwargs = {
+                "desc" : "Processing",
+                "delay" : 2,
+            }
+        else:
+            _kwargs = {}
 
-        return progress(iteratable, delay = 2, **kwargs)
+        _kwargs.update(kwargs)
+
+        return progress(iteratable, **_kwargs)
     else:
         return iteratable

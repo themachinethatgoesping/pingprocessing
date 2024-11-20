@@ -10,6 +10,12 @@ import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helpe
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
+def is_iterable(obj):
+    try:
+        iter(obj)
+        return True
+    except TypeError:
+        return False
  
 
 class __WCI_scaling_infos:
@@ -45,7 +51,7 @@ class __WCI_scaling_infos:
         from_bottom_xyz=False,  # this does not yet work,
         ping_sample_selector=es.pingtools.PingSampleSelector(),
     ):
-        if not isinstance(pings, list):
+        if not is_iterable(pings):
             iterator = [pings]
         else:
             iterator = pings
@@ -89,7 +95,7 @@ class __WCI_scaling_infos:
             ]
 
         # single ping case
-        if not isinstance(pings, list):
+        if not is_iterable(pings):
             return cls(
                 xyz=xyzs[0],
                 bottom_directions=bottom_directions[0],
@@ -125,7 +131,7 @@ class __WCI_scaling_infos:
         from_bottom_xyz=False,  # this does not yet work,
         ping_sample_selector=es.pingtools.PingSampleSelector(),
     ):
-        if not isinstance(pings, list):
+        if not is_iterable(pings):
             iterator = [pings]
         else:
             iterator = pings
@@ -182,7 +188,7 @@ class __WCI_scaling_infos:
         extent = [hmin - res * 0.5, hmax + res * 0.5, vmax + res * 0.5, vmin - res * 0.5]
 
         # single ping case
-        if not isinstance(pings, list):
+        if not is_iterable(pings):
             return cls(
                 xyz=xyzs[0],
                 bottom_directions=bottom_directions[0],

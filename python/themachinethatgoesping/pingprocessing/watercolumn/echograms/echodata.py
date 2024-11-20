@@ -9,6 +9,7 @@ import matplotlib as mpl
 import matplotlib.dates as mdates
 
 from themachinethatgoesping import echosounders, pingprocessing
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
 
@@ -734,7 +735,7 @@ class EchoData:
         valid = np.where(delta_x < self.x_interpolation_limit)[0]
         return image_index[valid], wci_index[valid]
 
-    def build_image(self):
+    def build_image(self, progress = None):
         self.reinit()
         ny = len(self.y_coordinates)
         nx = len(self.x_coordinates)
@@ -742,7 +743,10 @@ class EchoData:
         image = np.empty((nx, ny), dtype=np.float32)
         image.fill(np.nan)
 
-        for image_index, wci_index in zip(*self.get_x_indices()):
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.wc_data[wci_index]
             if len(wci) > 0:
                 y1, y2 = self.get_y_indices(wci_index)

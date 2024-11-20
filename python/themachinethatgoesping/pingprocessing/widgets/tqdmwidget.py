@@ -1,32 +1,26 @@
-from collections import OrderedDict
-from ipywidgets import IntProgress
+import ipywidgets
+from tqdm.notebook import tqdm
 
-class TqdmWidget(IntProgress):
+class TqdmWidget(ipywidgets.HBox):
     def __init__(self, **kwargs):
-        _kwargs = {
-            "value" : 0,
-            "min" : 0,
-            "max" : 10,
-            "step" : 1,
-            "description" : "Idle",
-            "orientation" : "horizontal",
+        self.kwargs = {
+            "desc" : "Idle",
         }
         #_kwargs.update((k, kwargs[k]) for k in _kwargs.keys() & kwargs.keys())
-        _kwargs.update(kwargs)
-        super().__init__(**_kwargs)
+        self.kwargs.update(kwargs)
+        super().__init__()
         
+    def set_description(self, desc):
+        self.kwargs["desc"] = desc
+
     def __call__(self, list_like, **kwargs):
         self.list_like = list_like
-        self.list_iter = iter(list_like)
-        self.index = 0
-        self.total = len(list_like)
 
-        if 'desc' in kwargs:
-            self.description = kwargs['desc']
-
-        #IntProgress values
-        self.max = self.total
-        self.value = 0
+        self.kwargs.update(kwargs)
+        
+        self.progress = tqdm(self.list_like, display=False, **self.kwargs)
+        self.children=[self.progress.container]
+        self.progress_iter = iter(self.progress)
         
         return self
         
@@ -34,17 +28,14 @@ class TqdmWidget(IntProgress):
         return self
     
     def __next__(self):
-        self.index += 1
-        self.value = self.index
-        return next(self.list_iter)
+        return next(self.progress_iter)
     
     def __len__(self):
-        return self.total
+        return self.progress.total
     
     def update(self):
-        self.index += 1
-        next(self.list_iter)
-        self.value = self.index
+        next(self.progress_iter)
+        #self.progress.tick()
         
     def close(self):
-        pass
+        self.progress.close()

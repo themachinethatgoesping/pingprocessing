@@ -12,7 +12,7 @@ import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helpe
 
 
 class WCIViewer:
-    def __init__(self, pings, horizontal_pixels=1024, name="WCI", figure=None, progress=None, show=True, **kwargs):
+    def __init__(self, pings, horizontal_pixels=1024, name="WCI", figure=None, progress=None, show=True, cmap="YlGnBu_r", **kwargs):
 
         self.args_imagebuilder = {
             "horizontal_pixels": horizontal_pixels,
@@ -36,12 +36,17 @@ class WCIViewer:
         self.extent = None
         self.wci_value = None # if set, will replace value in self.w_wci_value
 
+        if isinstance(cmap, str):
+            self.cmap = plt.get_cmap(cmap)
+        else:
+            self.cmap = cmap
+
         self.args_imagebuilder.update((k, kwargs[k]) for k in self.args_imagebuilder.keys() & kwargs.keys())
         for k in self.args_imagebuilder.keys():
             if k in kwargs.keys():
                 kwargs.pop(k)
 
-        self.args_plot = {"cmap": "YlGnBu_r", "aspect": "equal", "vmin": -90, "vmax": -25, "interpolation": "nearest"}
+        self.args_plot = {"cmap": self.cmap, "aspect": "equal", "vmin": -90, "vmax": -25, "interpolation": "nearest"}
         self.args_plot.update(kwargs)
 
         self.output = ipywidgets.Output()
@@ -79,9 +84,10 @@ class WCIViewer:
         self.w_unfix_xy.on_click(self.unfix_xy)
 
         if self.display_progress:
-            box_progress = ipywidgets.HBox(
-                [self.progress, self.w_fix_xy, self.w_unfix_xy, self.w_proctime, self.w_procrate]
-            )
+            box_progress = ipywidgets.VBox([
+                ipywidgets.HBox([self.progress]), 
+                ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_proctime, self.w_procrate])
+            ])
         else:
             box_progress = ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_time])
 
@@ -247,7 +253,7 @@ class WCIViewer:
             self.update_data(0)
 
     # @self.output.capture()
-    def update_data(self, w):
+    def update_data(self, w=None):
         self.output.clear_output()
         t0 = time()
 
@@ -298,7 +304,7 @@ class WCIViewer:
         self.background = self.fig.canvas.copy_from_bbox(self.fig.bbox)
         # self.mapable.set_data(self.wci.transpose())
 
-    def update_view(self, w):
+    def update_view(self, w=None):
         with self.output:
             # detect changes in view settings
             for n, v in [
@@ -306,6 +312,7 @@ class WCIViewer:
                 ("vmax", self.w_vmax.value),
                 ("interpolation", self.w_interpolation.value),
                 ("aspect", self.w_aspect.value),
+                ("cmap", self.cmap),
             ]:
                 if self.args_plot[n] != v:
                     self.args_plot[n] = v

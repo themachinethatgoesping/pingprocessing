@@ -4,64 +4,78 @@ import numpy as np
 
 import ipywidgets
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from IPython.display import display
+import asyncio
 
 import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
 
 class EchogramViewer:
-    def __init__(self, pings, horizontal_pixels=1024, name="WCI", figure=None, progress=None, show=True, **kwargs):
+    def __init__(self, echogramdata, name="Echogram", names = None, figure=None, progress=None, show=True, cmap="YlGnBu_r", **kwargs):
+        self.mapables = []
+        if not isinstance(echogramdata, list):
+            echogramdata = [echogramdata]
+            
+        self.echogramdata = echogramdata
+        self.colorbar = [None for _ in self.echogramdata]
+        self.pingline = [None for _ in self.echogramdata]
+        self.fig_events = {}
+        self.pingviewer = None
+        self.echogram_axes = []
 
-        self.args_imagebuilder = {
-            "horizontal_pixels": horizontal_pixels,
-            "stack_linear": True,
-            "hmin": None,
-            "hmax": None,
-            "vmin": None,
-            "vmax": None,
-            "from_bottom_xyz": False,
-            "wci_value": "sv/av/pv/rv",
-            "wci_render": "linear",
-            "ping_sample_selector": theping.echosounders.pingtools.PingSampleSelector(),
-            "mp_cores": 1,
+        self.names = []
+        for i in range(len(self.echogramdata)):
+            if names is not None and len(names) >= i:
+                self.names.append(names[i])
+            else:
+                self.names.append(None)
+            
+        self.nechograms = len(self.echogramdata)
+
+        if isinstance(cmap, str):
+            self.cmap = plt.get_cmap(cmap)
+        else:
+            self.cmap = cmap
+            
+        # plot arguments
+        self.args_plot = {
+            "cmap": self.cmap,
+            "aspect": "auto", 
+            "vmin": -100, 
+            "vmax": -25, 
+            "interpolation": "nearest"
         }
-
-        if len(pings) < 1:
-            raise ValueError("No pings provided")
-
-        self.mapable = None
-        self.wci = None
-        self.extent = None
-        self.wci_value = None # if set, will replace value in self.w_wci_value
-
-        self.args_imagebuilder.update((k, kwargs[k]) for k in self.args_imagebuilder.keys() & kwargs.keys())
-        for k in self.args_imagebuilder.keys():
-            if k in kwargs.keys():
-                kwargs.pop(k)
-
-        self.args_plot = {"cmap": "YlGnBu_r", "aspect": "equal", "vmin": -90, "vmax": -25, "interpolation": "nearest"}
         self.args_plot.update(kwargs)
-
-        self.output = ipywidgets.Output()
-
-        # setup figure
+        
         if figure is None:
             plt.ioff()
             self.fig = plt.figure(name, clear=True)
-            self.ax = self.fig.subplots()
+            self.axes = self.fig.subplots(nrows=self.nechograms, sharex=True, sharey=True)
 
             self.fig.set_tight_layout(True)
-            self.fig.set_size_inches(10, 4)
+            self.fig.set_size_inches(10, 3 * self.nechograms)
             plt.ion()
         else:
             self.fig = figure
-            if len(self.fig.axes) > 0:
-                self.ax = self.fig.axes[0]
+            if len(self.fig.axes) >= self.nechograms:
+                self.axes = self.fig.axes[:self.nechograms]
             else:
-                self.ax = self.fig.subplots()
+                self.axes = self.fig.subplots(nrows=lenself.nechograms, sharex=True, sharey=True)
 
-        # setup progressbar and buttons
+        try:
+            iter(self.axes)
+        except:
+            self.axes = [self.axes]
+        
+        # initialize progressbar and buttons
+        self.update_button = ipywidgets.Button(description="update")
+        self.clear_button = ipywidgets.Button(description="clear output")
+        self.update_button.on_click(self.show_background_zoom)
+        self.clear_button.on_click(self.clear_output)
+
+        # progressbar
         if progress is None:
             self.progress = theping.pingprocessing.widgets.TqdmWidget()
             self.display_progress = True
@@ -69,54 +83,12 @@ class EchogramViewer:
             self.progress = progress
             self.display_progress = False
 
-        self.w_fix_xy = ipywidgets.Button(description="fix x/y")
-        self.w_unfix_xy = ipywidgets.Button(description="unfix x/y")
-        self.w_proctime = ipywidgets.Text(description="proc time")
-        self.w_procrate = ipywidgets.Text(description="proc rate")
-
-        self.w_fix_xy.on_click(self.fix_xy)
-        self.w_unfix_xy.on_click(self.unfix_xy)
-
-        if self.display_progress:
-            box_progress = ipywidgets.HBox(
-                [self.progress, self.w_fix_xy, self.w_unfix_xy, self.w_proctime, self.w_procrate]
-            )
-        else:
-            box_progress = ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_time])
-
-        # setup image builder
-        self.imagebuilder = theping.pingprocessing.watercolumn.image.ImageBuilder(
-            pings, horizontal_pixels=horizontal_pixels, progress=self.progress
-        )
-
-        # setup widgets
-        # basic display control
-        self.w_index = ipywidgets.IntSlider(
-            layout=ipywidgets.Layout(width="50%"), description="ping nr", min=0, max=len(pings) - 1, step=1, value=0
-        )
-
-        self.w_date = ipywidgets.Text(layout=ipywidgets.Layout(width="10%"))
-        self.w_time = ipywidgets.Text(layout=ipywidgets.Layout(width="10%"))
-
-        self.w_stack = ipywidgets.IntText(value=1, description="stack:", layout=ipywidgets.Layout(width="15%"))
-        self.w_stack_step = ipywidgets.IntText(
-            value=1, description="stack step:", layout=ipywidgets.Layout(width="15%")
-        )
-        self.w_mp_cores = ipywidgets.IntText(value=1, description="mp_cores:", layout=ipywidgets.Layout(width="15%"))
-
-        box_index = ipywidgets.HBox(
-            [self.w_index, self.w_date, self.w_time, self.w_stack, self.w_stack_step, self.w_mp_cores]
-        )
-
-        # basic plotting setup
+        # sliders
         self.w_vmin = ipywidgets.FloatSlider(
             description="vmin", min=-150, max=100, step=5, value=self.args_plot["vmin"]
         )
         self.w_vmax = ipywidgets.FloatSlider(
             description="vmax", min=-150, max=100, step=5, value=self.args_plot["vmax"]
-        )
-        self.w_aspect = ipywidgets.Dropdown(
-            description="aspect", options=["auto", "equal"], value=self.args_plot["aspect"]
         )
         self.w_interpolation = ipywidgets.Dropdown(
             description="interpolation",
@@ -143,214 +115,281 @@ class EchogramViewer:
             ],
             value=self.args_plot["interpolation"],
         )
+        
+        self.output = ipywidgets.Output()
+        self.loop = asyncio.get_event_loop()
+        self.task = self.loop.create_task(self.event_loop())
 
-        box_plot = ipywidgets.HBox([self.w_vmin, self.w_vmax, self.w_aspect, self.w_interpolation])
-
-        # self.w_from_bottom = ipywidgets.Checkbox(description="from bottom", value=False)
-        self.w_horizontal_pixels = ipywidgets.IntSlider(
-            description="horizontal pixels", min=2, max=2048, step=1, value=self.args_imagebuilder["horizontal_pixels"]
-        )
-        self.w_stack_linear = ipywidgets.Checkbox(
-            description="stack_linear", value=self.args_imagebuilder["stack_linear"]
-        )
-        self.w_wci_value = ipywidgets.Dropdown(
-            description="wci value",
-            options=[
-                "sv/av/pv/rv",
-                "sv/av/pv",
-                "sv/av",
-                "sp/ap/pp/rp",
-                "sp/ap/pp",
-                "sp/ap",
-                "power/amp",
-                "av",
-                "ap",
-                "amp",
-                "sv",
-                "sp",
-                "pv",
-                "pp",
-                "rv",
-                "rp",
-                "power",
-            ],
-            value=self.args_imagebuilder["wci_value"],
-        )
-        self.w_wci_render = ipywidgets.Dropdown(
-            description="wci render", options=["linear", "beamsample"], value=self.args_imagebuilder["wci_render"]
-        )
-
-        box_process = ipywidgets.HBox(
-            [self.w_stack_linear, self.w_wci_value, self.w_wci_render, self.w_horizontal_pixels]
-        )
-
-        layout = [self.fig.canvas]
-        layout.append(box_progress)
-        layout.append(box_process)
-        layout.append(box_plot)
-        layout.append(box_index)
-
-        layout.append(self.output)
-        self.layout = ipywidgets.VBox(layout)
-
-        # observers for data changers
-        for w in [
-            self.w_index,
-            self.w_stack,
-            self.w_stack_step,
-            self.w_mp_cores,
-            self.w_stack_linear,
-            self.w_wci_value,
-            self.w_wci_render,
-            self.w_horizontal_pixels,
-        ]:
-            w.observe(self.update_data, names=["value"])
-
+        
         # observers for view changers
-        for w in [self.w_vmin, self.w_vmax, self.w_aspect, self.w_interpolation]:
+        for w in [self.w_vmin, self.w_vmax, self.w_interpolation]:
             w.observe(self.update_view, names=["value"])
 
-        self.xmin = None
-        self.xmax = None
-        self.ymin = None
-        self.ymax = None
-        self.colorbar = None
-
-        self.update_data(0)
+        self.box_buttons = ipywidgets.HBox([
+                self.update_button, 
+                self.clear_button,
+        ])
+        self.box_sliders = ipywidgets.HBox([
+                self.w_vmin, 
+                self.w_vmax,
+                self.w_interpolation
+        ])
+        
 
         if show:
-            display(self.layout)
+            self.show()
 
-    def set_ping_sample_selector(self, ping_sample_selector):
-        self.args_imagebuilder["ping_sample_selector"] = ping_sample_selector
-        self.update_data(0)
+        self.show_background_echogram()
 
-    def fix_xy(self, w):
-        with self.output:
-            xlim = self.ax.get_xlim()
-            ylim = self.ax.get_ylim()
-            self.args_imagebuilder["hmin"] = xlim[0]
-            self.args_imagebuilder["hmax"] = xlim[1]
-            self.args_imagebuilder["vmin"] = ylim[1]
-            self.args_imagebuilder["vmax"] = ylim[0]
-
-            self.update_data(0)
-
-    def unfix_xy(self, w):
-        with self.output:
-            self.args_imagebuilder["hmin"] = None
-            self.args_imagebuilder["hmax"] = None
-            self.args_imagebuilder["vmin"] = None
-            self.args_imagebuilder["vmax"] = None
-
-            self.update_data(0)
-
-    # @self.output.capture()
-    def update_data(self, w):
-        self.output.clear_output()
-        t0 = time()
-
-        if self.wci_value is None:
-            self.args_imagebuilder["wci_value"] = self.w_wci_value.value
-        else:
-            self.args_imagebuilder["wci_value"] = self.wci_value
-        self.args_imagebuilder["wci_render"] = self.w_wci_render.value
-        self.args_imagebuilder["linear_mean"] = self.w_stack_linear.value
-        self.args_imagebuilder["horizontal_pixels"] = self.w_horizontal_pixels.value
-        self.args_imagebuilder["mp_cores"] = self.w_mp_cores.value
-        self.imagebuilder.update_args(**self.args_imagebuilder)
-
-        try:
-            self.wci, self.extent = self.imagebuilder.build(
-                index=self.w_index.value, stack=self.w_stack.value, stack_step=self.w_stack_step.value
+    def show(self):        
+        if self.display_progress:
+            display(
+                ipywidgets.HBox(children=[self.fig.canvas]),
+                ipywidgets.HBox([self.progress]),
+                self.box_sliders, 
+                self.box_buttons, 
+                self.output
             )
-            self.callback_data()
+        else:
+            display(
+                ipywidgets.HBox(children=[self.fig.canvas]),
+                self.box_sliders, 
+                self.box_buttons, 
+                self.output
+            )
+    
+    def init_ax(self, adapt_axis_names=True):
+        with self.output:
+            if adapt_axis_names:
+                self.x_axis_name = self.echogramdata[-1].x_axis_name
+                self.y_axis_name = self.echogramdata[-1].y_axis_name
+                
+            for i,ax in enumerate(self.axes):
+                ax.clear()
+                ax.set_title(self.names[i])
+                self.mapables = []
+    
+    
+                ax.set_xlabel(self.x_axis_name)
+                ax.set_ylabel(self.y_axis_name)
 
-            # w_text_execution_time.value = str(round(time()-t,3))
+            if self.x_axis_name == 'Date time':
+                theping.pingprocessing.core.set_ax_timeformat(self.axes[-1])
+    
+    def show_background_echogram(self):
+        with self.output:
+            self.init_ax()
+            
+            self.images_background, self.extents_background = [],[]
+            self.high_res_images, self.high_res_extents = [],[]
+            for i,echogram in enumerate(self.echogramdata):
+            
+                self.progress.set_description(f'Updating echogram [{i},{len(self.echogramdata)}]')
+                
+                im,ex = echogram.build_image(progress=self.progress)   
+                self.images_background.append(im)
+                self.extents_background.append(ex)
+                
+            self.update_view(reset=True)
+            self.progress.set_description('Idle')
 
-        except Exception as e:
-            with self.output:
-                raise (e)
+    def clear_output(event):
+        with self.output:
+            self.output.clear_output()
+            
+    def show_background_zoom(self, event = 0):
+        with self.output:
+            self.high_res_images, self.high_res_extents = [],[]
 
-        t1 = time()
-        self.update_view(w)
-        t2 = time()
-        ping = self.imagebuilder.pings[self.w_index.value]
-        if not isinstance(ping, theping.echosounders.filetemplates.I_Ping):
-            ping = next(iter(ping.values()))
+            #check x/y axis
+            for i,echogram in enumerate(self.echogramdata):
+                self.progress.set_description('Updating echogram')
+                if echogram.x_axis_name != self.x_axis_name or echogram.y_axis_name != self.y_axis_name:
+                    self.show_background_echogram()
+                    break
+                    
+            for i,echogram in enumerate(self.echogramdata):
+                self.progress.set_description(f'Updating echogram [{i},{len(self.echogramdata)}]')
+                
+                xmin,xmax = self.axes[i].get_xlim()
+                ymin,ymax = sorted(self.axes[i].get_ylim())
+                x_kwargs = echogram.x_kwargs
+                y_kwargs = echogram.y_kwargs
+        
+                match self.x_axis_name:
+                    case 'Date time':
+                        tmin,tmax = mdates.num2date(xmin).timestamp(),mdates.num2date(xmax).timestamp()
+                        x_kwargs['min_ping_time'] = tmin
+                        x_kwargs['max_ping_time'] = tmax
+                        echogram.set_x_axis_date_time(**x_kwargs)
+                    case 'Ping number':
+                        x_kwargs['min_ping_nr'] = xmin
+                        x_kwargs['max_ping_nr'] = xmax
+                        echogram.set_x_axis_ping_nr(**x_kwargs)
+                    case 'Ping time':
+                        x_kwargs['min_timestamp'] = xmin
+                        x_kwargs['max_timestamp'] = xmax
+                        echogram.set_x_axis_ping_time(**x_kwargs)
+                    case _:
+                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                
+                match self.y_axis_name:
+                    case 'Depth (m)':
+                        y_kwargs['min_depth'] = ymin
+                        y_kwargs['max_depth'] = ymax
+                        echogram.set_y_axis_depth(**y_kwargs)
+                    case 'Range (m)':
+                        y_kwargs['min_range'] = ymin
+                        y_kwargs['max_range'] = ymax
+                        echogram.set_y_axis_range(**y_kwargs)
+                    case 'Sample number':
+                        y_kwargs['min_sample_nr'] = ymin
+                        y_kwargs['max_sample_nr'] = ymax
+                        echogram.set_y_axis_sample_nr(**y_kwargs)
+                    case _:
+                        raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
+                
+                im,ex = echogram.build_image(progress=self.progress)
+                self.high_res_images.append(im)
+                self.high_res_extents.append(ex)
+        self.update_view()
+        
+        self.progress.description = 'Idle'
 
-        self.w_date.value = ping.get_datetime().strftime("%Y-%m-%d")
-        self.w_time.value = ping.get_datetime().strftime("%H:%M:%S")
-
-        self.w_proctime.value = f"{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s"
-        r1 = 1/(t1-t0) if t1-t0 > 0 else 0
-        r2 = 1/(t2-t1) if t2-t1 > 0 else 0
-        r3 = 1/(t2-t0) if t2-t0 > 0 else 0
-
-        self.w_procrate.value = f"r1: {round(r1,1)} / r2: {round(r2,1)} / r3: [{round(r3,1)}] Hz"
-
-    def save_background(self):
-        empty = np.empty(self.wci.transpose().shape)
-        empty.fill(np.nan)
-        self.mapable.set_data(empty)
-        self.fig.canvas.draw()
-        self.background = self.fig.canvas.copy_from_bbox(self.fig.bbox)
-        # self.mapable.set_data(self.wci.transpose())
-
-    def update_view(self, w):
+    def update_view(self, w=None, reset=False):
         with self.output:
             # detect changes in view settings
             for n, v in [
                 ("vmin", self.w_vmin.value),
                 ("vmax", self.w_vmax.value),
                 ("interpolation", self.w_interpolation.value),
-                ("aspect", self.w_aspect.value),
+                ("cmap", self.cmap),
             ]:
                 if self.args_plot[n] != v:
                     self.args_plot[n] = v
-                    self.mapable = None
 
+                
             try:
-                self.w_fix_xy.button_style = "warning"
-                if self.mapable is not None:
-                    if self.mapable.get_array().shape == self.wci.transpose().shape:
-                        if self.mapable.get_extent() == list(self.extent):
-                            if self.first_blit:
-                                self.save_background()
-                                self.first_blit = False
+                self.xlim = self.axes[-1].get_xlim()
+                self.ylim = self.axes[-1].get_ylim()
 
-                            self.fig.canvas.restore_region(self.background)
-                            self.w_fix_xy.button_style = "success"
-                            self.mapable.set_data(self.wci.transpose())
-                            # self.fig.canvas.draw()
-                            self.ax.draw_artist(self.mapable)
-                            self.fig.canvas.blit(self.fig.bbox)
-                            self.fig.canvas.flush_events()
-                            self.callback_view()
-                            return
+                self.init_ax(reset)
+                minx,maxx,miny,maxy = np.nan,np.nan,np.nan,np.nan
+                
+                for i,ax in enumerate(self.axes):
+                    zorder=1
+                    self.mapables.append(ax.imshow(
+                        self.images_background[i].transpose(), 
+                        extent=self.extents_background[i], 
+                        zorder=zorder,  
+                        **self.args_plot))
+    
+                    if reset:
+                        xlim = ax.get_xlim()
+                        ylim = ax.get_ylim()
+                        minx = np.nanmin([xlim[0],minx])
+                        maxx = np.nanmax([xlim[1],maxx])
+                        miny = np.nanmin([ylim[1],miny])
+                        maxy = np.nanmax([ylim[0],maxy])
+                    
+                    if len(self.high_res_images) > i:
+                        zorder+=1
+                        self.mapables.append(
+                            ax.imshow(self.high_res_images[i].transpose(), 
+                                           extent=self.high_res_extents[i], 
+                                           zorder=zorder, 
+                                           **self.args_plot))
+                    
+    
+                    if self.colorbar[i] is None:
+                        self.colorbar[i] = self.fig.colorbar(self.mapables[0],ax=ax)
+                    else:
+                        self.colorbar[i].update_normal(self.mapables[0])
 
-                self.ax.clear()
-                self.first_blit = True
-
-                self.mapable = self.ax.imshow(self.wci.transpose(), extent=self.extent, **self.args_plot, animated=True)
-
-                self.ax.set_xlim(self.xmin, self.xmax)
-                self.ax.set_ylim(self.ymax, self.ymin)
-
-                if self.colorbar is None:
-                    self.colorbar = self.fig.colorbar(self.mapable)
+                if reset:
+                    ax.set_xlim(minx,maxx)
+                    ax.set_ylim(maxy,miny)
                 else:
-                    self.colorbar.update_normal(self.mapable)
-
+                    ax.set_xlim(self.xlim)
+                    ax.set_ylim(self.ylim)
+                    
+                if len(self.mapables) > len(self.echogramdata)*3:
+                    for m in self.mapables[len(self.echogramdata)*3-1:]:
+                        m.remove()
+                    self.mapables = self.mapables[:len(self.echogramdata)*3]
+    
                 self.fig.canvas.draw()
-
-                self.callback_view()
 
             except Exception as e:
                 raise (e)
 
-    def callback_view(self):
-        pass
+    def click_echogram(self, event):
+        if self.pingviewer is None:
+            return
+        #global e
+        #e = event
+        with self.output:
+            #print(event)
+            if event.button == 1:
+                match self.x_axis_name:
+                    case 'Date time':
+                        t = mdates.num2date(event.xdata).timestamp()
+                        for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                            if ping.get_timestamp() > t:
+                                if pn > 0:
+                                    pn -= 1
+                                break
+                    case 'Ping number':
+                        pn = event.xdata
+                    case 'Ping time':
+                        t = event.xdata
+                        for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                            if ping.get_timestamp() > t:
+                                if pn > 0:
+                                    pn -= 1
+                                break
+                    case _:
+                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                    
+                if pn < 0: 
+                    pn = 0
+                if pn >= len(self.pingviewer.imagebuilder.pings):
+                    pn = len(self.pingviewer.imagebuilder.pings)-1
+                        
+                self.pingviewer.w_index.value = pn
 
-    def callback_data(self):
-        pass
+    async def event_loop(self):
+        while True:
+            self.update_ping_line()
+            await asyncio.sleep(0.25)
+
+    
+    def update_ping_line(self):
+        if self.pingviewer is not None:
+            with self.output:
+                for i,ax in enumerate(self.axes):
+                    try:
+                        if self.pingline[i] is not None:
+                            self.pingline[i].remove()
+                    except:
+                        pass
+    
+                    match self.x_axis_name:
+                        case 'Date time':
+                            self.pingline[i] = ax.axvline(self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value].get_datetime(),c='black',linestyle='dashed')
+                        case 'Ping number':
+                            self.pingline[i] = ax.axvline(self.pingviewer.w_index.value,c='black',linestyle='dashed')
+                        case 'Ping time':
+                            self.pingline[i] = ax.axvline(self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value].get_timestamp(),c='black',linestyle='dashed')
+                        case _:
+                            raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                
+
+    def connect_pingviewer(self,pingviewer):
+        self.pingviewer = pingviewer
+
+        if 'on_click' in self.fig_events.keys():
+            self.fig.canvas.mpl_disconnect(self.fig_events['on_click'])
+            
+        self.fig_events['on_click'] = self.fig.canvas.mpl_connect("button_press_event", self.click_echogram)
+      
