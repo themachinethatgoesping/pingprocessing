@@ -1,5 +1,5 @@
 import os
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 from collections import defaultdict
 
 def find_test_files(base_path):
@@ -17,7 +17,7 @@ def find_test_files(base_path):
     assert os.path.exists(test_folders), f"ERROR finding paths!\nTest folders {test_folders1} and \nTest folders {test_folders2} not found \n(base_path:  {base_path})"
 
     for ending in ['.all', '.wcd', '.all,.wcd', 'raw']:
-        test_files_per_ending[ending] = Ping.echosounders.index_functions.find_files(test_folders, ending.split(','))
+        test_files_per_ending[ending] = theping.echosounders.index_functions.find_files(test_folders, ending.split(','))
 
     test_files_per_folder = {}
     for ending,file_list in test_files_per_ending.items():

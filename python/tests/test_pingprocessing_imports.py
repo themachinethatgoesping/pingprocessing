@@ -18,4 +18,3 @@ from themachinethatgoesping.pingprocessing import overview
 
 from themachinethatgoesping.pingprocessing import watercolumn
 from themachinethatgoesping.pingprocessing.watercolumn import echograms
-from themachinethatgoesping.pingprocessing.watercolumn.echograms import EchogramSection

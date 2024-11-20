@@ -1,4 +1,4 @@
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 
 from .make_wci import make_wci, make_wci_dual_head, make_wci_stack, make_beam_sample_image
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator

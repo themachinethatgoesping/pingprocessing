@@ -1,6 +1,6 @@
 import os
 import logging
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 from themachinethatgoesping.echosounders import kongsbergall, simradraw
 
 LOGGER = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ class TestWCIViewer:
         if self.test_files_per_ending_per_folder is not None:
             return self.test_files_per_ending_per_folder
 
-        self.test_files_per_ending_per_folder = Ping.pingprocessing.testing.find_test_files(
+        self.test_files_per_ending_per_folder = theping.pingprocessing.testing.find_test_files(
             os.path.join(os.path.dirname(__file__), "../../../")
         )
         return self.test_files_per_ending_per_folder
@@ -43,14 +43,14 @@ class TestWCIViewer:
                 raise ValueError(f"Unknown file ending {list(endings)[0]}")
 
         if cache:
-            file_cache_paths = Ping.echosounders.index_functions.get_cache_file_paths(files)
+            file_cache_paths = theping.echosounders.index_functions.get_cache_file_paths(files)
             fm = FileHandler(files, file_cache_paths=file_cache_paths, show_progress=False)
         else:
             fm = FileHandler(files, show_progress=False)
 
         pings = fm.get_pings()
         del fm
-        Ping.pingprocessing.core.clear_memory()
+        theping.pingprocessing.core.clear_memory()
 
         assert len(pings) > 0
 
@@ -62,11 +62,11 @@ class TestWCIViewer:
                 try:
                     self.get_pings(files)
                     pings = self.get_pings(files)
-                    pings = Ping.pingprocessing.filter_pings.by_features(pings, ["watercolumn.av"])
+                    pings = theping.pingprocessing.filter_pings.by_features(pings, ["watercolumn.av"])
                     if len(pings) == 0:
                         continue
 
-                    echodata = Ping.pingprocessing.watercolumn.echograms.EchoData.from_pings(pings)
+                    echodata = theping.pingprocessing.watercolumn.echograms.EchoData.from_pings(pings)
 
                     # / samplenr pingnr case
                     echodata.set_y_axis_sample_nr(max_samples=100)

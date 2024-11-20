@@ -1,4 +1,4 @@
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 import rasterio as rio
 import os
 
@@ -15,31 +15,31 @@ class TestNavPlot:
         src_latlon = os.path.join(os.path.dirname(__file__), src_latlon)
 
         # make sure this does not crash with no figure provided
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True)
-        _,_ = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False)
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True, dst_crs = None)
-        _,_ = Ping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False, dst_crs = None)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True)
+        _,_ = theping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=True, dst_crs = None)
+        _,_ = theping.pingprocessing.overview.nav_plot.create_figure('nav', return_crs=False, dst_crs = None)
 
         # default projection should be EPSG:4326
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True)
         assert crs == rio.crs.CRS.from_epsg(4326)
 
         # utm should be converted to default projection EPSG:4326
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True)
         assert crs == rio.crs.CRS.from_epsg(4326)
 
         # if dst_crs is set to None, default projecttion should be preserved
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True, dst_crs = None)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True, dst_crs = None)
         assert crs == rio.crs.CRS.from_epsg(4326)
 
         # if dst_crs is set to None, default projecttion should be preserved
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True, dst_crs = None)
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True, dst_crs = None)
         assert crs == rio.crs.CRS.from_epsg(32631)
 
         # if dst_crs is set to another projection, this projection should be used
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True, dst_crs = 'EPSG:32631')
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_latlon, return_crs=True, dst_crs = 'EPSG:32631')
         assert crs == rio.crs.CRS.from_epsg(32631)
 
         # if dst_crs is set to another projection, this projection should be used
-        _,_,crs = Ping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True, dst_crs = 'EPSG:32631')
+        _,_,crs = theping.pingprocessing.overview.nav_plot.create_figure('nav', background_image_path=src_utm, return_crs=True, dst_crs = 'EPSG:32631')
         assert crs == rio.crs.CRS.from_epsg(32631)

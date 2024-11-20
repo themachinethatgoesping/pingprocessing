@@ -8,7 +8,7 @@ import themachinethatgoesping.algorithms.geoprocessing as gp
 from themachinethatgoesping import pingprocessing
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 
  
 
@@ -168,10 +168,10 @@ class __WCI_scaling_infos:
                 if hmax is None: _hmax = np.nanmax([_hmax, np.nanmax(xyz.y), tr_y])
                 if vmax is None: _vmax = np.nanmax([_vmax, np.nanmax(xyz.z)])
 
-        if hmin is None: hmin = _hmin * 1.1
-        if hmax is None: hmax = _hmax * 1.1
+        if hmin is None: hmin = _hmin * 1.02
+        if hmax is None: hmax = _hmax * 1.02
         if vmin is None: vmin = np.nanmin([g.z for g in geolocations])
-        if vmax is None: vmax = _vmax + (_vmax - vmin) * 0.1
+        if vmax is None: vmax = _vmax + (_vmax - vmin) * 0.01
 
         # build array with backtraced positions (beam angle, range from transducer)
         y_coordinates = np.linspace(hmin, hmax, horizontal_pixels)
@@ -208,13 +208,13 @@ class __WCI_scaling_infos:
     )
 
 def make_beam_sample_image(
-    ping: Ping.echosounders.filetemplates.I_Ping,
+    ping: theping.echosounders.filetemplates.I_Ping,
     hmin: float = None,
     hmax: float = None,
     vmin: float = None,
     vmax: float = None,
     wci_value: str = "sv/av/pv/rv",
-    ping_sample_selector=Ping.echosounders.pingtools.PingSampleSelector(),
+    ping_sample_selector=theping.echosounders.pingtools.PingSampleSelector(),
     **kwargs):
 
     #dual head case

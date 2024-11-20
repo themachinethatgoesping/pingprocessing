@@ -1,6 +1,6 @@
 import os
 import logging
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 from themachinethatgoesping.echosounders import kongsbergall, simradraw
 
 LOGGER = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ class TestWCIViewer:
         if self.test_files_per_ending_per_folder is not None:
             return self.test_files_per_ending_per_folder
 
-        self.test_files_per_ending_per_folder = Ping.pingprocessing.testing.find_test_files(
+        self.test_files_per_ending_per_folder = theping.pingprocessing.testing.find_test_files(
             os.path.join(os.path.dirname(__file__), "../../")
         )
         return self.test_files_per_ending_per_folder
@@ -43,14 +43,14 @@ class TestWCIViewer:
                 raise ValueError(f"Unknown file ending {list(endings)[0]}")
 
         if cache:
-            file_cache_paths = Ping.echosounders.index_functions.get_cache_file_paths(files)
+            file_cache_paths = theping.echosounders.index_functions.get_cache_file_paths(files)
             fm = FileHandler(files, file_cache_paths=file_cache_paths, show_progress=False)
         else:
             fm = FileHandler(files, show_progress=False)
 
         pings = fm.get_pings()
         del fm
-        Ping.pingprocessing.core.clear_memory()
+        theping.pingprocessing.core.clear_memory()
 
         assert len(pings) > 0
 
@@ -61,6 +61,6 @@ class TestWCIViewer:
             for folder, files in subfolders.items():
                 LOGGER.info(f"Testing {ending} files in {folder}")
                 pings = self.get_pings(files)
-                #viewer = Ping.pingprocessing.widgets.WCIViewer(pings)
+                #viewer = theping.pingprocessing.widgets.WCIViewer(pings)
 
-        #viewer = Ping.pingprocessing.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))
+        #viewer = theping.pingprocessing.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))

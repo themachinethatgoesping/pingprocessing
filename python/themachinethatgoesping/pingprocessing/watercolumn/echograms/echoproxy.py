@@ -9,12 +9,12 @@ import matplotlib as mpl
 import matplotlib.dates as mdates
 
 from themachinethatgoesping import echosounders, pingprocessing
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 
 
 class EchoProxy:
     def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean):
-        Ping.pingprocessing.core.asserts.assert_length("EchoData", pings, [times])
+        theping.pingprocessing.core.asserts.assert_length("EchoData", pings, [times])
         if len(pings) == 0:
             raise RuntimeError("ERROR[EchoData]: trying to initialize empty data (no valid pings)")
 
@@ -47,18 +47,18 @@ class EchoProxy:
         self.initialized = False
 
     def set_ping_numbers(self, ping_numbers):
-        Ping.pingprocessing.core.asserts.assert_length("set_ping_numbers", self.pings, [ping_numbers])
+        theping.pingprocessing.core.asserts.assert_length("set_ping_numbers", self.pings, [ping_numbers])
         self.ping_numbers = ping_numbers
         self.initialized = False
 
     def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
-        Ping.pingprocessing.core.asserts.assert_length("set_ping_times", self.pings, [ping_times])
+        theping.pingprocessing.core.asserts.assert_length("set_ping_times", self.pings, [ping_times])
         self.ping_times = ping_times
         self.time_zone = time_zone
         self.initialized = False
 
     def set_range_extent(self, min_ranges, max_ranges):
-        Ping.pingprocessing.core.asserts.assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
+        theping.pingprocessing.core.asserts.assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
         self.min_ranges = np.array(min_ranges)
         self.max_ranges = np.array(max_ranges)
         self.res_ranges = (self.max_ranges - self.min_ranges) / self.max_sample_numbers
@@ -66,7 +66,7 @@ class EchoProxy:
         self.initialized = False
 
     def set_depth_extent(self, min_depths, max_depths):
-        Ping.pingprocessing.core.asserts.assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
+        theping.pingprocessing.core.asserts.assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
         self.min_depths = np.array(min_depths)
         self.max_depths = np.array(max_depths)
         self.res_depths = (self.max_depths - self.min_depths) / self.max_sample_numbers
@@ -74,10 +74,10 @@ class EchoProxy:
         self.initialized = False
 
     def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
-        Ping.pingprocessing.core.asserts.assert_valid_argument(
+        theping.pingprocessing.core.asserts.assert_valid_argument(
             "add_ping_param", x_reference, ["Ping number", "Ping time", "Date time"]
         )
-        Ping.pingprocessing.core.asserts.assert_valid_argument(
+        theping.pingprocessing.core.asserts.assert_valid_argument(
             "add_ping_param", y_reference, ["Sample number", "Depth (m)", "Range (m)"]
         )
 
@@ -119,7 +119,7 @@ class EchoProxy:
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = Ping.tools.vectorinterpolators.AkimaInterpolator(
+        vec_y_val = theping.tools.vectorinterpolators.AkimaInterpolator(
             vec_x_val, vec_y_val, extrapolation_mode="nearest"
         )(comp_vec_x_val)
 
@@ -354,28 +354,28 @@ class EchoProxy:
                 n_samples = sel.get_number_of_samples_ensemble()
 
                 if n_samples > 0:
-                    I = Ping.tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
+                    I = theping.tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
                     self.y_coordinate_indice_interpolator[nr] = I
 
-                    I = Ping.tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
+                    I = theping.tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
                     self.sample_nr_to_y_coordinate_interpolator[nr] = I
 
                     if self.has_depths:
-                        I = Ping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [self.min_depths[nr], self.max_depths[nr]], [y1, y2]
                         )
                         self.depth_to_y_coordinate_interpolator[nr] = I
-                        I = Ping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_depths[nr], self.max_depths[nr]]
                         )
                         self.sample_nr_to_depth_interpolator[nr] = I
 
                     if self.has_ranges:
-                        I = Ping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [self.min_ranges[nr], self.max_ranges[nr]], [y1, y2]
                         )
                         self.range_to_y_coordinate_interpolator[nr] = I
-                        I = Ping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_ranges[nr], self.max_ranges[nr]]
                         )
                         self.sample_nr_to_range_interpolator[nr] = I
@@ -384,7 +384,7 @@ class EchoProxy:
                 raise RuntimeError(message)
 
     # def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
-    #     Ping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+    #     theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
 
     #     # convert datetimes to timestamps
     #     if isinstance(vec_x_val[0], dt.datetime):
@@ -410,8 +410,8 @@ class EchoProxy:
     #     vec_x_val = vec_x_val[arg]
 
     #     # convert to to represent indices
-    #     vec_min_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
-    #     vec_max_y = Ping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+    #     vec_min_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+    #     vec_max_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
 
     #     wc_data = [np.empty(0) for _ in self.wc_data]
     #     min_r = np.empty(len(self.pings), dtype=np.float32)
@@ -484,10 +484,10 @@ class EchoProxy:
             self.x_coordinates[-1] + self.x_resolution / 2,
         ]
 
-        self.x_coordinate_indice_interpolator = Ping.tools.vectorinterpolators.NearestInterpolatorDI(
+        self.x_coordinate_indice_interpolator = theping.tools.vectorinterpolators.NearestInterpolatorDI(
             vec_x_val, np.arange(len(self.pings))
         )
-        self.indice_to_x_coordinate_interpolator = Ping.tools.vectorinterpolators.NearestInterpolator(
+        self.indice_to_x_coordinate_interpolator = theping.tools.vectorinterpolators.NearestInterpolator(
             np.arange(len(self.pings)), vec_x_val
         )
 

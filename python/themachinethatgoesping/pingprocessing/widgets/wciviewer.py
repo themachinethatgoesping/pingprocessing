@@ -6,7 +6,7 @@ import ipywidgets
 import matplotlib.pyplot as plt
 from IPython.display import display
 
-import themachinethatgoesping as Ping
+import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.image as mi
 import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
 
@@ -24,7 +24,7 @@ class WCIViewer:
             "from_bottom_xyz": False,
             "wci_value": "sv/av/pv/rv",
             "wci_render": "linear",
-            "ping_sample_selector": Ping.echosounders.pingtools.PingSampleSelector(),
+            "ping_sample_selector": theping.echosounders.pingtools.PingSampleSelector(),
             "mp_cores": 1,
         }
 
@@ -64,7 +64,7 @@ class WCIViewer:
 
         # setup progressbar and buttons
         if progress is None:
-            self.progress = Ping.pingprocessing.widgets.TqdmWidget()
+            self.progress = theping.pingprocessing.widgets.TqdmWidget()
             self.display_progress = True
         else:
             self.progress = progress
@@ -86,7 +86,7 @@ class WCIViewer:
             box_progress = ipywidgets.HBox([self.w_fix_xy, self.w_unfix_xy, self.w_time])
 
         # setup image builder
-        self.imagebuilder = Ping.pingprocessing.watercolumn.image.ImageBuilder(
+        self.imagebuilder = theping.pingprocessing.watercolumn.image.ImageBuilder(
             pings, horizontal_pixels=horizontal_pixels, progress=self.progress
         )
 
@@ -277,7 +277,7 @@ class WCIViewer:
         self.update_view(w)
         t2 = time()
         ping = self.imagebuilder.pings[self.w_index.value]
-        if not isinstance(ping, Ping.echosounders.filetemplates.I_Ping):
+        if not isinstance(ping, theping.echosounders.filetemplates.I_Ping):
             ping = next(iter(ping.values()))
 
         self.w_date.value = ping.get_datetime().strftime("%Y-%m-%d")
