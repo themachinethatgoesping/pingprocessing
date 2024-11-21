@@ -340,7 +340,9 @@ class WCIViewer:
                 self.ax.clear()
                 self.first_blit = True
 
-                self.mapable = self.ax.imshow(self.wci.transpose(), extent=self.extent, **self.args_plot, animated=True)
+                # carch empty wci
+                if len(self.wci) > 0:
+                    self.mapable = self.ax.imshow(self.wci.transpose(), extent=self.extent, **self.args_plot, animated=True)
 
                 self.ax.set_xlim(self.xmin, self.xmax)
                 self.ax.set_ylim(self.ymax, self.ymin)

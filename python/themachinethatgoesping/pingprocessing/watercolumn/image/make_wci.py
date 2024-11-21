@@ -63,6 +63,7 @@ class __WCI_scaling_infos:
         ping_offsets = []
         ping_sensor_configurations = []
 
+        valid_pings = False
         for ping_dict in iterator:
             # dual head case
             if not isinstance(ping_dict, dict):
@@ -70,6 +71,10 @@ class __WCI_scaling_infos:
 
             for ping in ping_dict.values():
                 selection = ping_sample_selector.apply_selection(ping.watercolumn)
+
+                if selection.empty():
+                    continue
+                valid_pings = True
 
                 if from_bottom_xyz:
                     xyz, bd, bdsn = mi_hlp.get_bottom_directions_bottom(ping, selection=selection)
@@ -82,6 +87,9 @@ class __WCI_scaling_infos:
                 geolocations.append(ping.get_geolocation())
                 ping_sensor_configurations.append(ping.get_sensor_configuration())
                 ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
+
+        if not valid_pings:
+            raise ValueError("No valid pings found. (BeamSampleSelection empty for all pings)")
 
         y_res = y_coordinates[1] - y_coordinates[0]
         z_res = z_coordinates[1] - z_coordinates[0]
@@ -148,6 +156,7 @@ class __WCI_scaling_infos:
         ping_offsets = []
         ping_sensor_configurations = []
 
+        valid_pings = False
         for ping_dict in iterator:
             # dual head case
             if not isinstance(ping_dict, dict):
@@ -155,6 +164,10 @@ class __WCI_scaling_infos:
 
             for ping in ping_dict.values():
                 selection = ping_sample_selector.apply_selection(ping.watercolumn)
+
+                if selection.empty():
+                    continue
+                valid_pings = True
 
                 if from_bottom_xyz:
                     xyz, bd, bdsn = mi_hlp.get_bottom_directions_bottom(ping, selection=selection)
@@ -173,6 +186,9 @@ class __WCI_scaling_infos:
                 if hmin is None: _hmin = np.nanmin([_hmin, np.nanmin(xyz.y), tr_y])
                 if hmax is None: _hmax = np.nanmax([_hmax, np.nanmax(xyz.y), tr_y])
                 if vmax is None: _vmax = np.nanmax([_vmax, np.nanmax(xyz.z)])
+
+        if not valid_pings:
+            raise ValueError("No valid pings found. (BeamSampleSelection empty for all pings)")
 
         if hmin is None: hmin = _hmin * 1.02
         if hmax is None: hmax = _hmax * 1.02
@@ -272,24 +288,44 @@ def make_wci(
             raise ValueError("if y_coordinates or z_coordinates is specified, both must be specified.")
 
     if y_coordinates is not None and z_coordinates is not None:
-        scaling_infos = __WCI_scaling_infos.from_pings_and_coordinates(
-            pings=ping,
-            y_coordinates=y_coordinates,
-            z_coordinates=z_coordinates,
-            from_bottom_xyz=from_bottom_xyz,
-            ping_sample_selector=ping_sample_selector,
-        )
+        try:
+            scaling_infos = __WCI_scaling_infos.from_pings_and_coordinates(
+                pings=ping,
+                y_coordinates=y_coordinates,
+                z_coordinates=z_coordinates,
+                from_bottom_xyz=from_bottom_xyz,
+                ping_sample_selector=ping_sample_selector,
+            )
+        except ValueError:
+            y_res = y_coordinates[1] - y_coordinates[0]
+            z_res = z_coordinates[1] - z_coordinates[0]
+
+            # compute the extent
+            extent = [
+                y_coordinates[0] - y_res * 0.5, 
+                y_coordinates[-1] + y_res * 0.5,
+                z_coordinates[-1] + z_res * 0.5,
+                z_coordinates[0] - z_res * 0.5
+                ]
+
+            wci =np.empty((len(y_coordinates), len(z_coordinates)), dtype=np.float32)
+            wci.fill(np.nan)
+            return wci, tuple(extent)
+
     else:
-        scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
-            pings=ping,
-            horizontal_pixels=horizontal_pixels,
-            hmin=hmin,
-            hmax=hmax,
-            vmin=vmin,
-            vmax=vmax,
-            from_bottom_xyz=from_bottom_xyz,
-            ping_sample_selector=ping_sample_selector,
-        )
+        try:
+            scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
+                pings=ping,
+                horizontal_pixels=horizontal_pixels,
+                hmin=hmin,
+                hmax=hmax,
+                vmin=vmin,
+                vmax=vmax,
+                from_bottom_xyz=from_bottom_xyz,
+                ping_sample_selector=ping_sample_selector,
+            )
+        except ValueError:
+            return np.empty((0,0), dtype=np.float32), (0,0,0,0)
 
     # t.append(time()) # 4
     # bt = gp.backtracers.BTConstantSVP(
@@ -305,25 +341,29 @@ def make_wci(
 
     sel = ping_sample_selector.apply_selection(ping.watercolumn)
 
-    # t.append(time()) # 6
-
-    # select which ping.watercolumn.get_ function to call based on wci_value
-    wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, wci_value)
+    if sel.empty():
+        wci = np.empty(sd_grid.shape(), dtype=np.float32)
+        wci.fill(np.nan)
     
-    # t.append(time()) # 7
-    # lookup beam/sample numbers for each pixel
-    wci = bt.lookup(
-        wci, 
-        scaling_infos.bottom_directions, 
-        scaling_infos.bottom_direction_sample_numbers, 
-        sd_grid, 
-        wci_first_sample_number = sel.get_first_sample_number_ensemble(), 
-        wci_sample_number_step = sel.get_sample_step_ensemble(),
-        mp_cores=mp_cores
-    )
+    else:
+        # t.append(time()) # 6
 
-    # t.append(time()) # 8
-    # compute the extent
+        # select which ping.watercolumn.get_ function to call based on wci_value
+        wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, wci_value)
+        
+        # t.append(time()) # 7
+        # lookup beam/sample numbers for each pixel
+        wci = bt.lookup(
+            wci, 
+            scaling_infos.bottom_directions, 
+            scaling_infos.bottom_direction_sample_numbers, 
+            sd_grid, 
+            wci_first_sample_number = sel.get_first_sample_number_ensemble(), 
+            wci_sample_number_step = sel.get_sample_step_ensemble(),
+            mp_cores=mp_cores
+        )
+
+        # t.append(time()) # 8
 
     # for i in range(1,len(t)):
     #    print(f"Time {i}: {t[i]-t[i-1]}, {t[i]-t[0]}")
@@ -365,24 +405,45 @@ def make_wci_dual_head(
         ping1, ping2 = ping2, ping1
 
     if y_coordinates is not None and z_coordinates is not None:
-        scaling_infos = __WCI_scaling_infos.from_pings_and_coordinates(
-            pings=pings,
-            y_coordinates=y_coordinates,
-            z_coordinates=z_coordinates,
-            from_bottom_xyz=from_bottom_xyz,
-            ping_sample_selector=ping_sample_selector,
-        )
+        try:
+            scaling_infos = __WCI_scaling_infos.from_pings_and_coordinates(
+                pings=ping,
+                y_coordinates=y_coordinates,
+                z_coordinates=z_coordinates,
+                from_bottom_xyz=from_bottom_xyz,
+                ping_sample_selector=ping_sample_selector,
+            )
+        except ValueError:
+            y_res = y_coordinates[1] - y_coordinates[0]
+            z_res = z_coordinates[1] - z_coordinates[0]
+
+            # compute the extent
+            extent = [
+                y_coordinates[0] - y_res * 0.5, 
+                y_coordinates[-1] + y_res * 0.5,
+                z_coordinates[-1] + z_res * 0.5,
+                z_coordinates[0] - z_res * 0.5
+                ]
+
+            wci =np.empty((len(y_coordinates), len(z_coordinates)), dtype=np.float32)
+            wci.fill(np.nan)
+            return wci, tuple(extent)
+
     else:
-        scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
-            pings=pings,
-            horizontal_pixels=horizontal_pixels,
-            hmin=hmin,
-            hmax=hmax,
-            vmin=vmin,
-            vmax=vmax,
-            from_bottom_xyz=from_bottom_xyz,
-            ping_sample_selector=ping_sample_selector,
-        )
+        try:
+            scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
+                pings=ping,
+                horizontal_pixels=horizontal_pixels,
+                hmin=hmin,
+                hmax=hmax,
+                vmin=vmin,
+                vmax=vmax,
+                from_bottom_xyz=from_bottom_xyz,
+                ping_sample_selector=ping_sample_selector,
+            )
+        except ValueError:
+            return np.empty((0,0), dtype=np.float32), (0,0,0,0)
+
 
     y_coordinates1 = scaling_infos.y_coordinates[scaling_infos.y_coordinates <= 0]
     y_coordinates2 = scaling_infos.y_coordinates[scaling_infos.y_coordinates > 0]
@@ -433,7 +494,15 @@ def make_wci_stack(
 ):
 
     # Loop preprocess ping infos
-    scaling_infos = __WCI_scaling_infos.from_pings_and_limits(pings, horizontal_pixels, hmin, hmax, vmin, vmax, from_bottom_xyz)
+    scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
+        pings, 
+        horizontal_pixels, 
+        hmin, 
+        hmax, 
+        vmin, 
+        vmax, 
+        from_bottom_xyz,
+        ping_sample_selector=ping_sample_selector,)
 
     WCI = None
     NUM = None
