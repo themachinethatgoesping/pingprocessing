@@ -407,7 +407,7 @@ def make_wci_dual_head(
     if y_coordinates is not None and z_coordinates is not None:
         try:
             scaling_infos = __WCI_scaling_infos.from_pings_and_coordinates(
-                pings=ping,
+                pings=pings,
                 y_coordinates=y_coordinates,
                 z_coordinates=z_coordinates,
                 from_bottom_xyz=from_bottom_xyz,
@@ -432,7 +432,7 @@ def make_wci_dual_head(
     else:
         try:
             scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
-                pings=ping,
+                pings=pings,
                 horizontal_pixels=horizontal_pixels,
                 hmin=hmin,
                 hmax=hmax,
@@ -492,17 +492,20 @@ def make_wci_stack(
     mp_cores: int = 1,
     **kwargs,
 ):
-
-    # Loop preprocess ping infos
-    scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
-        pings, 
-        horizontal_pixels, 
-        hmin, 
-        hmax, 
-        vmin, 
-        vmax, 
-        from_bottom_xyz,
-        ping_sample_selector=ping_sample_selector,)
+    try:
+        scaling_infos = __WCI_scaling_infos.from_pings_and_limits(
+            pings=pings,
+            horizontal_pixels=horizontal_pixels,
+            hmin=hmin,
+            hmax=hmax,
+            vmin=vmin,
+            vmax=vmax,
+            from_bottom_xyz=from_bottom_xyz,
+            ping_sample_selector=ping_sample_selector,
+        )
+    except ValueError:
+        return np.empty((0,0), dtype=np.float32), (0,0,0,0)
+        
 
     WCI = None
     NUM = None
