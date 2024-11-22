@@ -344,13 +344,13 @@ class WCIViewer:
                 if len(self.wci) > 0:
                     self.mapable = self.ax.imshow(self.wci.transpose(), extent=self.extent, **self.args_plot, animated=True)
 
-                self.ax.set_xlim(self.xmin, self.xmax)
-                self.ax.set_ylim(self.ymax, self.ymin)
+                    self.ax.set_xlim(self.xmin, self.xmax)
+                    self.ax.set_ylim(self.ymax, self.ymin)
 
-                if self.colorbar is None:
-                    self.colorbar = self.fig.colorbar(self.mapable)
-                else:
-                    self.colorbar.update_normal(self.mapable)
+                    if self.colorbar is None:
+                        self.colorbar = self.fig.colorbar(self.mapable)
+                    else:
+                        self.colorbar.update_normal(self.mapable)
 
                 self.fig.canvas.draw()
 
