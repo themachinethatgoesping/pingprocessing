@@ -193,7 +193,7 @@ class EchogramViewer:
             self.update_view(reset=True)
             self.progress.set_description('Idle')
 
-    def clear_output(event):
+    def clear_output(self,event=0):
         with self.output:
             self.output.clear_output()
             
