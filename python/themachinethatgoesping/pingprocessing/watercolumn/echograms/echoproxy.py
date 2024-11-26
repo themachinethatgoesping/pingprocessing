@@ -188,6 +188,7 @@ class EchoProxy:
         pss=echosounders.pingtools.PingSampleSelector(),
         wci_value: str = "sv/av/pv/rv",
         linear_mean=True,
+        no_navigation=False,
         apply_pss_to_bottom=False,
         verbose=True,
     ):
@@ -230,18 +231,22 @@ class EchoProxy:
                 continue
 
             c = ping.watercolumn.get_sound_speed_at_transducer()
-            z = ping.get_geolocation().z
             range_res = ping.watercolumn.get_sample_interval() * c * 0.5
             angle_factor = np.cos(
                 np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
             )
             min_r[nr] = sel.get_first_sample_number_ensemble() * range_res
-            max_r[nr] = sel.get_last_sample_number_ensemble() * range_res            
-            min_d[nr] = z + min_r[nr] * angle_factor
-            max_d[nr] = z + max_r[nr] * angle_factor
+            max_r[nr] = sel.get_last_sample_number_ensemble() * range_res      
+            echosounder_d_times.append(times[nr])   
+            
+            if not no_navigation:
+                if not ping.has_geolocation():
+                    raise RuntimeError(f"ERROR: ping {nr} has no geolocation. Either filter pings based on geolocation feature or set no_navigation to True")
 
-            echosounder_d_times.append(times[nr])
-            echosounder_d.append(z)
+                z = ping.get_geolocation().z   
+                min_d[nr] = z + min_r[nr] * angle_factor
+                max_d[nr] = z + max_r[nr] * angle_factor
+                echosounder_d.append(z)
 
             if max_d[nr] > 6000:
                 print(f"ERROR [{nr}], r1{min_r[nr]}, r1{max_r[nr]}, d1{min_d[nr]}, d1{max_d[nr]}", z, angle_factor)
@@ -252,18 +257,20 @@ class EchoProxy:
                     # bd = np.nanmin(p.bottom.get_xyz(sel_bottom).z) + p.get_geolocation().z
                     # this is incorrect
                     br = np.nanquantile(ping.bottom.get_xyz(sel).z, 0.05)
-                    bd = br + z
                     mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
-                    md = mr + z
-                    # bd = minslant_d
-
                     bottom_d_times.append(times[nr])
-                    bottom_d.append(bd)
-                    minslant_d.append(md)
+
+                    if not no_navigation:
+                        bd = br + z
+                        md = mr + z
+                        bottom_d.append(bd)
+                        minslant_d.append(md)
 
         data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean)
         data.set_range_extent(min_r, max_r)
-        data.set_depth_extent(min_d, max_d)
+        if not no_navigation:
+            data.set_depth_extent(min_d, max_d)
+            
         if len(bottom_d) > 0:
             data.add_ping_param("bottom", "Ping time", "Depth (m)", bottom_d_times, bottom_d)
             data.add_ping_param("minslant", "Ping time", "Depth (m)", bottom_d_times, minslant_d)

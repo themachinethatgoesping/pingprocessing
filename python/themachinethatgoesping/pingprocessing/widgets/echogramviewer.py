@@ -256,6 +256,12 @@ class EchogramViewer:
         
         self.progress.description = 'Idle'
 
+    def invert_y_axis(self):
+        with self.output:
+            for ax in self.axes:
+                ax.invert_yaxis()
+            self.fig.canvas.draw()
+
     def update_view(self, w=None, reset=False):
         with self.output:
             # detect changes in view settings
