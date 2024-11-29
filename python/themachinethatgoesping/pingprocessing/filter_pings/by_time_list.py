@@ -47,7 +47,6 @@ def by_time_list(
             break
         if abs(t - times[times_index]) <= max_time_diff_seconds:
             filtered_pings.append(ping)
-            times_index += 1
 
     return filtered_pings
 
@@ -86,10 +85,8 @@ def by_ping_times(
         while reference_pings_index < len(reference_pings) and t-reference_pings[reference_pings_index].get_timestamp() > max_time_diff_seconds:
             reference_pings_index += 1
         if reference_pings_index >= len(reference_pings):
-            print(reference_pings_index,len(reference_pings))
             break
         if abs(t - reference_pings[reference_pings_index].get_timestamp()) <= max_time_diff_seconds:
             filtered_pings.append(ping)
-            reference_pings_index += 1
 
     return filtered_pings
