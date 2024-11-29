@@ -246,6 +246,10 @@ class EchogramViewer:
                         y_kwargs['min_sample_nr'] = ymin
                         y_kwargs['max_sample_nr'] = ymax
                         echogram.set_y_axis_sample_nr(**y_kwargs)
+                    case 'Y indice':
+                        y_kwargs['min_sample_nr'] = ymin
+                        y_kwargs['max_sample_nr'] = ymax
+                        echogram.set_y_axis_y_indice(**y_kwargs)
                     case _:
                         raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
                 

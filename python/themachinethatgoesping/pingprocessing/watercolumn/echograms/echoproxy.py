@@ -2,6 +2,7 @@ import numpy as np
 
 from typing import Tuple
 from collections import defaultdict
+from copy import deepcopy
 import datetime as dt
 from tqdm.auto import tqdm
 
@@ -29,7 +30,7 @@ class EchoProxy:
         self.pings = pings
         # self.wc_data = wc_data
         self.x_axis_name = None
-        self.max_sample_numbers = np.array(
+        self.max_number_of_samples = np.array(
             [sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections]
         )
         self.set_ping_times(times)
@@ -39,7 +40,8 @@ class EchoProxy:
 
         self.has_ranges = False
         self.has_depths = False
-        self.set_y_axis_sample_nr()
+        self.has_sample_nrs = False
+        self.set_y_axis_y_indice()
         self.set_x_axis_ping_nr()
         self.initialized = True
 
@@ -62,7 +64,7 @@ class EchoProxy:
         theping.pingprocessing.core.asserts.assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
         self.min_ranges = np.array(min_ranges)
         self.max_ranges = np.array(max_ranges)
-        self.res_ranges = (self.max_ranges - self.min_ranges) / self.max_sample_numbers
+        self.res_ranges = (self.max_ranges - self.min_ranges) / self.max_number_of_samples
         self.has_ranges = True
         self.initialized = False
 
@@ -70,8 +72,16 @@ class EchoProxy:
         theping.pingprocessing.core.asserts.assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
         self.min_depths = np.array(min_depths)
         self.max_depths = np.array(max_depths)
-        self.res_depths = (self.max_depths - self.min_depths) / self.max_sample_numbers
+        self.res_depths = (self.max_depths - self.min_depths) / self.max_number_of_samples
         self.has_depths = True
+        self.initialized = False
+
+    def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
+        theping.pingprocessing.core.asserts.assert_length("set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs])
+        self.min_sample_nrs = np.array(min_sample_nrs)
+        self.max_sample_nrs = np.array(max_sample_nrs)
+        self.res_sample_nrs = (self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples
+        self.has_sample_nrs = True
         self.initialized = False
 
     def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
@@ -79,7 +89,7 @@ class EchoProxy:
             "add_ping_param", x_reference, ["Ping number", "Ping time", "Date time"]
         )
         theping.pingprocessing.core.asserts.assert_valid_argument(
-            "add_ping_param", y_reference, ["Sample number", "Depth (m)", "Range (m)"]
+            "add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"]
         )
 
         # convert datetimes to timestamps
@@ -144,7 +154,18 @@ class EchoProxy:
         return_param.fill(np.nan)
 
         match reference:
+            case "Y indice":
+                for nr, (indice, p) in enumerate(zip(x_indices, param)):
+                    if np.isfinite(p):
+                        I = self.y_indice_to_y_coordinate_interpolator[indice]
+                        if I is not None:
+                            return_param[nr] = I(p)
+
             case "Sample number":
+                assert (
+                    self.has_sample_nrs
+                ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
+
                 for nr, (indice, p) in enumerate(zip(x_indices, param)):
                     if np.isfinite(p):
                         I = self.sample_nr_to_y_coordinate_interpolator[indice]
@@ -165,7 +186,7 @@ class EchoProxy:
             case "Range (m)":
                 assert (
                     self.has_rangess
-                ), "ERROR: Ranges values not initialized for ech data, call set_depth_extent method"
+                ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
 
                 for nr, (indice, p) in enumerate(zip(x_indices, param)):
                     if np.isfinite(p):
@@ -194,6 +215,8 @@ class EchoProxy:
     ):
 
         # wc_data = [np.empty(0) for _ in pings]
+        min_s = np.empty(len(pings), dtype=np.float32)
+        max_s = np.empty(len(pings), dtype=np.float32)
         min_r = np.empty(len(pings), dtype=np.float32)
         max_r = np.empty(len(pings), dtype=np.float32)
         min_d = np.empty(len(pings), dtype=np.float32)
@@ -206,7 +229,7 @@ class EchoProxy:
         echosounder_d_times = []
         echosounder_d = []
 
-        for arg in [min_r, max_r, min_d, max_d, times]:
+        for arg in [min_s,max_s,min_r, max_r, min_d, max_d, times]:
             arg.fill(np.nan)
 
         beam_sample_selections = []
@@ -235,8 +258,10 @@ class EchoProxy:
             angle_factor = np.cos(
                 np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
             )
-            min_r[nr] = sel.get_first_sample_number_ensemble() * range_res
-            max_r[nr] = sel.get_last_sample_number_ensemble() * range_res      
+            min_s[nr] = sel.get_first_sample_number_ensemble()
+            max_s[nr] = sel.get_last_sample_number_ensemble()
+            min_r[nr] = min_s[nr] * range_res
+            max_r[nr] = max_s[nr] * range_res      
             echosounder_d_times.append(times[nr])   
             
             if not no_navigation:
@@ -249,7 +274,7 @@ class EchoProxy:
                 echosounder_d.append(z)
 
             if max_d[nr] > 6000:
-                print(f"ERROR [{nr}], r1{min_r[nr]}, r1{max_r[nr]}, d1{min_d[nr]}, d1{max_d[nr]}", z, angle_factor)
+                print(f"ERROR [{nr}], s0{min_s[nr]}, s1{max_s[nr]}, r0{min_r[nr]}, r1{max_r[nr]}, d0{min_d[nr]}, d1{max_d[nr]}", z, angle_factor)
 
             if ping.has_bottom():
                 if ping.bottom.has_xyz():
@@ -267,6 +292,7 @@ class EchoProxy:
                         minslant_d.append(md)
 
         data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean)
+        data.set_sample_nr_extent(min_s, max_s)
         data.set_range_extent(min_r, max_r)
         if not no_navigation:
             data.set_depth_extent(min_d, max_d)
@@ -313,10 +339,20 @@ class EchoProxy:
 
         # filter
         if not np.isfinite(min_y):
-            min_y = np.nanquantile(vec_min_y, 0.25) / 1.5
+            iqr = np.nanquantile(vec_min_y, 0.90) - np.nanquantile(vec_min_y, 0.10)
+            med = np.nanmedian(vec_min_y)
+            min_y = med - iqr * 1.5
+            print(f"min_y: {min_y}, med: {med}, iqr: {iqr}")
         if not np.isfinite(max_y):
-            max_y = np.nanquantile(vec_max_y, 0.75) * 1.5
-        min_resolution = np.nanquantile(vec_res_y, 0.25) / 1.5
+            iqr = np.nanquantile(vec_max_y, 0.90) - np.nanquantile(vec_max_y, 0.10)
+            med = np.nanmedian(vec_max_y)
+            max_y = med + iqr * 1.5
+            print(f"max_y: {max_y}, med: {med}, iqr: {iqr}")
+
+
+        iqr = np.nanquantile(vec_res_y, 0.75) - np.nanquantile(vec_res_y, 0.25)
+        med = np.nanmedian(vec_res_y)
+        min_resolution = med - iqr * 1.5
 
         res = np.nanmax([np.nanmin(vec_res_y), min_resolution])
         y_min = np.nanmax([np.nanmin(vec_min_y), min_y])
@@ -351,22 +387,24 @@ class EchoProxy:
         self.vec_max_y = vec_max_y
 
         self.y_coordinate_indice_interpolator = [None for _ in self.pings]
-        self.sample_nr_to_y_coordinate_interpolator = [None for _ in self.pings]
+        self.y_indice_to_y_coordinate_interpolator = [None for _ in self.pings]
         self.depth_to_y_coordinate_interpolator = [None for _ in self.pings]
         self.range_to_y_coordinate_interpolator = [None for _ in self.pings]
-        self.sample_nr_to_depth_interpolator = [None for _ in self.pings]
-        self.sample_nr_to_range_interpolator = [None for _ in self.pings]
+        self.sample_nr_to_y_coordinate_interpolator = [None for _ in self.pings]
+        self.y_indice_to_depth_interpolator = [None for _ in self.pings]
+        self.y_indice_to_range_interpolator = [None for _ in self.pings]
+        self.y_indice_to_sample_nr_interpolator = [None for _ in self.pings]
 
         for nr, (y1, y2, sel) in enumerate(zip(vec_min_y, vec_max_y, self.beam_sample_selections)):
             try:
                 n_samples = sel.get_number_of_samples_ensemble()
 
-                if n_samples > 0:
+                if n_samples > 1:
                     I = theping.tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
                     self.y_coordinate_indice_interpolator[nr] = I
 
                     I = theping.tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
-                    self.sample_nr_to_y_coordinate_interpolator[nr] = I
+                    self.y_indice_to_y_coordinate_interpolator[nr] = I
 
                     if self.has_depths:
                         I = theping.tools.vectorinterpolators.LinearInterpolatorF(
@@ -376,7 +414,7 @@ class EchoProxy:
                         I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_depths[nr], self.max_depths[nr]]
                         )
-                        self.sample_nr_to_depth_interpolator[nr] = I
+                        self.y_indice_to_depth_interpolator[nr] = I
 
                     if self.has_ranges:
                         I = theping.tools.vectorinterpolators.LinearInterpolatorF(
@@ -386,100 +424,143 @@ class EchoProxy:
                         I = theping.tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_ranges[nr], self.max_ranges[nr]]
                         )
-                        self.sample_nr_to_range_interpolator[nr] = I
+                        self.y_indice_to_range_interpolator[nr] = I
+
+                    if self.has_sample_nrs:
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                            [self.min_sample_nrs[nr], self.max_sample_nrs[nr]], [y1, y2]
+                        )
+                        self.sample_nr_to_y_coordinate_interpolator[nr] = I
+                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                            [0, n_samples - 1], [self.min_sample_nrs[nr], self.max_sample_nrs[nr]]
+                        )
+                        self.y_indice_to_sample_nr_interpolator[nr] = I
+
             except Exception as e:
                 message = f"{e}\n- nr {nr}\n- y1 {y1}\n -y2 {y2}\n -n_samples {n_samples}"
                 raise RuntimeError(message)
 
-    # def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
-    #     theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+    def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
+        theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+        
+        # convert datetimes to timestamps
+        if isinstance(vec_x_val[0], dt.datetime):
+            vec_x_val = [x.timestamp() for x in vec_x_val]
+        
+        # convert to numpy arrays
+        vec_x_val = np.array(vec_x_val)
+        vec_min_y = np.array(vec_min_y)
+        vec_max_y = np.array(vec_max_y)
+        
+        # filter nans and infs
+        arg = np.where(np.isfinite(vec_x_val))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
+        arg = np.where(np.isfinite(vec_min_y))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
+        arg = np.where(np.isfinite(vec_max_y))[0]
+        vec_min_y = vec_min_y[arg]
+        vec_max_y = vec_max_y[arg]
+        vec_x_val = vec_x_val[arg]
+        
+        # convert to to represent indices
+        vec_min_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+        vec_max_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
+        
+        #wc_data = [np.empty(0) for _ in self.wc_data]
+        beam_sample_selections = deepcopy(self.beam_sample_selections)
+        min_s = np.empty(len(self.pings), dtype=np.float32)
+        max_s = np.empty(len(self.pings), dtype=np.float32)
+        min_r = np.empty(len(self.pings), dtype=np.float32)
+        max_r = np.empty(len(self.pings), dtype=np.float32)
+        min_d = np.empty(len(self.pings), dtype=np.float32)
+        max_d = np.empty(len(self.pings), dtype=np.float32)
+        
+        for arg in [min_s, max_s, min_r, max_r, min_d, max_d]:
+            arg.fill(np.nan)
+        global nr,bss,i1,i2
+        for nr, (y1, y2, bss) in enumerate(zip(vec_min_y, vec_max_y, beam_sample_selections)):
+            nsamples = bss.get_number_of_samples_ensemble()
+            if nsamples > 0:
+                i1 = int(self.y_coordinate_indice_interpolator[nr](y1)+0.5)
+                i2 = int(self.y_coordinate_indice_interpolator[nr](y2)+0.5)
+                iy1 = self.y_indice_to_y_coordinate_interpolator[nr](i1)
+                iy2 = self.y_indice_to_y_coordinate_interpolator[nr](i2)
+                isn1 = self.y_indice_to_sample_nr_interpolator[nr](i1)
+                isn2 = self.y_indice_to_sample_nr_interpolator[nr](i2)
+        
+                if iy1 < y1:
+                    iy1 += self.y_resolution
+                    i1 += 1
+        
+                if iy2 > y2:
+                    iy2 -= self.y_resolution
+                    i2 -= 1
+        
+                if i1 < 0:
+                    i1 = 0
+                if i2 < 0:
+                    i2 = 0
+                isn1 = int(self.y_indice_to_sample_nr_interpolator[nr](i1)+0.5)
+                isn2 = int(self.y_indice_to_sample_nr_interpolator[nr](i2)+0.5)
+        
+                # #self.wc_data[nr = self.wc_data[nr][i1 : i2 + 1]
+                bss.set_first_sample_number_ensemble(isn1)
+                bss.set_last_sample_number_ensemble(isn2)
+                if bss.get_number_of_samples_ensemble() > 1:
+                    if self.has_depths:
+                        min_d[nr] = self.y_indice_to_depth_interpolator[nr](i1)
+                        max_d[nr] = self.y_indice_to_depth_interpolator[nr](i2)
+                    if self.has_ranges:
+                        min_r[nr] = self.y_indice_to_range_interpolator[nr](i1)
+                        max_r[nr] = self.y_indice_to_range_interpolator[nr](i2)
+                    if self.has_sample_nrs:
+                        min_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i1)
+                        max_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i2)
+        
+        out = EchoProxy(
+            pings = self.pings, 
+            times = self.ping_times, 
+            beam_sample_selections = beam_sample_selections, 
+            wci_value = self.wci_value,
+            linear_mean =self.linear_mean)
+        if self.has_depths:
+            out.set_depth_extent(min_d, max_d)
+        if self.has_ranges:
+            out.set_range_extent(min_r, max_r)
+        if self.has_sample_nrs:
+            out.set_sample_nr_extent(min_s, max_s)
+        
+        out.set_ping_times(self.ping_times, self.time_zone)
+        out.set_ping_numbers(self.ping_numbers.copy())
+        out.param = self.param.copy()
 
-    #     # convert datetimes to timestamps
-    #     if isinstance(vec_x_val[0], dt.datetime):
-    #         vec_x_val = [x.timestamp() for x in vec_x_val]
-
-    #     # convert to numpy arrays
-    #     vec_x_val = np.array(vec_x_val)
-    #     vec_min_y = np.array(vec_min_y)
-    #     vec_max_y = np.array(vec_max_y)
-
-    #     # filter nans and infs
-    #     arg = np.where(np.isfinite(vec_x_val))[0]
-    #     vec_min_y = vec_min_y[arg]
-    #     vec_max_y = vec_max_y[arg]
-    #     vec_x_val = vec_x_val[arg]
-    #     arg = np.where(np.isfinite(vec_min_y))[0]
-    #     vec_min_y = vec_min_y[arg]
-    #     vec_max_y = vec_max_y[arg]
-    #     vec_x_val = vec_x_val[arg]
-    #     arg = np.where(np.isfinite(vec_max_y))[0]
-    #     vec_min_y = vec_min_y[arg]
-    #     vec_max_y = vec_max_y[arg]
-    #     vec_x_val = vec_x_val[arg]
-
-    #     # convert to to represent indices
-    #     vec_min_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(self.vec_x_val)
-    #     vec_max_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(self.vec_x_val)
-
-    #     wc_data = [np.empty(0) for _ in self.wc_data]
-    #     min_r = np.empty(len(self.pings), dtype=np.float32)
-    #     max_r = np.empty(len(self.pings), dtype=np.float32)
-    #     min_d = np.empty(len(self.pings), dtype=np.float32)
-    #     max_d = np.empty(len(self.pings), dtype=np.float32)
-
-    #     for arg in [min_r, max_r, min_d, max_d]:
-    #         arg.fill(np.nan)
-
-    #     for nr, (y1, y2, wci) in enumerate(zip(vec_min_y, vec_max_y, self.wc_data)):
-    #         if len(wci) > 0:
-    #             i1 = int(self.y_coordinate_indice_interpolator[nr](y1))
-    #             i2 = int(self.y_coordinate_indice_interpolator[nr](y2))
-    #             iy1 = self.sample_nr_to_y_coordinate_interpolator[nr](i1)
-    #             iy2 = self.sample_nr_to_y_coordinate_interpolator[nr](i2)
-
-    #             if iy1 < y1:
-    #                 iy1 += self.y_resolution
-    #                 i1 += 1
-
-    #             if iy2 > y2:
-    #                 iy2 -= self.y_resolution
-    #                 i2 -= 1
-
-    #             if i1 < 0:
-    #                 i1 = 0
-    #             if i2 < 0:
-    #                 i2 = 0
-    #             if i1 >= len(wci):
-    #                 i1 = len(wci) - 1
-    #             if i2 >= len(wci):
-    #                 i2 = len(wci) - 1
-
-    #             if i2 <= i1:
-    #                 continue
-
-    #             wc_data[nr] = self.wc_data[nr][i1 : i2 + 1]
-    #             if self.has_depths:
-    #                 min_d[nr] = self.sample_nr_to_depth_interpolator[nr](i1)
-    #                 max_d[nr] = self.sample_nr_to_depth_interpolator[nr](i2)
-    #             if self.has_ranges:
-    #                 min_r[nr] = self.sample_nr_to_range_interpolator[nr](i1)
-    #                 max_r[nr] = self.sample_nr_to_range_interpolator[nr](i2)
-
-    #     out = EchoData(wc_data, self.ping_times)
-    #     if self.has_depths:
-    #         out.set_depth_extent(min_d, max_d)
-    #     if self.has_ranges:
-    #         out.set_range_extent(min_d, max_d)
-
-    #     out.set_ping_times(self.ping_times, self.time_zone)
-    #     out.set_ping_numbers(self.ping_numbers)
-    #     out.param = self.param
-    #     # out.x_kwargs = self.x_kwargs
-    #     # out.x_axis_function = self.x_axis_function
-    #     # out.y_kwargs = self.y_kwargs
-    #     # out.y_axis_function = self.y_axis_function
-
-    #     return out
+        match self.x_axis_name:
+            case "Date time":
+                out.set_x_axis_date_time(**self.x_kwargs)
+            case "Ping time":
+                out.set_x_axis_ping_time(**self.x_kwargs)
+            case "Ping number":
+                out.set_x_axis_ping_nr(**self.x_kwargs)
+            case _:
+                raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                
+        match self.y_axis_name:
+            case "Depth (m)":
+                out.set_y_axis_depth(**self.y_kwargs)
+            case "Range (m)":
+                out.set_y_axis_range(**self.y_kwargs)
+            case "Sample number":
+                out.set_y_axis_sample_nr(**self.y_kwargs)
+            case "Y indice":
+                out.set_y_axis_y_indice(**self.y_kwargs)
+            case _:
+                raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
+        
+        return out
 
     def set_x_coordinates(self, name, x_coordinates, x_resolution, x_interpolation_limit, vec_x_val):
         self.x_axis_name = name
@@ -499,12 +580,12 @@ class EchoProxy:
             np.arange(len(self.pings)), vec_x_val
         )
 
-    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=2048):
+    def set_y_axis_y_indice(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=2048):
         vec_min_y = np.zeros((len(self.pings)))
-        vec_max_y = self.max_sample_numbers
+        vec_max_y = self.max_number_of_samples
 
         self.y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_samples": max_samples}
-        self.y_axis_function = self.set_y_axis_sample_nr
+        self.y_axis_function = self.set_y_axis_y_indice
 
         y_coordinates, y_res = self.sample_y_coordinates(
             vec_min_y=vec_min_y,
@@ -515,7 +596,7 @@ class EchoProxy:
             max_samples=max_samples,
         )
 
-        self.set_y_coordinates("Sample number", y_coordinates, y_res, vec_min_y, vec_max_y)
+        self.set_y_coordinates("Y indice", y_coordinates, y_res, vec_min_y, vec_max_y)
 
     def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_samples=2048):
         assert self.has_depths, "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
@@ -550,6 +631,23 @@ class EchoProxy:
         )
 
         self.set_y_coordinates("Range (m)", y_coordinates, y_res, self.min_ranges, self.max_ranges)
+
+    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_samples=2048):
+        assert self.has_sample_nrs, "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
+
+        self.y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_samples": max_samples}
+        self.y_axis_function = self.set_y_axis_sample_nr
+
+        y_coordinates, y_res = self.sample_y_coordinates(
+            vec_min_y=self.min_sample_nrs,
+            vec_max_y=self.max_sample_nrs,
+            vec_res_y=self.res_sample_nrs,
+            min_y=min_sample_nr,
+            max_y=max_sample_nr,
+            max_samples=max_samples,
+        )
+
+        self.set_y_coordinates("Sample number", y_coordinates, y_res, self.min_sample_nrs, self.max_sample_nrs)
 
     def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_steps=8096):
 
@@ -711,7 +809,7 @@ class EchoProxy:
 
         for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.get_wci(wci_index)
-            if len(wci) > 0:
+            if len(wci) > 1:
                 y1, y2 = self.get_y_indices(wci_index)
                 image[image_index, y1] = wci[y2]
 
