@@ -316,6 +316,8 @@ class EchogramViewer:
                     else:
                         self.colorbar[i].update_normal(self.mapables[0])
 
+                self.callback_view()
+
                 if reset:
                     ax.set_xlim(minx,maxx)
                     ax.set_ylim(maxy,miny)
@@ -332,6 +334,9 @@ class EchogramViewer:
 
             except Exception as e:
                 raise (e)
+
+    def callback_view(self):
+        pass
 
     def click_echogram(self, event):
         if self.pingviewer is None:

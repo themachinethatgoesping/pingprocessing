@@ -538,29 +538,32 @@ class EchoProxy:
         out.set_ping_numbers(self.ping_numbers.copy())
         out.param = self.param.copy()
 
+        self.copy_xy_axis(out)
+        
+        return out
+
+    def copy_xy_axis(self,other):
         match self.x_axis_name:
             case "Date time":
-                out.set_x_axis_date_time(**self.x_kwargs)
+                other.set_x_axis_date_time(**self.x_kwargs)
             case "Ping time":
-                out.set_x_axis_ping_time(**self.x_kwargs)
+                other.set_x_axis_ping_time(**self.x_kwargs)
             case "Ping number":
-                out.set_x_axis_ping_nr(**self.x_kwargs)
+                other.set_x_axis_ping_nr(**self.x_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
                 
         match self.y_axis_name:
             case "Depth (m)":
-                out.set_y_axis_depth(**self.y_kwargs)
+                other.set_y_axis_depth(**self.y_kwargs)
             case "Range (m)":
-                out.set_y_axis_range(**self.y_kwargs)
+                other.set_y_axis_range(**self.y_kwargs)
             case "Sample number":
-                out.set_y_axis_sample_nr(**self.y_kwargs)
+                other.set_y_axis_sample_nr(**self.y_kwargs)
             case "Y indice":
-                out.set_y_axis_y_indice(**self.y_kwargs)
+                other.set_y_axis_y_indice(**self.y_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
-        
-        return out
 
     def set_x_coordinates(self, name, x_coordinates, x_resolution, x_interpolation_limit, vec_x_val):
         self.x_axis_name = name
