@@ -6,7 +6,7 @@ import themachinethatgoesping as theping
 import numpy as np
 
 class EchoLayer:
-    def __init__(self,echodata,vec_x_val,vec_min_y,vec_max_y):
+    def __init__(self, echodata, vec_x_val, vec_min_y, vec_max_y):
         theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
         
         # convert datetimes to timestamps
@@ -51,16 +51,16 @@ class EchoLayer:
     @classmethod
     def from_ping_param_offsets_absolute(cls, echodata, ping_param_name, offset_0, offset_1):
         x,y = echodata.get_ping_param(ping_param_name)
-        y0 = np.array(y)+offset_0
-        y1 = np.array(y)+offset_1
+        y0 = np.array(y) + offset_0
+        y1 = np.array(y) + offset_1
         return cls(echodata,x,y0,y1)
         
     @classmethod
     def from_ping_param_offsets_relative(cls, echodata, ping_param_name, offset_0, offset_1):
         x,y = echodata.get_ping_param(ping_param_name)
-        y0 = np.array(y)*offset_0
-        y1 = np.array(y)*offset_1
-        return cls(echodata,x,y0,y1)
+        y0 = np.array(y) * offset_0
+        y1 = np.array(y) * offset_1
+        return cls(echodata, x, y0, y1)
 
     def get_y_indices(self, wci_nr):        
         n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
@@ -75,4 +75,39 @@ class EchoLayer:
         valid_coordinates = np.where(np.logical_and(y_indices_wci >= start_y, y_indices_wci < end_y))[0]
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
+
+    def combine(self, other):
+        theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
+        self.i0 = np.maximum(self.i0, other.i0)
+        self.i1 = np.minimum(self.i1, other.i1)
     
+class WCIInfo:
+    def __init__(self, echodata, nr):
+        self.echodata = echodata
+        self.nr = nr
+
+    def get_wci(self):
+        return self.echodata.get_wci(self.nr)        
+    
+    def get_wci_layers(self):
+        return self.echodata.get_wci_layers(self.nr)
+
+    def get_extent_layers(self, axis_name=None):
+        return self.echodata.get_extent_layers(self.nr, axis_name=axis_name)
+        
+
+class GeneratorWCIInfo:
+    def __init__(self, echodata, keep_to_xlimits = True):
+        self.echodata = echodata
+
+        if keep_to_xlimits:
+            xcoord = self.echodata.get_x_indices()[1]
+            self.nrs = np.arange(xcoord[0],xcoord[-1]+1)
+        else:
+            self.nrs = range(len(self.echodata.ping_times))
+
+    def __len__(self): 
+        return len(self.nrs)
+
+    def __getitem__(self, nr):
+        return WCIInfo(self.echodata, self.nrs[nr])

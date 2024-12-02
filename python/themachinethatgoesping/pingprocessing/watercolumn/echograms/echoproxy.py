@@ -13,7 +13,7 @@ from themachinethatgoesping import echosounders, pingprocessing
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
-from .echolayer import EchoLayer
+from .echolayer import EchoLayer, WCIInfo, GeneratorWCIInfo
 
 
 class EchoProxy:
@@ -894,6 +894,14 @@ class EchoProxy:
 
         return wci_layers
 
+    def iterate_wci_layers(self):
+        for nr in range(len(self.ping_times)):
+            yield self.get_wci_layers(nr)
+
+    def iterate_wci_layers_in_xlimits(self, ping_step=1):
+        for nr in np.arange(self.x_coordinates[0], self.x_coordinates[-1], ping_step):
+            yield self.get_wci_layers(nr)
+
     def get_extent_layers(self, nr, axis_name = None):
         if axis_name is None:
             axis_name = self.y_axis_name
@@ -909,43 +917,62 @@ class EchoProxy:
                         self.has_sample_nrs
                     ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
                     
-                    extents[key] = echo.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
 
                 case "Depth (m)":
                     assert (
                         self.has_depths
                     ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
 
-                    extents[key] = echo.y_indice_to_depth_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
 
                 case "Range (m)":
                     assert (
                         self.has_rangess
                     ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
 
-                    extents[key] = echo.y_indice_to_range_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
 
                 case _:
                     raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
 
         return extents
 
+    def iterate_extent_layers(self, axis_name = None):
+        for nr in range(len(self.ping_times)):
+            yield self.get_extent_layers(nr, axis_name)
+
+    def iterate_extent_layers_in_xlimits(self, ping_step=1, axis_name = None):
+        for nr in np.arange(self.x_coordinates[0], self.x_coordinates[-1], ping_step):
+            yield self.get_extent_layers(nr, axis_name)
+
+    def __set_layer__(self, name, layer):
+        if name in self.layers.keys():
+            self.layers[name].combine(layer)
+        else: 
+            self.layers[name] = layer
+
     def add_layer(self, name, vec_x_val,vec_min_y,vec_max_y):
-        self.layers[name] = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
+        layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
+        self.__set_layer__(name, layer)
         
     def add_layer_from_static_layer(self, name, min_y, max_y):
-        self.layers[name] = EchoLayer.from_static_layer(self, min_y, max_y)
+        layer = EchoLayer.from_static_layer(self, min_y, max_y)
+        self.__set_layer__(name, layer)
         
     def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
-        print('add_layer_from_ping_param_offsets_absolute',name)
-        self.layers[name] = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
+        layer = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
+        self.__set_layer__(name, layer)
         
     def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
-        print('add_layer_from_ping_param_offsets_relative',name)
-        self.layers[name] = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
+        layer = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
+        self.__set_layer__(name, layer)
 
     def remove_layer(self, name):
         self.layers.pop(name)
 
     def clear_layers(self):
         self.layers = {}
+
+    def iterate_wci_infos(self, keep_to_xlimits = True):
+        return GeneratorPings(self, keep_to_xlimits)
