@@ -91,7 +91,7 @@ class EchoLayer:
         self.i0 = np.maximum(self.i0, other.i0)
         self.i1 = np.minimum(self.i1, other.i1)
     
-class WCIInfo:
+class PingData:
     def __init__(self, echodata, nr):
         self.echodata = echodata
         self.nr = nr
@@ -104,9 +104,17 @@ class WCIInfo:
 
     def get_extent_layers(self, axis_name=None):
         return self.echodata.get_extent_layers(self.nr, axis_name=axis_name)
-        
 
-class GeneratorWCIInfo:
+    def get_limits_layers(self, axis_name=None):
+        return self.echodata.get_limits_layers(self.nr, axis_name=axis_name)
+
+    def get_ping_time(self):
+        return self.echodata.ping_times[self.nr]
+
+    def get_datetime(self):
+        return dt.datetime.fromtimestamp(self.get_ping_time(), self.echodata.time_zone)
+
+class GeneratorPingData:
     def __init__(self, echodata, keep_to_xlimits = True):
         self.echodata = echodata
 
@@ -120,4 +128,4 @@ class GeneratorWCIInfo:
         return len(self.nrs)
 
     def __getitem__(self, nr):
-        return WCIInfo(self.echodata, self.nrs[nr])
+        return PingData(self.echodata, self.nrs[nr])

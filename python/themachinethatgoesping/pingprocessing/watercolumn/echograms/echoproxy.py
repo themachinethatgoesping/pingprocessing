@@ -13,7 +13,7 @@ from themachinethatgoesping import echosounders, pingprocessing
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
-from .echolayer import EchoLayer, WCIInfo, GeneratorWCIInfo
+from .echolayer import EchoLayer, PingData, GeneratorPingData
 
 
 class EchoProxy:
@@ -930,6 +930,42 @@ class EchoProxy:
 
         return extents
 
+    def get_limits_layers(self, nr, axis_name = None):
+        if axis_name is None:
+            axis_name = self.y_axis_name
+        extents = {}
+        
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr]-0.5, layer.i1[nr]-0.5
+
+                case "Sample number":
+                    assert (
+                        self.has_sample_nrs
+                    ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
+                    
+                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr],layer.i1[nr]-1])
+
+                case "Depth (m)":
+                    assert (
+                        self.has_depths
+                    ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
+
+                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr],layer.i1[nr]-1])
+
+                case "Range (m)":
+                    assert (
+                        self.has_rangess
+                    ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
+
+                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr],layer.i1[nr]-1])
+
+                case _:
+                    raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
+
+        return extents
+
     def __set_layer__(self, name, layer):
         if name in self.layers.keys():
             self.layers[name].combine(layer)
@@ -958,5 +994,5 @@ class EchoProxy:
     def clear_layers(self):
         self.layers = {}
 
-    def iterate_wci_infos(self, keep_to_xlimits = True):
-        return GeneratorPings(self, keep_to_xlimits)
+    def iterate_ping_data(self, keep_to_xlimits = True):
+        return GeneratorPingData(self, keep_to_xlimits)
