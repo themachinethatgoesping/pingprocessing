@@ -13,7 +13,7 @@ import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
 
 class EchogramViewer:
-    def __init__(self, echogramdata, name="Echogram", names = None, figure=None, progress=None, show=True, cmap="YlGnBu_r", **kwargs):
+    def __init__(self, echogramdata, name="Echogram", names = None, figure=None, progress=None, show=True, cmap="YlGnBu_r", cmap_layer="jet", **kwargs):
         self.mapables = []
         if not isinstance(echogramdata, list):
             echogramdata = [echogramdata]
@@ -38,6 +38,11 @@ class EchogramViewer:
             self.cmap = plt.get_cmap(cmap)
         else:
             self.cmap = cmap
+
+        if isinstance(cmap_layer, str):
+            self.cmap_layer = plt.get_cmap(cmap_layer)
+        else:
+            self.cmap_layer = cmap_layer
             
         # plot arguments
         self.args_plot = {
@@ -48,6 +53,8 @@ class EchogramViewer:
             "interpolation": "nearest"
         }
         self.args_plot.update(kwargs)
+        self.args_plot_layer = self.args_plot.copy()
+        self.args_plot_layer["cmap"] = self.cmap_layer
         
         if figure is None:
             plt.ioff()
@@ -182,13 +189,21 @@ class EchogramViewer:
             
             self.images_background, self.extents_background = [],[]
             self.high_res_images, self.high_res_extents = [],[]
+            self.layer_images, self.layer_extents = [],[]
             for i,echogram in enumerate(self.echogramdata):
             
                 self.progress.set_description(f'Updating echogram [{i},{len(self.echogramdata)}]')
                 
-                im,ex = echogram.build_image(progress=self.progress)   
-                self.images_background.append(im)
-                self.extents_background.append(ex)
+                if len(echogram.layers.keys()) == 0:
+                    im,ex = echogram.build_image(progress=self.progress)   
+                    self.images_background.append(im)
+                    self.extents_background.append(ex)
+                else:
+                    im, im_layer, ex = echogram.build_image_and_layer_image(progress=self.progress)
+                    self.layer_images.append(im_layer)
+                    self.layer_extents.append(ex)
+                    self.images_background.append(im)
+                    self.extents_background.append(ex)
                 
             self.update_view(reset=True)
             self.progress.set_description('Idle')
@@ -200,6 +215,7 @@ class EchogramViewer:
     def show_background_zoom(self, event = 0):
         with self.output:
             self.high_res_images, self.high_res_extents = [],[]
+            self.layer_images, self.layer_extents = [],[]
 
             #check x/y axis
             for i,echogram in enumerate(self.echogramdata):
@@ -253,15 +269,23 @@ class EchogramViewer:
                     case _:
                         raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
                 
-                im,ex = echogram.build_image(progress=self.progress)
-                self.high_res_images.append(im)
-                self.high_res_extents.append(ex)
+                if len(echogram.layers.keys()) == 0:
+                    im,ex = echogram.build_image(progress=self.progress)
+                    self.high_res_images.append(im)
+                    self.high_res_extents.append(ex)
+                else:
+                    im,im_layer,ex = echogram.build_image_and_layer_image(progress=self.progress)
+                    self.high_res_images.append(im)
+                    self.high_res_extents.append(ex)
+                    self.layer_images.append(im_layer)
+                    self.layer_extents.append(ex)
         self.update_view()
         
         self.progress.description = 'Idle'
 
     def invert_y_axis(self):
         with self.output:
+
             for ax in self.axes:
                 ax.invert_yaxis()
             self.fig.canvas.draw()
@@ -287,11 +311,11 @@ class EchogramViewer:
                 minx,maxx,miny,maxy = np.nan,np.nan,np.nan,np.nan
                 
                 for i,ax in enumerate(self.axes):
-                    zorder=1
+                    #zorder=1
                     self.mapables.append(ax.imshow(
                         self.images_background[i].transpose(), 
                         extent=self.extents_background[i], 
-                        zorder=zorder,  
+                        #zorder=zorder,  
                         **self.args_plot))
     
                     if reset:
@@ -303,12 +327,20 @@ class EchogramViewer:
                         maxy = np.nanmax([ylim[0],maxy])
                     
                     if len(self.high_res_images) > i:
-                        zorder+=1
+                        #zorder+=1
                         self.mapables.append(
                             ax.imshow(self.high_res_images[i].transpose(), 
                                            extent=self.high_res_extents[i], 
-                                           zorder=zorder, 
+                                           #zorder=zorder, 
                                            **self.args_plot))
+
+                    if len(self.layer_images) > i:
+                        #zorder+=1
+                        self.mapables.append(
+                            ax.imshow(self.layer_images[i].transpose(), 
+                                        extent=self.layer_extents[i], 
+                                        #zorder=zorder, 
+                                        **self.args_plot_layer))
                     
     
                     if self.colorbar[i] is None:
