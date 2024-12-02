@@ -113,19 +113,3 @@ class PingData:
 
     def get_datetime(self):
         return dt.datetime.fromtimestamp(self.get_ping_time(), self.echodata.time_zone)
-
-class GeneratorPingData:
-    def __init__(self, echodata, keep_to_xlimits = True):
-        self.echodata = echodata
-
-        if keep_to_xlimits:
-            xcoord = self.echodata.get_x_indices()[1]
-            self.nrs = np.arange(xcoord[0],xcoord[-1]+1)
-        else:
-            self.nrs = range(len(self.echodata.ping_times))
-
-    def __len__(self): 
-        return len(self.nrs)
-
-    def __getitem__(self, nr):
-        return PingData(self.echodata, self.nrs[nr])

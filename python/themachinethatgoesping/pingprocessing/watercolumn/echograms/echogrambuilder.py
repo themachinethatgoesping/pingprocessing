@@ -995,4 +995,10 @@ class EchogramBuilder:
         self.layers = {}
 
     def iterate_ping_data(self, keep_to_xlimits = True):
-        return GeneratorPingData(self, keep_to_xlimits)
+        if keep_to_xlimits:
+            xcoord = self.get_x_indices()[1]
+            nrs = np.arange(xcoord[0],xcoord[-1]+1)
+        else:
+            nrs = range(len(self.ping_times))
+
+        return [PingData(self, nr) for nr in nrs]
