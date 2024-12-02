@@ -13,6 +13,8 @@ from themachinethatgoesping import echosounders, pingprocessing
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
+from .echolayer import EchoLayer
+
 
 class EchoProxy:
     def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean):
@@ -25,6 +27,7 @@ class EchoProxy:
         ), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
         self.beam_sample_selections = beam_sample_selections
 
+        self.layers = {}
         self.linear_mean = linear_mean
         self.wci_value = wci_value
         self.pings = pings
@@ -342,12 +345,12 @@ class EchoProxy:
             iqr = np.nanquantile(vec_min_y, 0.90) - np.nanquantile(vec_min_y, 0.10)
             med = np.nanmedian(vec_min_y)
             min_y = med - iqr * 1.5
-            print(f"min_y: {min_y}, med: {med}, iqr: {iqr}")
+            # print(f"min_y: {min_y}, med: {med}, iqr: {iqr}")
         if not np.isfinite(max_y):
             iqr = np.nanquantile(vec_max_y, 0.90) - np.nanquantile(vec_max_y, 0.10)
             med = np.nanmedian(vec_max_y)
             max_y = med + iqr * 1.5
-            print(f"max_y: {max_y}, med: {med}, iqr: {iqr}")
+            # print(f"max_y: {max_y}, med: {med}, iqr: {iqr}")
 
 
         iqr = np.nanquantile(vec_res_y, 0.75) - np.nanquantile(vec_res_y, 0.25)
@@ -820,3 +823,129 @@ class EchoProxy:
         extent.extend(self.y_extent)
 
         return image, extent
+
+
+    # --- layer functions ---
+    def build_image_and_layer_image(self, progress=None):
+        self.reinit()
+        ny = len(self.y_coordinates)
+        nx = len(self.x_coordinates)
+
+        image = np.empty((nx, ny), dtype=np.float32)
+        image.fill(np.nan)
+        layer_image = image.copy()
+
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            wci = self.get_wci(wci_index)
+            if len(wci) > 1:
+                y1, y2 = self.get_y_indices(wci_index)
+                image[image_index, y1] = wci[y2]
+
+                for layer in self.layers.values():                
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None:
+                        layer_image[image_index, y1_layer] = wci[y2_layer]
+
+        extent = self.x_extent
+        extent.extend(self.y_extent)
+
+        return image, layer_image, extent
+        
+    def build_image_and_layer_images(self, progress=None):
+        self.reinit()
+        ny = len(self.y_coordinates)
+        nx = len(self.x_coordinates)
+
+        image = np.empty((nx, ny), dtype=np.float32)
+        image.fill(np.nan)
+        
+        layer_images = {}
+        for key in self.layers.keys():
+            layer_images[key] = image.copy()
+
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            wci = self.get_wci(wci_index)
+            if len(wci) > 1:
+                y1, y2 = self.get_y_indices(wci_index)
+                image[image_index, y1] = wci[y2]
+
+                for key,layer in self.layers.items():                
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None:
+                        layer_images[key][image_index, y1_layer] = wci[y2_layer]
+
+        extent = self.x_extent
+        extent.extend(self.y_extent)
+
+        return image, layer_images, extent
+
+    def get_wci_layers(self, nr):
+        wci = self.get_wci(nr)
+
+        wci_layers = {}
+        for key, layer in self.layers.items():
+            wci_layers[key] = wci[layer.i0[nr]:layer.i1[nr]]        
+
+        return wci_layers
+
+    def get_extent_layers(self, nr, axis_name = None):
+        if axis_name is None:
+            axis_name = self.y_axis_name
+        extents = {}
+        
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr]-0.5, layer.i1[nr]-0.5
+
+                case "Sample number":
+                    assert (
+                        self.has_sample_nrs
+                    ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
+                    
+                    extents[key] = echo.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+
+                case "Depth (m)":
+                    assert (
+                        self.has_depths
+                    ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
+
+                    extents[key] = echo.y_indice_to_depth_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+
+                case "Range (m)":
+                    assert (
+                        self.has_rangess
+                    ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
+
+                    extents[key] = echo.y_indice_to_range_interpolator[nr]([layer.i0[nr]-0.5,layer.i1[nr]-0.5])
+
+                case _:
+                    raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
+
+        return extents
+
+    def add_layer(self, name, vec_x_val,vec_min_y,vec_max_y):
+        self.layers[name] = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
+        
+    def add_layer_from_static_layer(self, name, min_y, max_y):
+        self.layers[name] = EchoLayer.from_static_layer(self, min_y, max_y)
+        
+    def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
+        print('add_layer_from_ping_param_offsets_absolute',name)
+        self.layers[name] = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
+        
+    def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
+        print('add_layer_from_ping_param_offsets_relative',name)
+        self.layers[name] = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
+
+    def remove_layer(self, name):
+        self.layers.pop(name)
+
+    def clear_layers(self):
+        self.layers = {}
