@@ -4,6 +4,6 @@
 
 # functions
 from .echodata import EchoData
-from .echoproxy import EchoProxy
+from .echogrambuilder import EchogramBuilder
 from .echogramgroup import EchogramGroup, create_echogram_groups
 

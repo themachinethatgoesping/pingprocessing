@@ -16,7 +16,7 @@ import themachinethatgoesping as theping
 from .echolayer import EchoLayer, PingData, GeneratorPingData
 
 
-class EchoProxy:
+class EchogramBuilder:
     def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean):
         theping.pingprocessing.core.asserts.assert_length("EchoData", pings, [times])
         if len(pings) == 0:
@@ -524,7 +524,7 @@ class EchoProxy:
                         min_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i1)
                         max_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i2)
         
-        out = EchoProxy(
+        out = EchogramBuilder(
             pings = self.pings, 
             times = self.ping_times, 
             beam_sample_selections = beam_sample_selections, 
