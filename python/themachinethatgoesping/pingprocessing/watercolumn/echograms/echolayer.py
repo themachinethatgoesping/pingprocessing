@@ -7,11 +7,19 @@ import numpy as np
 
 class EchoLayer:
     def __init__(self, echodata, vec_x_val, vec_min_y, vec_max_y):
+        if vec_min_y is None:
+            vec_min_y = np.zeros(len(vec_x_val))
+
+        if vec_max_y is None:
+            vec_max_y = np.empty(len(vec_x_val))
+            vec_max_y.fill(echodata.x_coordinates[-1])
+            
         theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
         
         # convert datetimes to timestamps
         if isinstance(vec_x_val[0], dt.datetime):
             vec_x_val = [x.timestamp() for x in vec_x_val]
+
         
         # convert to numpy arrays
         vec_x_val = np.array(vec_x_val)
@@ -46,20 +54,22 @@ class EchoLayer:
 
     @classmethod
     def from_static_layer(cls, echodata, min_y, max_y):
-        return cls(echodata, [echodata.vec_x_val[0], echodata.vec_x_val[-1]], [min_y, min_y], [max_y, max_y])
+        min_y = [min_y, min_y] if min_y is not None else None
+        max_y = [max_y, max_y] if max_y is not None else None
+        return cls(echodata, [echodata.vec_x_val[0], echodata.vec_x_val[-1]], min_y, max_y)
 
     @classmethod
     def from_ping_param_offsets_absolute(cls, echodata, ping_param_name, offset_0, offset_1):
         x,y = echodata.get_ping_param(ping_param_name)
-        y0 = np.array(y) + offset_0
-        y1 = np.array(y) + offset_1
+        y0 = np.array(y) + offset_0 if offset_0 is not None else None
+        y1 = np.array(y) + offset_1 if offset_1 is not None else None
         return cls(echodata,x,y0,y1)
         
     @classmethod
     def from_ping_param_offsets_relative(cls, echodata, ping_param_name, offset_0, offset_1):
         x,y = echodata.get_ping_param(ping_param_name)
-        y0 = np.array(y) * offset_0
-        y1 = np.array(y) * offset_1
+        y0 = np.array(y) * offset_0 if offset_0 is not None else None
+        y1 = np.array(y) * offset_1 if offset_1 is not None else None
         return cls(echodata, x, y0, y1)
 
     def get_y_indices(self, wci_nr):        
