@@ -894,14 +894,6 @@ class EchoProxy:
 
         return wci_layers
 
-    def iterate_wci_layers(self):
-        for nr in range(len(self.ping_times)):
-            yield self.get_wci_layers(nr)
-
-    def iterate_wci_layers_in_xlimits(self, ping_step=1):
-        for nr in np.arange(self.x_coordinates[0], self.x_coordinates[-1], ping_step):
-            yield self.get_wci_layers(nr)
-
     def get_extent_layers(self, nr, axis_name = None):
         if axis_name is None:
             axis_name = self.y_axis_name
@@ -937,14 +929,6 @@ class EchoProxy:
                     raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
 
         return extents
-
-    def iterate_extent_layers(self, axis_name = None):
-        for nr in range(len(self.ping_times)):
-            yield self.get_extent_layers(nr, axis_name)
-
-    def iterate_extent_layers_in_xlimits(self, ping_step=1, axis_name = None):
-        for nr in np.arange(self.x_coordinates[0], self.x_coordinates[-1], ping_step):
-            yield self.get_extent_layers(nr, axis_name)
 
     def __set_layer__(self, name, layer):
         if name in self.layers.keys():
