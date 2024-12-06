@@ -28,6 +28,7 @@ class EchogramBuilder:
         self.beam_sample_selections = beam_sample_selections
 
         self.layers = {}
+        self.main_layer = None
         self.linear_mean = linear_mean
         self.wci_value = wci_value
         self.pings = pings
@@ -841,10 +842,15 @@ class EchogramBuilder:
         for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.get_wci(wci_index)
             if len(wci) > 1:
-                y1, y2 = self.get_y_indices(wci_index)
-                image[image_index, y1] = wci[y2]
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None:
+                        image[image_index, y1] = wci[y2]
 
-                for layer in self.layers.values():                
+                for k,layer in self.layers.items(): 
                     y1_layer, y2_layer = layer.get_y_indices(wci_index)
                     if y1_layer is not None:
                         layer_image[image_index, y1_layer] = wci[y2_layer]
@@ -872,8 +878,13 @@ class EchogramBuilder:
         for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.get_wci(wci_index)
             if len(wci) > 1:
-                y1, y2 = self.get_y_indices(wci_index)
-                image[image_index, y1] = wci[y2]
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None:
+                        image[image_index, y1] = wci[y2]
 
                 for key,layer in self.layers.items():                
                     y1_layer, y2_layer = layer.get_y_indices(wci_index)
@@ -967,10 +978,16 @@ class EchogramBuilder:
         return extents
 
     def __set_layer__(self, name, layer):
-        if name in self.layers.keys():
-            self.layers[name].combine(layer)
-        else: 
-            self.layers[name] = layer
+        if name == 'main':
+            if self.main_layer is not None:
+                self.main_layer.combine(layer)
+            else:
+                self.main_layer = layer
+        else:
+            if name in self.layers.keys():
+                self.layers[name].combine(layer)
+            else: 
+                self.layers[name] = layer
 
     def add_layer(self, name, vec_x_val,vec_min_y,vec_max_y):
         layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
@@ -989,10 +1006,14 @@ class EchogramBuilder:
         self.__set_layer__(name, layer)
 
     def remove_layer(self, name):
-        self.layers.pop(name)
+        if name == 'main':
+            self.main_layer = None
+        elif name in self.layers.keys():
+            self.layers.pop(name)
 
     def clear_layers(self):
         self.layers = {}
+        self.main_layer = None
 
     def iterate_ping_data(self, keep_to_xlimits = True):
         if keep_to_xlimits:

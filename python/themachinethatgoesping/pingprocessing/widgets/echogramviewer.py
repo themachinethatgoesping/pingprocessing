@@ -195,7 +195,7 @@ class EchogramViewer:
             
                 self.progress.set_description(f'Updating echogram [{i},{len(self.echogramdata)}]')
                 
-                if len(echogram.layers.keys()) == 0:
+                if len(echogram.layers.keys()) == 0 and echogram.main_layer is None:
                     im,ex = echogram.build_image(progress=self.progress)   
                     self.images_background.append(im)
                     self.extents_background.append(ex)
@@ -270,7 +270,7 @@ class EchogramViewer:
                     case _:
                         raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
                 
-                if len(echogram.layers.keys()) == 0:
+                if len(echogram.layers.keys()) == 0 and echogram.main_layer is None:
                     im,ex = echogram.build_image(progress=self.progress)
                     self.high_res_images.append(im)
                     self.high_res_extents.append(ex)

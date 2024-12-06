@@ -47,6 +47,9 @@ def create_figure(
     aspect: str = "equal", 
     close_plots: bool = True, 
     background_image_path: str = None, 
+    background_colorbar_label = None,
+    colorbar_orientation = 'vertical',
+    add_grid = True,
     dst_crs = 'EPSG:4326', 
     return_crs = False,
     **kwargs
@@ -66,6 +69,7 @@ def create_figure(
     Returns:
         Tuple[plt.Figure, plt.Axes]: The created figure and axes.
     """
+    global ax,fig,mapable
     if close_plots:
         plt.close(name)
     fig = plt.figure(name)
@@ -74,7 +78,8 @@ def create_figure(
     ax = fig.subplots()
 
     # initialize axis
-    ax.grid(True, linestyle="--", color="gray", alpha=0.5)
+    if add_grid:
+        ax.grid(True, linestyle="--", color="gray", alpha=0.5)
     ax.set_title(name)
     ax.set_aspect(aspect)
 
@@ -91,6 +96,9 @@ def create_figure(
             with reproject_raster(background_map, dst_crs) as reprojected_map:            
                 rioplt.show(reprojected_map, ax=ax, **_kwargs)
                 dst_crs = reprojected_map.crs
+
+        if background_colorbar_label:
+            fig.colorbar(ax.get_images()[-1], ax=ax, label=background_colorbar_label, shrink=0.7, orientation=colorbar_orientation)
 
         if dst_crs.is_geographic:
             ax.set_xlabel("longitude")
@@ -129,8 +137,16 @@ def plot_latlon(lat, lon, ax, label="survey", annotate=True, max_points=100000, 
         plot_lat = lat
         plot_lon = lon
 
+    _kwargs = {
+        "linewidth": 0.5,
+        "marker": "o",
+        "markersize": 2,
+        "markevery": 1
+        }
+    _kwargs.update(kwargs)
+
     # Plot the coordinates
-    ax.plot(plot_lon, plot_lat, label=label, linewidth=0.5, marker="o", markersize=2, markevery=1, **kwargs)
+    ax.plot(plot_lon, plot_lat, label=label, **_kwargs)
 
     # Add label at the first point
     if annotate:
