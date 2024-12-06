@@ -150,20 +150,21 @@ class EchogramViewer:
 
     def show(self):        
         if self.display_progress:
-            display(
+            self.layout = ipywidgets.VBox([
                 ipywidgets.HBox(children=[self.fig.canvas]),
                 ipywidgets.HBox([self.progress]),
                 self.box_sliders, 
                 self.box_buttons, 
                 self.output
-            )
+            ])
         else:
-            display(
+            self.layout = ipywidgets.VBox([
                 ipywidgets.HBox(children=[self.fig.canvas]),
                 self.box_sliders, 
                 self.box_buttons, 
                 self.output
-            )
+            ])
+        display(self.layout)
     
     def init_ax(self, adapt_axis_names=True):
         with self.output:
@@ -288,7 +289,7 @@ class EchogramViewer:
 
             for ax in self.axes:
                 ax.invert_yaxis()
-            self.fig.canvas.draw()
+            self.fig.canvas.draw_idle()
 
     def update_view(self, w=None, reset=False):
         with self.output:
@@ -362,7 +363,7 @@ class EchogramViewer:
                         m.remove()
                     self.mapables = self.mapables[:len(self.echogramdata)*3]
     
-                self.fig.canvas.draw()
+                self.fig.canvas.draw_idle()
 
             except Exception as e:
                 raise (e)
