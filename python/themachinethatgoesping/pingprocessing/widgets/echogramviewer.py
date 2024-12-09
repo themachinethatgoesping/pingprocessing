@@ -303,6 +303,15 @@ class EchogramViewer:
                 if self.args_plot[n] != v:
                     self.args_plot[n] = v
 
+            for n, v in [
+                ("vmin", self.w_vmin.value),
+                ("vmax", self.w_vmax.value),
+                ("interpolation", self.w_interpolation.value),
+                ("cmap", self.cmap_layer),
+            ]:
+                if self.args_plot_layer[n] != v:
+                    self.args_plot_layer[n] = v
+
                 
             try:
                 self.xlim = self.axes[-1].get_xlim()
