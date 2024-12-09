@@ -124,9 +124,6 @@ class EchogramViewer:
         )
         
         self.output = ipywidgets.Output()
-        self.loop = asyncio.get_event_loop()
-        self.task = self.loop.create_task(self.event_loop())
-
         
         # observers for view changers
         for w in [self.w_vmin, self.w_vmax, self.w_interpolation]:
@@ -392,6 +389,9 @@ class EchogramViewer:
                     case 'Date time':
                         t = mdates.num2date(event.xdata).timestamp()
                         for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                            if isinstance(ping,dict):
+                                ping = next(iter(ping.values()))
+
                             if ping.get_timestamp() > t:
                                 if pn > 0:
                                     pn -= 1
@@ -401,6 +401,9 @@ class EchogramViewer:
                     case 'Ping time':
                         t = event.xdata
                         for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                            if isinstance(ping,dict):
+                                ping = next(iter(ping.values()))
+
                             if ping.get_timestamp() > t:
                                 if pn > 0:
                                     pn -= 1
@@ -414,39 +417,69 @@ class EchogramViewer:
                     pn = len(self.pingviewer.imagebuilder.pings)-1
                         
                 self.pingviewer.w_index.value = pn
-
-    async def event_loop(self):
-        while True:
-            self.update_ping_line()
-            await asyncio.sleep(0.25)
-
+        
+        self.update_ping_line()
     
-    def update_ping_line(self):
+    def update_ping_line(self, event = 0):
         if self.pingviewer is not None:
-            with self.output:
+            with self.output:            
+                match self.x_axis_name:
+                    case 'Ping number':
+                        x = self.pingviewer.w_index.value
+                    case 'Date time':
+                        ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
+                        if isinstance(ping,dict):
+                            ping = next(iter(ping.values()))                    
+                        x = ping.get_datetime()
+                    case 'Ping time':
+                        ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
+                        if isinstance(ping,dict):
+                            ping = next(iter(ping.values()))                        
+                        x = ping.get_timestamp()
+                    case _:
+                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                            
                 for i,ax in enumerate(self.axes):
                     try:
                         if self.pingline[i] is not None:
                             self.pingline[i].remove()
                     except:
                         pass
-    
-                    match self.x_axis_name:
-                        case 'Date time':
-                            self.pingline[i] = ax.axvline(self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value].get_datetime(),c='black',linestyle='dashed')
-                        case 'Ping number':
-                            self.pingline[i] = ax.axvline(self.pingviewer.w_index.value,c='black',linestyle='dashed')
-                        case 'Ping time':
-                            self.pingline[i] = ax.axvline(self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value].get_timestamp(),c='black',linestyle='dashed')
-                        case _:
-                            raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                    self.pingline[i] = ax.axvline(x,c='black',linestyle='dashed')
                 
+    def disconnect_pingviewer(self):
+        with self.output:
+            if 'on_click' in self.fig_events.keys():
+                self.fig.canvas.mpl_disconnect(self.fig_events['on_click'])
 
-    def connect_pingviewer(self,pingviewer):
-        self.pingviewer = pingviewer
+            self.box_buttons = ipywidgets.HBox([
+                    self.update_button, 
+                    self.clear_button,
+            ])
+            children = list(self.layout.children)
+            children[3] = self.box_buttons
+            self.layout.children = children
 
-        if 'on_click' in self.fig_events.keys():
-            self.fig.canvas.mpl_disconnect(self.fig_events['on_click'])
+            self.pingviewer = None
+
+    def connect_pingviewer(self,pingviewer):   
+        with self.output:       
+            self.disconnect_pingviewer()
             
-        self.fig_events['on_click'] = self.fig.canvas.mpl_connect("button_press_event", self.click_echogram)
-      
+            self.pingviewer = pingviewer
+
+            self.update_ping_line_button = ipywidgets.Button(description="update pingline")
+            self.update_ping_line_button.on_click(self.update_ping_line)
+            
+            self.box_buttons = ipywidgets.HBox([
+                    self.update_button, 
+                    self.clear_button,
+                    self.update_ping_line_button, 
+            ])
+
+            children = list(self.layout.children)
+            children[3] = self.box_buttons
+            self.layout.children = children
+                
+            self.fig_events['on_click'] = self.fig.canvas.mpl_connect("button_press_event", self.click_echogram)
+        
