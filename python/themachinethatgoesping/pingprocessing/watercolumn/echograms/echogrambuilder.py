@@ -1013,6 +1013,8 @@ class EchogramBuilder:
 
     def clear_layers(self):
         self.layers = {}
+
+    def clear_main_layer(self):
         self.main_layer = None
 
     def iterate_ping_data(self, keep_to_xlimits = True):
