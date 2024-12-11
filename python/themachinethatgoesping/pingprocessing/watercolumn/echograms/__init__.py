@@ -5,5 +5,5 @@
 # functions
 from .echodata import EchoData
 from .echogrambuilder import EchogramBuilder
-from .echogramgroup import EchogramGroup, create_echogram_groups
+from .echolayer import EchoLayer
 
