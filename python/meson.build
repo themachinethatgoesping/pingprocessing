@@ -31,7 +31,6 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echodata.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogrambuilder.py',
-  'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogramgroup.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echolayer.py',
   'themachinethatgoesping/pingprocessing/watercolumn/image/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/image/imagebuilder.py',
