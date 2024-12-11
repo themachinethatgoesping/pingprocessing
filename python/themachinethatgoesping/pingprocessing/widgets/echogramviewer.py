@@ -13,7 +13,18 @@ import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
 
 class EchogramViewer:
-    def __init__(self, echogramdata, name="Echogram", names = None, figure=None, progress=None, show=True, cmap="YlGnBu_r", cmap_layer="jet", **kwargs):
+    def __init__(self, 
+                 echogramdata, 
+                 name="Echogram", 
+                 names = None, 
+                 figure=None, 
+                 progress=None, 
+                 show=True, 
+                 voffsets=None,
+                 cmap="YlGnBu_r", 
+                 cmap_layer="jet", 
+                 **kwargs):
+
         self.mapables = []
         if not isinstance(echogramdata, list):
             echogramdata = [echogramdata]
@@ -24,6 +35,8 @@ class EchogramViewer:
         self.fig_events = {}
         self.pingviewer = None
         self.echogram_axes = []
+        
+        self.voffsets = voffsets if voffsets is not None else [0 for _ in self.echogramdata]
 
         self.names = []
         for i in range(len(self.echogramdata)):
@@ -288,27 +301,26 @@ class EchogramViewer:
                 ax.invert_yaxis()
             self.fig.canvas.draw_idle()
 
+    def get_args_plot(self, axis_nr, layer=False):
+        # detect changes in view settings
+
+        args_plot = {
+            "vmin": self.w_vmin.value + self.voffsets[axis_nr],
+            "vmax": self.w_vmax.value + self.voffsets[axis_nr],
+            "interpolation": self.w_interpolation.value,
+            "cmap": self.cmap if not layer else self.cmap_layer,
+            }
+
+        if layer:
+            self.args_plot_layer.update(args_plot)
+            return self.args_plot_layer
+        else:
+            self.args_plot.update(args_plot)
+            return self.args_plot
+
+
     def update_view(self, w=None, reset=False):
         with self.output:
-            # detect changes in view settings
-            for n, v in [
-                ("vmin", self.w_vmin.value),
-                ("vmax", self.w_vmax.value),
-                ("interpolation", self.w_interpolation.value),
-                ("cmap", self.cmap),
-            ]:
-                if self.args_plot[n] != v:
-                    self.args_plot[n] = v
-
-            for n, v in [
-                ("vmin", self.w_vmin.value),
-                ("vmax", self.w_vmax.value),
-                ("interpolation", self.w_interpolation.value),
-                ("cmap", self.cmap_layer),
-            ]:
-                if self.args_plot_layer[n] != v:
-                    self.args_plot_layer[n] = v
-
                 
             try:
                 self.xlim = self.axes[-1].get_xlim()
@@ -323,8 +335,8 @@ class EchogramViewer:
                         self.images_background[i].transpose(), 
                         extent=self.extents_background[i], 
                         #zorder=zorder,  
-                        **self.args_plot))
-    
+                        **self.get_args_plot(i)))
+
                     if reset:
                         xlim = ax.get_xlim()
                         ylim = ax.get_ylim()
@@ -337,9 +349,9 @@ class EchogramViewer:
                         #zorder+=1
                         self.mapables.append(
                             ax.imshow(self.high_res_images[i].transpose(), 
-                                           extent=self.high_res_extents[i], 
-                                           #zorder=zorder, 
-                                           **self.args_plot))
+                                        extent=self.high_res_extents[i], 
+                                        #zorder=zorder, 
+                                        **self.get_args_plot(i)))
 
                     if len(self.layer_images) > i:
                         #zorder+=1
@@ -347,13 +359,13 @@ class EchogramViewer:
                             ax.imshow(self.layer_images[i].transpose(), 
                                         extent=self.layer_extents[i], 
                                         #zorder=zorder, 
-                                        **self.args_plot_layer))
+                                        **self.get_args_plot(i,layer=True)))
                     
-    
+
                     if self.colorbar[i] is None:
-                        self.colorbar[i] = self.fig.colorbar(self.mapables[0],ax=ax)
+                        self.colorbar[i] = self.fig.colorbar(self.mapables[-1],ax=ax)
                     else:
-                        self.colorbar[i].update_normal(self.mapables[0])
+                        self.colorbar[i].update_normal(self.mapables[-1])
 
                 self.callback_view()
 
@@ -368,7 +380,7 @@ class EchogramViewer:
                     for m in self.mapables[len(self.echogramdata)*3-1:]:
                         m.remove()
                     self.mapables = self.mapables[:len(self.echogramdata)*3]
-    
+
                 self.fig.canvas.draw_idle()
 
             except Exception as e:
