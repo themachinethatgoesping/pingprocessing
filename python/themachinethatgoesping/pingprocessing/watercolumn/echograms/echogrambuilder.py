@@ -239,17 +239,7 @@ class EchogramBuilder:
         beam_sample_selections = []
 
         for nr, ping in enumerate(tqdm(pings, disable=(not verbose), delay=1)):
-            # change angle selection
-            if apply_pss_to_bottom and ping.has_bottom():
-                aw = ping.watercolumn.get_beam_crosstrack_angles()
-                ab = ping.bottom.get_beam_crosstrack_angles()
-                ad = np.median(aw - ab)
-                pss_ = pss.copy()
-                pss_.select_beam_range_by_angles(pss.get_min_beam_angle() + ad, pss.get_max_beam_angle() + ad)
-
-                sel = pss_.apply_selection(ping.watercolumn)
-            else:
-                sel = pss.apply_selection(ping.watercolumn)
+            sel = pingprocessing.watercolumn.helper.apply_pss(ping, pss, apply_pss_to_bottom)
 
             beam_sample_selections.append(sel)
 

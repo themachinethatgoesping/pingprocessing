@@ -25,6 +25,7 @@ class WCIViewer:
             "wci_value": "sv/av/pv/rv",
             "wci_render": "linear",
             "ping_sample_selector": theping.echosounders.pingtools.PingSampleSelector(),
+            "apply_pss_to_bottom": False,
             "mp_cores": 1,
         }
 
@@ -228,8 +229,9 @@ class WCIViewer:
         if show:
             display(self.layout)
 
-    def set_ping_sample_selector(self, ping_sample_selector):
+    def set_ping_sample_selector(self, ping_sample_selector, apply_pss_to_bottom=False):
         self.args_imagebuilder["ping_sample_selector"] = ping_sample_selector
+        self.args_imagebuilder["apply_pss_to_bottom"] = apply_pss_to_bottom
         self.update_data(0)
 
     def fix_xy(self, w):

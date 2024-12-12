@@ -1,3 +1,21 @@
+def apply_pss(ping, pss, apply_pss_to_bottom):
+    if apply_pss_to_bottom and ping.has_bottom():
+        #if ping.bottom.get_number_of_beams() != ping.watercolumn.get_number_of_beams():
+            aw = ping.watercolumn.get_beam_crosstrack_angles()
+            ab = ping.bottom.get_beam_crosstrack_angles()
+
+            ad = np.median(aw - ab)
+            pss_ = pss.copy()
+            pss_.select_beam_range_by_angles(pss.get_min_beam_angle() + ad, pss.get_max_beam_angle() + ad)
+
+            sel = pss_.apply_selection(ping.watercolumn)
+        # else:
+        #     sel = pss.apply_selection(ping.bottom)
+    else:
+        sel = pss.apply_selection(ping.watercolumn)
+
+    return sel
+
 def select_get_wci_image(ping, selection, wci_value):
     if callable(wci_value):
         return wci_value(ping, selection)
