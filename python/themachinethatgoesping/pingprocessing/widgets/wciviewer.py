@@ -230,9 +230,10 @@ class WCIViewer:
             display(self.layout)
 
     def set_ping_sample_selector(self, ping_sample_selector, apply_pss_to_bottom=False):
-        self.args_imagebuilder["ping_sample_selector"] = ping_sample_selector
-        self.args_imagebuilder["apply_pss_to_bottom"] = apply_pss_to_bottom
-        self.update_data(0)
+        with self.output:
+            self.args_imagebuilder["ping_sample_selector"] = ping_sample_selector
+            self.args_imagebuilder["apply_pss_to_bottom"] = apply_pss_to_bottom
+            self.update_data(0)
 
     def fix_xy(self, w):
         with self.output:
@@ -256,55 +257,57 @@ class WCIViewer:
 
     # @self.output.capture()
     def update_data(self, w=None):
-        self.output.clear_output()
-        t0 = time()
+        with self.output:
+            self.output.clear_output()
+            t0 = time()
 
-        if self.wci_value is None:
-            self.args_imagebuilder["wci_value"] = self.w_wci_value.value
-        else:
-            self.args_imagebuilder["wci_value"] = self.wci_value
-        self.args_imagebuilder["wci_render"] = self.w_wci_render.value
-        self.args_imagebuilder["linear_mean"] = self.w_stack_linear.value
-        self.args_imagebuilder["horizontal_pixels"] = self.w_horizontal_pixels.value
-        self.args_imagebuilder["mp_cores"] = self.w_mp_cores.value
-        self.imagebuilder.update_args(**self.args_imagebuilder)
+            if self.wci_value is None:
+                self.args_imagebuilder["wci_value"] = self.w_wci_value.value
+            else:
+                self.args_imagebuilder["wci_value"] = self.wci_value
+            self.args_imagebuilder["wci_render"] = self.w_wci_render.value
+            self.args_imagebuilder["linear_mean"] = self.w_stack_linear.value
+            self.args_imagebuilder["horizontal_pixels"] = self.w_horizontal_pixels.value
+            self.args_imagebuilder["mp_cores"] = self.w_mp_cores.value
+            self.imagebuilder.update_args(**self.args_imagebuilder)
 
-        try:
-            self.wci, self.extent = self.imagebuilder.build(
-                index=self.w_index.value, stack=self.w_stack.value, stack_step=self.w_stack_step.value
-            )
-            self.callback_data()
+            try:
+                self.wci, self.extent = self.imagebuilder.build(
+                    index=self.w_index.value, stack=self.w_stack.value, stack_step=self.w_stack_step.value
+                )
+                self.callback_data()
 
-            # w_text_execution_time.value = str(round(time()-t,3))
+                # w_text_execution_time.value = str(round(time()-t,3))
 
-        except Exception as e:
-            with self.output:
-                raise (e)
+            except Exception as e:
+                with self.output:
+                    raise (e)
 
-        t1 = time()
-        self.update_view(w)
-        t2 = time()
-        ping = self.imagebuilder.pings[self.w_index.value]
-        if not isinstance(ping, theping.echosounders.filetemplates.I_Ping):
-            ping = next(iter(ping.values()))
+            t1 = time()
+            self.update_view(w)
+            t2 = time()
+            ping = self.imagebuilder.pings[self.w_index.value]
+            if not isinstance(ping, theping.echosounders.filetemplates.I_Ping):
+                ping = next(iter(ping.values()))
 
-        self.w_date.value = ping.get_datetime().strftime("%Y-%m-%d")
-        self.w_time.value = ping.get_datetime().strftime("%H:%M:%S")
+            self.w_date.value = ping.get_datetime().strftime("%Y-%m-%d")
+            self.w_time.value = ping.get_datetime().strftime("%H:%M:%S")
 
-        self.w_proctime.value = f"{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s"
-        r1 = 1/(t1-t0) if t1-t0 > 0 else 0
-        r2 = 1/(t2-t1) if t2-t1 > 0 else 0
-        r3 = 1/(t2-t0) if t2-t0 > 0 else 0
+            self.w_proctime.value = f"{round(t1-t0,3)} / {round(t2-t1,3)} / [{round(t2-t0,3)}] s"
+            r1 = 1/(t1-t0) if t1-t0 > 0 else 0
+            r2 = 1/(t2-t1) if t2-t1 > 0 else 0
+            r3 = 1/(t2-t0) if t2-t0 > 0 else 0
 
-        self.w_procrate.value = f"r1: {round(r1,1)} / r2: {round(r2,1)} / r3: [{round(r3,1)}] Hz"
+            self.w_procrate.value = f"r1: {round(r1,1)} / r2: {round(r2,1)} / r3: [{round(r3,1)}] Hz"
 
     def save_background(self):
-        empty = np.empty(self.wci.transpose().shape)
-        empty.fill(np.nan)
-        self.mapable.set_data(empty)
-        self.fig.canvas.draw()
-        self.background = self.fig.canvas.copy_from_bbox(self.fig.bbox)
-        # self.mapable.set_data(self.wci.transpose())
+        with self.output:
+            empty = np.empty(self.wci.transpose().shape)
+            empty.fill(np.nan)
+            self.mapable.set_data(empty)
+            self.fig.canvas.draw()
+            self.background = self.fig.canvas.copy_from_bbox(self.fig.bbox)
+            # self.mapable.set_data(self.wci.transpose())
 
     def update_view(self, w=None):
         with self.output:
