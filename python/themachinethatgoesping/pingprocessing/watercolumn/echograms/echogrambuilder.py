@@ -648,8 +648,17 @@ class EchogramBuilder:
 
     def set_x_axis_ping_nr(self, min_ping_nr=0, max_ping_nr=np.nan, max_steps=8096):
 
-        self.x_kwargs = {"min_ping_nr": min_ping_nr, "max_ping_nr": max_ping_nr, "max_steps": max_steps}
+        x_kwargs = {
+            "min_ping_nr": min_ping_nr,
+            "max_ping_nr": max_ping_nr,
+            "max_steps": max_steps,
+        }
+
         self.x_axis_function = self.set_x_axis_ping_nr
+        if self.x_axis_name == "Ping number" and x_kwargs == self.x_kwargs:
+            return
+            
+        self.x_kwargs = x_kwargs
 
         if not np.isfinite(max_ping_nr):
             max_ping_nr = np.max(self.ping_numbers)
@@ -682,14 +691,21 @@ class EchogramBuilder:
         max_steps=20000,
     ):
 
-        self.x_kwargs = {
+        
+
+        x_kwargs = {
             "min_timestamp": min_timestamp,
             "max_timestamp": max_timestamp,
             "time_resolution": time_resolution,
             "time_interpolation_limit": time_interpolation_limit,
             "max_steps": max_steps,
         }
+
         self.x_axis_function = self.set_x_axis_ping_time
+        if self.x_axis_name == "Ping time" and x_kwargs == self.x_kwargs:
+            return
+
+        self.x_kwargs = x_kwargs
 
         if not np.isfinite(min_timestamp):
             min_timestamp = np.min(self.ping_times)
@@ -741,7 +757,6 @@ class EchogramBuilder:
         time_interpolation_limit=np.nan,
         max_steps=20000,
     ):
-
         x_kwargs = {
             "min_ping_time": min_ping_time,
             "max_ping_time": max_ping_time,
@@ -749,6 +764,10 @@ class EchogramBuilder:
             "time_interpolation_limit": time_interpolation_limit,
             "max_steps": max_steps,
         }
+
+        self.x_axis_function = self.set_x_axis_date_time
+        if self.x_axis_name == "Date time" and x_kwargs == self.x_kwargs:
+            return
 
         if isinstance(min_ping_time, dt.datetime):
             min_ping_time = min_ping_time.timestamp()
@@ -774,7 +793,6 @@ class EchogramBuilder:
         self.x_extent[1] = dt.datetime.fromtimestamp(self.x_extent[1], self.time_zone)
         self.x_axis_name = "Date time"
         self.x_kwargs = x_kwargs
-        self.x_axis_function = self.set_x_axis_date_time
 
     def get_y_indices(self, wci_nr):
         n_samples = self.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
