@@ -276,7 +276,8 @@ class EchogramBuilder:
                     # bd = np.nanmin(p.bottom.get_xyz(sel_bottom).z) + p.get_geolocation().z
                     # this is incorrect
                     br = np.nanquantile(ping.bottom.get_xyz(sel).z, 0.05)
-                    mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
+                    #mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
+                    mr = ping.watercolumn.get_minslant_sample_nr() * range_res * angle_factor
                     bottom_d_times.append(times[nr])
 
                     if not no_navigation:
