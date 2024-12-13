@@ -246,23 +246,37 @@ class EchogramViewer:
                 match self.x_axis_name:
                     case 'Date time':
                         tmin,tmax = mdates.num2date(xmin).timestamp(),mdates.num2date(xmax).timestamp()
-                        echogram.set_x_axis_date_time(min_ping_time = tmin, max_ping_time=tmax, **x_kwargs)
+                        x_kwargs['min_ping_time'] = tmin
+                        x_kwargs['max_ping_time'] = tmax
+                        echogram.set_x_axis_date_time(**x_kwargs)
                     case 'Ping number':
-                        echogram.set_x_axis_ping_nr(min_ping_nr = xmin, max_ping_nr=xmax, **x_kwargs)
+                        x_kwargs['min_ping_nr'] = xmin
+                        x_kwargs['max_ping_nr'] = xmax
+                        echogram.set_x_axis_ping_nr(**x_kwargs)
                     case 'Ping time':
-                        echogram.set_x_axis_ping_time(min_timestamp = xmin, max_timestamp=xmax, **x_kwargs)
+                        x_kwargs['min_timestamp'] = xmin
+                        x_kwargs['max_timestamp'] = xmax
+                        echogram.set_x_axis_ping_time(**x_kwargs)
                     case _:
                         raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
                 
                 match self.y_axis_name:
                     case 'Depth (m)':
-                        echogram.set_y_axis_depth(min_depth = ymin, max_depth=ymax, **y_kwargs)
+                        y_kwargs['min_depth'] = ymin
+                        y_kwargs['max_depth'] = ymax
+                        echogram.set_y_axis_depth(**y_kwargs)
                     case 'Range (m)':
-                        echogram.set_y_axis_range(min_range = ymin, max_range=ymax, **y_kwargs)
+                        y_kwargs['min_range'] = ymin
+                        y_kwargs['max_range'] = ymax
+                        echogram.set_y_axis_range(**y_kwargs)
                     case 'Sample number':
-                        echogram.set_y_axis_sample_nr(min_sample_nr = ymin, max_sample_nr=ymax, **y_kwargs)
+                        y_kwargs['min_sample_nr'] = ymin
+                        y_kwargs['max_sample_nr'] = ymax
+                        echogram.set_y_axis_sample_nr(**y_kwargs)
                     case 'Y indice':
-                        echogram.set_y_axis_y_indice(min_sample_nr = ymin, max_sample_nr=ymax, **y_kwargs)
+                        y_kwargs['min_sample_nr'] = ymin
+                        y_kwargs['max_sample_nr'] = ymax
+                        echogram.set_y_axis_y_indice(**y_kwargs)
                     case _:
                         raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
                 
