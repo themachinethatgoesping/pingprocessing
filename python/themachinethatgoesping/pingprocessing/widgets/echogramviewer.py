@@ -240,12 +240,12 @@ class EchogramViewer:
                 
                 xmin,xmax = self.axes[i].get_xlim()
                 ymin,ymax = sorted(self.axes[i].get_ylim())
-                x_kwargs = echogram.x_kwargs
-                y_kwargs = echogram.y_kwargs
+                x_kwargs = echogram.get_x_kwargs()
+                y_kwargs = echogram.get_y_kwargs()
         
                 match self.x_axis_name:
                     case 'Date time':
-                        tmin,tmax = mdates.num2date(xmin).timestamp(),mdates.num2date(xmax).timestamp()
+                        tmin,tmax = mdates.num2date([xmin, xmax])
                         x_kwargs['min_ping_time'] = tmin
                         x_kwargs['max_ping_time'] = tmax
                         echogram.set_x_axis_date_time(**x_kwargs)
@@ -286,6 +286,7 @@ class EchogramViewer:
                     self.high_res_extents.append(ex)
                 else:
                     im,im_layer,ex = echogram.build_image_and_layer_image(progress=self.progress)
+
                     self.high_res_images.append(im)
                     self.high_res_extents.append(ex)
                     self.layer_images.append(im_layer)
@@ -390,74 +391,76 @@ class EchogramViewer:
         pass
 
     def click_echogram(self, event):
-        if self.pingviewer is None:
-            return
-        #global e
-        #e = event
         with self.output:
-            #print(event)
-            if event.button == 1:
-                match self.x_axis_name:
-                    case 'Date time':
-                        t = mdates.num2date(event.xdata).timestamp()
-                        for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
-                            if isinstance(ping,dict):
-                                ping = next(iter(ping.values()))
+            if self.pingviewer is None:
+                return
+            #global e
+            #e = event
+            with self.output:
+                #print(event)
+                if event.button == 2:
+                    match self.x_axis_name:
+                        case 'Date time':
+                            t = mdates.num2date(event.xdata).timestamp()
+                            for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                                if isinstance(ping,dict):
+                                    ping = next(iter(ping.values()))
 
-                            if ping.get_timestamp() > t:
-                                if pn > 0:
-                                    pn -= 1
-                                break
-                    case 'Ping number':
-                        pn = event.xdata
-                    case 'Ping time':
-                        t = event.xdata
-                        for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
-                            if isinstance(ping,dict):
-                                ping = next(iter(ping.values()))
+                                if ping.get_timestamp() > t:
+                                    if pn > 0:
+                                        pn -= 1
+                                    break
+                        case 'Ping number':
+                            pn = event.xdata
+                        case 'Ping time':
+                            t = event.xdata
+                            for pn,ping in enumerate(self.pingviewer.imagebuilder.pings):
+                                if isinstance(ping,dict):
+                                    ping = next(iter(ping.values()))
 
-                            if ping.get_timestamp() > t:
-                                if pn > 0:
-                                    pn -= 1
-                                break
-                    case _:
-                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
-                    
-                if pn < 0: 
-                    pn = 0
-                if pn >= len(self.pingviewer.imagebuilder.pings):
-                    pn = len(self.pingviewer.imagebuilder.pings)-1
+                                if ping.get_timestamp() > t:
+                                    if pn > 0:
+                                        pn -= 1
+                                    break
+                        case _:
+                            raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
                         
-                self.pingviewer.w_index.value = pn
-        
-        self.update_ping_line()
+                    if pn < 0: 
+                        pn = 0
+                    if pn >= len(self.pingviewer.imagebuilder.pings):
+                        pn = len(self.pingviewer.imagebuilder.pings)-1
+                            
+                    self.pingviewer.w_index.value = pn
+            
+            self.update_ping_line()
     
     def update_ping_line(self, event = 0):
-        if self.pingviewer is not None:
-            with self.output:            
-                match self.x_axis_name:
-                    case 'Ping number':
-                        x = self.pingviewer.w_index.value
-                    case 'Date time':
-                        ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
-                        if isinstance(ping,dict):
-                            ping = next(iter(ping.values()))                    
-                        x = ping.get_datetime()
-                    case 'Ping time':
-                        ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
-                        if isinstance(ping,dict):
-                            ping = next(iter(ping.values()))                        
-                        x = ping.get_timestamp()
-                    case _:
-                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
-                            
-                for i,ax in enumerate(self.axes):
-                    try:
-                        if self.pingline[i] is not None:
-                            self.pingline[i].remove()
-                    except:
-                        pass
-                    self.pingline[i] = ax.axvline(x,c='black',linestyle='dashed')
+        with self.output:
+            if self.pingviewer is not None:
+                with self.output:            
+                    match self.x_axis_name:
+                        case 'Ping number':
+                            x = self.pingviewer.w_index.value
+                        case 'Date time':
+                            ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
+                            if isinstance(ping,dict):
+                                ping = next(iter(ping.values()))                    
+                            x = ping.get_datetime()
+                        case 'Ping time':
+                            ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
+                            if isinstance(ping,dict):
+                                ping = next(iter(ping.values()))                        
+                            x = ping.get_timestamp()
+                        case _:
+                            raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+                                
+                    for i,ax in enumerate(self.axes):
+                        try:
+                            if self.pingline[i] is not None:
+                                self.pingline[i].remove()
+                        except:
+                            pass
+                        self.pingline[i] = ax.axvline(x,c='black',linestyle='dashed')
                 
     def disconnect_pingviewer(self):
         with self.output:

@@ -209,6 +209,12 @@ class EchogramBuilder:
 
         return x_coordinates, return_param
 
+    def get_x_kwargs(self):
+        return deepcopy(self.__x_kwargs)
+
+    def get_y_kwargs(self):
+        return deepcopy(self.__y_kwargs)
+
     @classmethod
     def from_pings(
         cls,
@@ -284,7 +290,9 @@ class EchogramBuilder:
                     # sel_bottom = pss.apply_selection(ping.bottom)
                     # bd = np.nanmin(p.bottom.get_xyz(sel_bottom).z) + p.get_geolocation().z
                     # this is incorrect
-                    br = np.nanquantile(ping.bottom.get_xyz(sel).z, 0.05)
+
+                    # br = np.nanquantile(ping.bottom.get_xyz(sel).z, 0.05)
+                    br = ping.bottom.get_bottom_z(sel)
                     # mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
                     mr = ping.watercolumn.get_minslant_sample_nr() * range_res * angle_factor
                     bottom_d_times.append(times[nr])
@@ -371,8 +379,8 @@ class EchogramBuilder:
         if self.initialized:
             return
 
-        self.y_axis_function(**self.y_kwargs)
-        self.x_axis_function(**self.x_kwargs)
+        self.y_axis_function(**self.__y_kwargs)
+        self.x_axis_function(**self.__x_kwargs)
 
     def set_y_coordinates(self, name, y_coordinates, y_resolution, vec_min_y, vec_max_y):
         assert (
@@ -552,23 +560,23 @@ class EchogramBuilder:
     def copy_xy_axis(self, other):
         match self.x_axis_name:
             case "Date time":
-                other.set_x_axis_date_time(**self.x_kwargs)
+                other.set_x_axis_date_time(**self.__x_kwargs)
             case "Ping time":
-                other.set_x_axis_ping_time(**self.x_kwargs)
+                other.set_x_axis_ping_time(**self.__x_kwargs)
             case "Ping number":
-                other.set_x_axis_ping_nr(**self.x_kwargs)
+                other.set_x_axis_ping_nr(**self.__x_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
 
         match self.y_axis_name:
             case "Depth (m)":
-                other.set_y_axis_depth(**self.y_kwargs)
+                other.set_y_axis_depth(**self.__y_kwargs)
             case "Range (m)":
-                other.set_y_axis_range(**self.y_kwargs)
+                other.set_y_axis_range(**self.__y_kwargs)
             case "Sample number":
-                other.set_y_axis_sample_nr(**self.y_kwargs)
+                other.set_y_axis_sample_nr(**self.__y_kwargs)
             case "Y indice":
-                other.set_y_axis_y_indice(**self.y_kwargs)
+                other.set_y_axis_y_indice(**self.__y_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
 
@@ -602,9 +610,9 @@ class EchogramBuilder:
 
         y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_steps": max_steps}
         self.y_axis_function = self.set_y_axis_y_indice
-        if self.y_axis_name == "Y indice" and self.y_kwargs == y_kwargs:
+        if self.y_axis_name == "Y indice" and self.__y_kwargs == y_kwargs:
             return
-        self.y_kwargs = y_kwargs
+        self.__y_kwargs = y_kwargs
 
         y_coordinates, y_res = self.sample_y_coordinates(
             vec_min_y=vec_min_y,
@@ -628,9 +636,9 @@ class EchogramBuilder:
 
         y_kwargs = {"min_depth": min_depth, "max_depth": max_depth, "max_steps": max_steps}
         self.y_axis_function = self.set_y_axis_depth
-        if self.y_axis_name == "Depth (m)" and self.y_kwargs == y_kwargs:
+        if self.y_axis_name == "Depth (m)" and self.__y_kwargs == y_kwargs:
             return
-        self.y_kwargs = y_kwargs
+        self.__y_kwargs = y_kwargs
 
         y_coordinates, y_res = self.sample_y_coordinates(
             vec_min_y=self.min_depths,
@@ -654,9 +662,9 @@ class EchogramBuilder:
 
         y_kwargs = {"min_range": min_range, "max_range": max_range, "max_steps": max_steps}
         self.y_axis_function = self.set_y_axis_range
-        if self.y_axis_name == "Range (m)" and self.y_kwargs == y_kwargs:
+        if self.y_axis_name == "Range (m)" and self.__y_kwargs == y_kwargs:
             return
-        self.y_kwargs = y_kwargs
+        self.__y_kwargs = y_kwargs
 
         y_coordinates, y_res = self.sample_y_coordinates(
             vec_min_y=self.min_ranges,
@@ -682,9 +690,9 @@ class EchogramBuilder:
 
         y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_steps": max_steps}
         self.y_axis_function = self.set_y_axis_sample_nr
-        if self.y_axis_name == "Sample number" and self.y_kwargs == y_kwargs:
+        if self.y_axis_name == "Sample number" and self.__y_kwargs == y_kwargs:
             return
-        self.y_kwargs = y_kwargs
+        self.__y_kwargs = y_kwargs
 
         y_coordinates, y_res = self.sample_y_coordinates(
             vec_min_y=self.min_sample_nrs,
@@ -712,10 +720,10 @@ class EchogramBuilder:
         }
 
         self.x_axis_function = self.set_x_axis_ping_nr
-        if self.x_axis_name == "Ping number" and self.x_kwargs == x_kwargs:
+        if self.x_axis_name == "Ping number" and self.__x_kwargs == x_kwargs:
             return
 
-        self.x_kwargs = x_kwargs
+        self.__x_kwargs = x_kwargs
 
         if not np.isfinite(max_ping_nr):
             max_ping_nr = np.max(self.ping_numbers)
@@ -758,10 +766,10 @@ class EchogramBuilder:
         }
 
         self.x_axis_function = self.set_x_axis_ping_time
-        if self.x_axis_name == "Ping time" and self.x_kwargs == x_kwargs:
+        if self.x_axis_name == "Ping time" and self.__x_kwargs == x_kwargs:
             return
 
-        self.x_kwargs = x_kwargs
+        self.__x_kwargs = x_kwargs
 
         if not np.isfinite(min_timestamp):
             min_timestamp = np.min(self.ping_times)
@@ -823,7 +831,7 @@ class EchogramBuilder:
         }
 
         self.x_axis_function = self.set_x_axis_date_time
-        if self.x_axis_name == "Date time" and self.x_kwargs == x_kwargs:
+        if self.x_axis_name == "Date time" and self.__x_kwargs == x_kwargs:
             return
 
         if isinstance(min_ping_time, dt.datetime):
@@ -849,7 +857,8 @@ class EchogramBuilder:
         self.x_extent[0] = dt.datetime.fromtimestamp(self.x_extent[0], self.time_zone)
         self.x_extent[1] = dt.datetime.fromtimestamp(self.x_extent[1], self.time_zone)
         self.x_axis_name = "Date time"
-        self.x_kwargs = x_kwargs
+        self.x_axis_function = self.set_x_axis_date_time
+        self.__x_kwargs = x_kwargs
 
     def get_y_indices(self, wci_nr):
         n_samples = self.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
@@ -885,7 +894,7 @@ class EchogramBuilder:
                 y1, y2 = self.get_y_indices(wci_index)
                 image[image_index, y1] = wci[y2]
 
-        extent = self.x_extent
+        extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
 
         return image, extent
@@ -919,7 +928,7 @@ class EchogramBuilder:
                     if y1_layer is not None:
                         layer_image[image_index, y1_layer] = wci[y2_layer]
 
-        extent = self.x_extent
+        extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
 
         return image, layer_image, extent
@@ -955,7 +964,7 @@ class EchogramBuilder:
                     if y1_layer is not None:
                         layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
-        extent = self.x_extent
+        extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
 
         return image, layer_images, extent
