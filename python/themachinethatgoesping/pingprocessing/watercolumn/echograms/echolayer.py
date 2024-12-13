@@ -46,11 +46,24 @@ class EchoLayer:
 
         self.echodata = echodata
         # create layer indices representing the range (i1 = last element +1_
-        self.i0 = np.empty(len(echodata.ping_times),dtype = int)
-        self.i1 = np.empty(len(echodata.ping_times),dtype = int)
+        i0 = np.empty(len(echodata.ping_times),dtype = int)
+        i1 = np.empty(len(echodata.ping_times),dtype = int)
         for nr in range(len(echodata.ping_times)):
-            self.i0[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_min_y[nr]) + 0.5
-            self.i1[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_max_y[nr]) + 1.5
+            i0[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_min_y[nr]) + 0.5
+            i1[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_max_y[nr]) + 1.5
+
+        self.set_indices(i0, i1)
+
+    def set_indices(self, i0, i1):
+        bss = self.echodata.beam_sample_selections
+        theping.pingprocessing.core.asserts.assert_length("set_indices", bss, [i0, i1])
+
+        self.i0 = np.array(i0)
+        self.i1 = np.array(i1)
+
+        self.i0 = np.maximum(self.i0, 0)
+        self.i1 = np.maximum(self.i1, self.i0)
+        self.i1 = np.minimum(self.i1, [bss[i].get_number_of_samples_ensemble() for i in range(len(i1))])
 
     @classmethod
     def from_static_layer(cls, echodata, min_y, max_y):
@@ -88,8 +101,10 @@ class EchoLayer:
 
     def combine(self, other):
         theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
-        self.i0 = np.maximum(self.i0, other.i0)
-        self.i1 = np.minimum(self.i1, other.i1)
+        i0 = np.maximum(self.i0, other.i0)
+        i1 = np.minimum(self.i1, other.i1)
+
+        self.set_indices(i0, i1)
     
 class PingData:
     def __init__(self, echodata, nr):
