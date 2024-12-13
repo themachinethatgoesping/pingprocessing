@@ -34,6 +34,7 @@ class EchogramBuilder:
         self.pings = pings
         # self.wc_data = wc_data
         self.x_axis_name = None
+        self.y_axis_name = None
         self.max_number_of_samples = np.array(
             [sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections]
         )
