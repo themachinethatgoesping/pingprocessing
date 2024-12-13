@@ -43,8 +43,8 @@ class TestWCIViewer:
                 raise ValueError(f"Unknown file ending {list(endings)[0]}")
 
         if cache:
-            file_cache_paths = theping.echosounders.index_functions.get_cache_file_paths(files)
-            fm = FileHandler(files, file_cache_paths=file_cache_paths, show_progress=False)
+            index_paths = theping.echosounders.index_functions.get_index_paths(files)
+            fm = FileHandler(files, index_paths=index_paths, show_progress=False)
         else:
             fm = FileHandler(files, show_progress=False)
 
