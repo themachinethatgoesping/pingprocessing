@@ -18,9 +18,9 @@ class TestWCIViewer:
         )
         return self.test_files_per_ending_per_folder
 
-    def clean_cache(self):
+    def clean_index(self):
         LOGGER.info(f"Cleaning up cache files")
-        for file in self.cache_files:
+        for file in self.index_files:
             os.remove(file)
 
     def get_pings(self, files, cache=True):
