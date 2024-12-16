@@ -292,16 +292,20 @@ class EchogramBuilder:
                     # this is incorrect
 
                     # br = np.nanquantile(ping.bottom.get_xyz(sel).z, 0.05)
-                    br = ping.bottom.get_bottom_z(sel)
-                    # mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
-                    mr = ping.watercolumn.get_minslant_sample_nr() * range_res * angle_factor
-                    bottom_d_times.append(times[nr])
+                    try:
+                        br = ping.bottom.get_bottom_z(sel)
+                        # mr = np.nanquantile(ping.watercolumn.get_bottom_range_samples(), 0.05) * range_res * angle_factor
+                        mr = ping.watercolumn.get_minslant_sample_nr() * range_res * angle_factor
+                        bottom_d_times.append(times[nr])
 
-                    if not no_navigation:
-                        bd = br + z
-                        md = mr + z
-                        bottom_d.append(bd)
-                        minslant_d.append(md)
+                        if not no_navigation:
+                            bd = br + z
+                            md = mr + z
+                            bottom_d.append(bd)
+                            minslant_d.append(md)
+                    except Exception as e:
+                        pass
+                        #TODO: this should create a warning in the log
 
         data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean)
         data.set_sample_nr_extent(min_s, max_s)
