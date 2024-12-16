@@ -13,7 +13,7 @@ from themachinethatgoesping import echosounders, pingprocessing
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
-from .echolayer import EchoLayer, PingData
+from .layers.echolayer import EchoLayer, PingData
 
 
 class EchogramBuilder:
