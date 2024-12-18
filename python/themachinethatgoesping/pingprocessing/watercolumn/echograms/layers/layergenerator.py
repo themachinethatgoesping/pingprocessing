@@ -44,8 +44,12 @@ class LayerGenerator:
         layer = self.echogram_base.layers[layer_name]
         
         vec_x, vec_y0, vec_y1 = self.echogram_base.vec_x_val,[], []
-        for i in range(len(layer.i0)):
-            vec_y0.append(self.echogram_base.y_indice_to_depth_interpolator[i](layer.i0[i]))
-            vec_y1.append(self.echogram_base.y_indice_to_depth_interpolator[i](layer.i1[i]))
+        for i,interpolator in enumerate(self.echogram_base.y_indice_to_depth_interpolator):
+            if interpolator is not None:
+                vec_y0.append(interpolator(layer.i0[i]))
+                vec_y1.append(interpolator(layer.i1[i]))
+            else:
+                vec_y0.append(0)
+                vec_y1.append(0)
         
         echogram2.add_layer(layer_name, vec_x, vec_y0, vec_y1)

@@ -48,9 +48,10 @@ class EchoLayer:
         # create layer indices representing the range (i1 = last element +1_
         i0 = np.empty(len(echodata.ping_times),dtype = int)
         i1 = np.empty(len(echodata.ping_times),dtype = int)
-        for nr in range(len(echodata.ping_times)):
-            i0[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_min_y[nr]) + 0.5
-            i1[nr] = echodata.y_coordinate_indice_interpolator[nr](vec_max_y[nr]) + 1.5
+        for nr,interpolator in enumerate(echodata.y_coordinate_indice_interpolator):
+            if interpolator is not None:
+                i0[nr] = interpolator(vec_min_y[nr]) + 0.5
+                i1[nr] = interpolator(vec_max_y[nr]) + 1.5
 
         self.set_indices(i0, i1)
 

@@ -1,4 +1,5 @@
 import numpy as np
+import themachinethatgoesping as theping
 
 def apply_pss(ping, pss, apply_pss_to_bottom):
     if apply_pss_to_bottom and ping.has_bottom() and ping.bottom.has_beam_crosstrack_angles():
@@ -23,6 +24,8 @@ def apply_pss(ping, pss, apply_pss_to_bottom):
             sel = pss_.apply_selection(ping.watercolumn)
         else:
             sel = pss.apply_selection(ping.bottom)
+            if len(sel.get_beam_numbers()) == 0:
+                return theping.echosounders.pingtools.BeamSampleSelection()
             pss_ = pss.copy()
             pss_.clear_beam_angle_range()
             pss_.select_beam_range_by_numbers(sel.get_beam_numbers()[0], sel.get_beam_numbers()[-1], pss.get_beam_step())
