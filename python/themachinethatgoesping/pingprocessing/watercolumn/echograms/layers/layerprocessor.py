@@ -8,6 +8,7 @@ from collections import defaultdict
 from scipy import stats
 from tqdm.auto import tqdm
 import warnings
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
 class LayerProcessor:
     def __init__(self, 
@@ -19,7 +20,8 @@ class LayerProcessor:
                  step=1, 
                  min_val_qmin=0.02,
                  min_val_dmin=3,
-                 only_process_visible=False):
+                 only_process_visible=False,
+                 show_progress=True):
         
         theping.pingprocessing.core.asserts.assert_length("LayerProcessor", echograms, [names])
 
@@ -44,16 +46,30 @@ class LayerProcessor:
         self.__data = self.__make_timeblocks_dataframe__(echograms, deltaT)
 
         total_pings = sum([len(e.iterate_ping_data(only_process_visible)[::step]) for e in echograms])
-        progress = tqdm(total=total_pings, desc=f"Processing layers for {names}")
+        if isinstance(show_progress, bool):
+            if show_progress == True:
+                progress = tqdm(total=total_pings, desc=f"Processing layers for {names}")
+            else:
+                progress = None
+        elif show_progress is None:
+            progress = None
+        else:
+            progress = show_progress
+            progress.reset(total=total_pings)
 
         for name, echogram in self.__echograms.items():
             self.__add_layer_vals__(name, echogram, step, progress)
 
-        progress.set_description_str("Filtering data")     
+        if isinstance(progress, tqdm):
+            progress.set_description_str("Filtering data")     
         self.reset_filters(min_val_qmin, min_val_dmin)
-        progress.set_description_str("Done") 
+        if isinstance(progress, tqdm):
+            progress.set_description_str("Done") 
 
-        progress.close()
+            if not isinstance(show_progress, tqdm):
+                progress.close()
+            else:
+                progress.refresh()
 
     def reset_filters(self, min_val_qmin=0.02, min_val_dmin=3):
         for layer in self.get_layers():

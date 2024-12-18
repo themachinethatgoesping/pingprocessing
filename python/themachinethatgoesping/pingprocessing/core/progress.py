@@ -33,7 +33,7 @@ def get_progress_iterator(
             _kwargs = {}
 
         _kwargs.update(kwargs)
-
+        
         return progress(iteratable, **_kwargs)
     else:
         return iteratable
