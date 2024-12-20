@@ -137,7 +137,7 @@ class EchogramBuilder:
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = theping.tools.vectorinterpolators.AkimaInterpolator(
+        vec_y_val = theping.tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_y_val, extrapolation_mode="nearest"
         )(comp_vec_x_val)
 
@@ -192,7 +192,7 @@ class EchogramBuilder:
 
             case "Range (m)":
                 assert (
-                    self.has_rangess
+                    self.has_ranges
                 ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
 
                 for nr, (indice, p) in enumerate(zip(x_indices, param)):
@@ -481,10 +481,10 @@ class EchogramBuilder:
         vec_x_val = vec_x_val[arg]
 
         # convert to to represent indices
-        vec_min_y = theping.tools.vectorinterpolators.AkimaInterpolator(
+        vec_min_y = theping.tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_min_y, extrapolation_mode="nearest"
         )(self.vec_x_val)
-        vec_max_y = theping.tools.vectorinterpolators.AkimaInterpolator(
+        vec_max_y = theping.tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_max_y, extrapolation_mode="nearest"
         )(self.vec_x_val)
 
@@ -1008,7 +1008,7 @@ class EchogramBuilder:
 
                 case "Range (m)":
                     assert (
-                        self.has_rangess
+                        self.has_ranges
                     ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
 
                     extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
@@ -1044,7 +1044,7 @@ class EchogramBuilder:
 
                 case "Range (m)":
                     assert (
-                        self.has_rangess
+                        self.has_ranges
                     ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
 
                     extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
