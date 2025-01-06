@@ -5,8 +5,7 @@ from typing import Tuple
 import themachinethatgoesping.echosounders as es
 import themachinethatgoesping.algorithms.geoprocessing as gp
 
-from themachinethatgoesping import pingprocessing
-import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helper as mi_hlp
+import themachinethatgoesping.pingprocessing.watercolumn.helper
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
@@ -78,9 +77,9 @@ class __WCI_scaling_infos:
                 valid_pings = True
 
                 if from_bottom_xyz:
-                    xyz, bd, bdsn = mi_hlp.get_bottom_directions_bottom(ping, selection=selection)
+                    xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=selection)
                 else:
-                    xyz, bd, bdsn = mi_hlp.get_bottom_directions_wci(ping, selection=selection)
+                    xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=selection)
 
                 xyzs.append(xyz)
                 bottom_directions.append(bd)
@@ -172,9 +171,9 @@ class __WCI_scaling_infos:
                 valid_pings = True
 
                 if from_bottom_xyz:
-                    xyz, bd, bdsn = mi_hlp.get_bottom_directions_bottom(ping, selection=selection)
+                    xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=selection)
                 else:
-                    xyz, bd, bdsn = mi_hlp.get_bottom_directions_wci(ping, selection=selection)
+                    xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=selection)
 
                 xyzs.append(xyz)
                 bottom_directions.append(bd)
