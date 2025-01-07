@@ -5,7 +5,7 @@ from typing import Tuple
 import themachinethatgoesping.echosounders as es
 import themachinethatgoesping.algorithms.geoprocessing as gp
 
-import themachinethatgoesping.pingprocessing.watercolumn.helper
+import themachinethatgoesping.pingprocessing.watercolumn.helper as wchelper
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping as theping
 
@@ -70,7 +70,7 @@ class __WCI_scaling_infos:
                 ping_dict = {"ping": ping_dict}
 
             for ping in ping_dict.values():
-                selection = pingprocessing.watercolumn.helper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+                selection = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
 
                 if selection.empty():
                     continue
@@ -164,7 +164,7 @@ class __WCI_scaling_infos:
                 ping_dict = {"ping": ping_dict}
 
             for ping in ping_dict.values():
-                selection = pingprocessing.watercolumn.helper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+                selection = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
 
                 if selection.empty():
                     continue
@@ -278,10 +278,10 @@ def make_beam_sample_image(
 
         return wci, [-0.5, nbeams + 0.5, nsamples + 0.5, -0.5]
 
-    sel = pingprocessing.watercolumn.helper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+    sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
 
     # select which ping.watercolumn.get_ function to call based on wci_value
-    wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, wci_value)
+    wci = wchelper.select_get_wci_image(ping, sel, wci_value)
 
     return wci, [-0.5, wci.shape[0] + 0.5, wci.shape[1] + 0.5, -0.5]
 
@@ -358,7 +358,7 @@ def make_wci(
     # t.append(time()) # 5
     sd_grid = bt.backtrace_image(scaling_infos.y_coordinates, scaling_infos.z_coordinates, mp_cores=mp_cores)
 
-    sel = pingprocessing.watercolumn.helper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+    sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
 
     if sel.empty():
         wci = np.empty(sd_grid.shape(), dtype=np.float32)
@@ -368,7 +368,7 @@ def make_wci(
         # t.append(time()) # 6
 
         # select which ping.watercolumn.get_ function to call based on wci_value
-        wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, wci_value)
+        wci = wchelper.select_get_wci_image(ping, sel, wci_value)
 
         # t.append(time()) # 7
         # lookup beam/sample numbers for each pixel
