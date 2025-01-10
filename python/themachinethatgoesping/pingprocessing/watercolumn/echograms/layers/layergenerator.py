@@ -2,15 +2,15 @@ from copy import copy
 import themachinethatgoesping as theping
 
 class LayerGenerator:
-    def __init__(self, echogram_base, echogram_second, cut_in_range=True):
+    def __init__(self, echogram_base, echogram_second, cut_in_range=True, minslant_relative=0.95, minslant_absolute=-0.5):
         echogram_base.clear_layers()
         echogram_second.clear_layers()
 
         if echogram_base.y_axis_name != 'Range (m)':
             echogram_base.set_y_axis_range()
         
-        self.valid = theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_relative(echogram_base, 'minslant', None, 0.95)
-        self.valid.combine(theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_absolute(echogram_base, 'minslant', None, -0.5))
+        self.valid = theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_relative(echogram_base, 'minslant', None, minslant_relative)
+        self.valid.combine(theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_absolute(echogram_base, 'minslant', None, minslant_absolute))
         self.valid.combine(theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_relative(echogram_base, 'bubbles', 1, None))
 
         self.cut_in_range = cut_in_range
