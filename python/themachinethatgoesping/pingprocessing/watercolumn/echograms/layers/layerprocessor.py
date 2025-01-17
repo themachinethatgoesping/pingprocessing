@@ -129,6 +129,8 @@ class LayerProcessor:
             num_c = []
             upper = []
             lower = []
+            iqr_m =[]
+            iqr_s = []
             r = []
             
             if True:
@@ -152,6 +154,9 @@ class LayerProcessor:
                 v_sbes = data[f'{layer}-{self.__base_name}-val'].values
                 v_mbes = data[f'{layer}-{name}-val'].values
                 
+                iqr_m.append(np.nanquantile(v_mbes, 0.90) - np.nanquantile(v_mbes, 0.10))
+                iqr_s.append(np.nanquantile(v_sbes, 0.90) - np.nanquantile(v_sbes, 0.10))
+
                 c = np.array(v_sbes) - np.array(v_mbes)
                 
                 med_c.append(stat(c))
@@ -174,6 +179,8 @@ class LayerProcessor:
             num_c = np.array(num_c)
             lower = np.array(lower)
             upper = np.array(upper)
+            iqr_m = np.array(iqr_m)
+            iqr_s = np.array(iqr_s)
             r = np.array(r)
             if min_n is not None:
                 args = num_c >= min_n
@@ -181,9 +188,92 @@ class LayerProcessor:
                 num_c = num_c[args]
                 lower = lower[args]
                 upper = upper[args]
+                iqr_m = iqr_m[args]
+                iqr_s = iqr_s[args]
                 r = r[args]
 
-            return med_c, r, (med_c - lower, upper-med_c), num_c #x,y,xerr,num
+            return med_c, r, (med_c - lower, upper-med_c), num_c, iqr_m, iqr_s #x,y,xerr,num
+
+
+    def get_calibration_per_range2(self, 
+                                  data = None,
+                                  layers = None,
+                                  name = None,
+                                  bootstrap_resamples = 100, 
+                                  show_progress = True) :   
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+
+            if layers is None:
+                layers = self.get_layers()
+            if name is None:
+                name = self.__compare_name
+            if data is None:
+                data = self.get_data()
+
+
+            med_m = []
+            med_s = []
+            upper_m = []
+            upper_s = []
+            lower_s = []
+            lower_m = []
+            r = []
+            
+            if True:
+                stat = np.nanmedian
+                stat_name = 'median'
+            elif False:
+                stat = lambda x: np.nanquantile(x, 0.33) 
+                stat_name = 'q33'
+            else:
+                stat = np.nanmean
+                stat_name = 'mean'
+
+            if show_progress:
+                layers = tqdm(layers)
+            else:
+                layers = layers
+                    
+            for layer in layers:            
+                r.append(float(layer.split('m')[0]))
+
+                v_sbes = data[f'{layer}-{self.__base_name}-val'].values
+                v_mbes = data[f'{layer}-{name}-val'].values
+                                
+                med_s.append(stat(v_sbes))
+                med_m.append(stat(v_mbes))
+                
+                # Bootstrap resampling
+            
+                res = stats.bootstrap(
+                    (v_sbes,  ),          # Tuple of data arrays
+                    stat,          # Statistic function
+                    n_resamples=bootstrap_resamples,  # Number of bootstrap samples
+                    confidence_level=0.95,  # Confidence level for the interval
+                    method='percentile',    # Method for confidence interval calculation
+                    #random_state=42     # For reproducibility
+                )
+                upper_s.append(res.confidence_interval.high)
+                lower_s.append(res.confidence_interval.low)
+
+                res = stats.bootstrap(
+                    (v_mbes,  ),          # Tuple of data arrays
+                    stat,          # Statistic function
+                    n_resamples=bootstrap_resamples,  # Number of bootstrap samples
+                    confidence_level=0.95,  # Confidence level for the interval
+                    method='percentile',    # Method for confidence interval calculation
+                    #random_state=42     # For reproducibility
+                )
+                upper_m.append(res.confidence_interval.high)
+                lower_m.append(res.confidence_interval.low)
+            
+            med_c = np.array(med_s) - np.array(med_m)
+            lower = np.array(lower_s) - np.array(upper_m)
+            upper = np.array(upper_s) - np.array(lower_m)
+            r = np.array(r)
+        
+            return med_c, r, (med_c - lower, upper-med_c) #x,y,xerr,num
 
     def get_data(self):
         return self.__data.copy()
@@ -314,7 +404,7 @@ class LayerProcessor:
         self.__data[name] = parameter
         self.__data = self.__data.copy()
 
-    def split_per_station(data, pm):
+    def split_per_station(self, pm):
         processor_per_station = {}
         
         for station in tqdm(pm.get_stations()):
@@ -326,7 +416,7 @@ class LayerProcessor:
             processor_per_station[station] = deepcopy(self)
             processor_per_station[station].__data = station_data.copy()
             
-        return data_processor_per_stationer_station
+        return processor_per_station
 
     def split_per_param(self, param_name, param_ranges):
         processor_per_param = {}
