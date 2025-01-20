@@ -404,6 +404,15 @@ class LayerProcessor:
         self.__data[name] = parameter
         self.__data = self.__data.copy()
 
+    def remove_station(self, pm, station):
+        processor = deepcopy(self)
+        t0 = pm.get_start_time(station)
+        t1 = pm.get_end_time(station)
+        processor.__data = processor.__data[processor.__data.index < t0]
+        pd.concat([processor.__data, self.__data[self.__data.index > t1]])
+
+        return processor
+
     def split_per_station(self, pm):
         processor_per_station = {}
         
