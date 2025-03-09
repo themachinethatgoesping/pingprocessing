@@ -17,6 +17,8 @@ from themachinethatgoesping import tools
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 from themachinethatgoesping.pingprocessing.core.asserts import assert_length, assert_valid_argument
 
+from themachinethatgoesping.pingprocessing.watercolumn import helper as wchelper
+
 # subpackages
 from .layers.echolayer import EchoLayer, PingData
 
@@ -253,7 +255,7 @@ class EchogramBuilder:
         beam_sample_selections = []
 
         for nr, ping in enumerate(tqdm(pings, disable=(not verbose), delay=1)):
-            sel = pingprocessing.watercolumn.helper.apply_pss(ping, pss, apply_pss_to_bottom)
+            sel = wchelper.apply_pss(ping, pss, apply_pss_to_bottom)
 
             beam_sample_selections.append(sel)
 
@@ -332,7 +334,7 @@ class EchogramBuilder:
         ping = self.pings[nr]
 
         # select which ping.watercolumn.get_ function to call based on wci_value
-        wci = pingprocessing.watercolumn.helper.select_get_wci_image(ping, sel, self.wci_value)
+        wci = wchelper.select_get_wci_image(ping, sel, self.wci_value)
 
         if wci.shape[0] == 1:
             return wci[0]
