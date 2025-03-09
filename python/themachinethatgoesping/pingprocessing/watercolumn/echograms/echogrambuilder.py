@@ -9,16 +9,21 @@ from tqdm.auto import tqdm
 import matplotlib as mpl
 import matplotlib.dates as mdates
 
-from themachinethatgoesping import echosounders, pingprocessing
-from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-import themachinethatgoesping as theping
+# external Ping packages
+from themachinethatgoesping import echosounders
+from themachinethatgoesping import tools
 
+# internal Ping.pingprocessing packages
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+from themachinethatgoesping.pingprocessing.core.asserts import assert_length, assert_valid_argument
+
+# subpackages
 from .layers.echolayer import EchoLayer, PingData
 
 
 class EchogramBuilder:
     def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean):
-        theping.pingprocessing.core.asserts.assert_length("EchoData", pings, [times])
+        assert_length("EchoData", pings, [times])
         if len(pings) == 0:
             raise RuntimeError("ERROR[EchoData]: trying to initialize empty data (no valid pings)")
 
@@ -55,18 +60,18 @@ class EchogramBuilder:
         self.initialized = False
 
     def set_ping_numbers(self, ping_numbers):
-        theping.pingprocessing.core.asserts.assert_length("set_ping_numbers", self.pings, [ping_numbers])
+        assert_length("set_ping_numbers", self.pings, [ping_numbers])
         self.ping_numbers = ping_numbers
         self.initialized = False
 
     def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
-        theping.pingprocessing.core.asserts.assert_length("set_ping_times", self.pings, [ping_times])
+        assert_length("set_ping_times", self.pings, [ping_times])
         self.ping_times = ping_times
         self.time_zone = time_zone
         self.initialized = False
 
     def set_range_extent(self, min_ranges, max_ranges):
-        theping.pingprocessing.core.asserts.assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
+        assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
         self.min_ranges = np.array(min_ranges)
         self.max_ranges = np.array(max_ranges)
         self.res_ranges = (self.max_ranges - self.min_ranges) / self.max_number_of_samples
@@ -74,7 +79,7 @@ class EchogramBuilder:
         self.initialized = False
 
     def set_depth_extent(self, min_depths, max_depths):
-        theping.pingprocessing.core.asserts.assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
+        assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
         self.min_depths = np.array(min_depths)
         self.max_depths = np.array(max_depths)
         self.res_depths = (self.max_depths - self.min_depths) / self.max_number_of_samples
@@ -82,7 +87,7 @@ class EchogramBuilder:
         self.initialized = False
 
     def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
-        theping.pingprocessing.core.asserts.assert_length(
+        assert_length(
             "set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs]
         )
         self.min_sample_nrs = np.array(min_sample_nrs)
@@ -92,10 +97,10 @@ class EchogramBuilder:
         self.initialized = False
 
     def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
-        theping.pingprocessing.core.asserts.assert_valid_argument(
+        assert_valid_argument(
             "add_ping_param", x_reference, ["Ping number", "Ping time", "Date time"]
         )
-        theping.pingprocessing.core.asserts.assert_valid_argument(
+        assert_valid_argument(
             "add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"]
         )
 
@@ -137,7 +142,7 @@ class EchogramBuilder:
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = theping.tools.vectorinterpolators.LinearInterpolator(
+        vec_y_val = tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_y_val, extrapolation_mode="nearest"
         )(comp_vec_x_val)
 
@@ -414,38 +419,38 @@ class EchogramBuilder:
                 n_samples = sel.get_number_of_samples_ensemble()
 
                 if n_samples > 1:
-                    I = theping.tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
+                    I = tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
                     self.y_coordinate_indice_interpolator[nr] = I
 
-                    I = theping.tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
+                    I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
                     self.y_indice_to_y_coordinate_interpolator[nr] = I
 
                     if self.has_depths:
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [self.min_depths[nr], self.max_depths[nr]], [y1, y2]
                         )
                         self.depth_to_y_coordinate_interpolator[nr] = I
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_depths[nr], self.max_depths[nr]]
                         )
                         self.y_indice_to_depth_interpolator[nr] = I
 
                     if self.has_ranges:
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [self.min_ranges[nr], self.max_ranges[nr]], [y1, y2]
                         )
                         self.range_to_y_coordinate_interpolator[nr] = I
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_ranges[nr], self.max_ranges[nr]]
                         )
                         self.y_indice_to_range_interpolator[nr] = I
 
                     if self.has_sample_nrs:
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [self.min_sample_nrs[nr], self.max_sample_nrs[nr]], [y1, y2]
                         )
                         self.sample_nr_to_y_coordinate_interpolator[nr] = I
-                        I = theping.tools.vectorinterpolators.LinearInterpolatorF(
+                        I = tools.vectorinterpolators.LinearInterpolatorF(
                             [0, n_samples - 1], [self.min_sample_nrs[nr], self.max_sample_nrs[nr]]
                         )
                         self.y_indice_to_sample_nr_interpolator[nr] = I
@@ -455,7 +460,7 @@ class EchogramBuilder:
                 raise RuntimeError(message)
 
     def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
-        theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+        assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
 
         # convert datetimes to timestamps
         if isinstance(vec_x_val[0], dt.datetime):
@@ -481,10 +486,10 @@ class EchogramBuilder:
         vec_x_val = vec_x_val[arg]
 
         # convert to to represent indices
-        vec_min_y = theping.tools.vectorinterpolators.LinearInterpolator(
+        vec_min_y = tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_min_y, extrapolation_mode="nearest"
         )(self.vec_x_val)
-        vec_max_y = theping.tools.vectorinterpolators.LinearInterpolator(
+        vec_max_y = tools.vectorinterpolators.LinearInterpolator(
             vec_x_val, vec_max_y, extrapolation_mode="nearest"
         )(self.vec_x_val)
 
@@ -595,10 +600,10 @@ class EchogramBuilder:
             self.x_coordinates[-1] + self.x_resolution / 2,
         ]
 
-        self.x_coordinate_indice_interpolator = theping.tools.vectorinterpolators.NearestInterpolatorDI(
+        self.x_coordinate_indice_interpolator = tools.vectorinterpolators.NearestInterpolatorDI(
             vec_x_val, np.arange(len(self.pings))
         )
-        self.indice_to_x_coordinate_interpolator = theping.tools.vectorinterpolators.NearestInterpolator(
+        self.indice_to_x_coordinate_interpolator = tools.vectorinterpolators.NearestInterpolator(
             np.arange(len(self.pings)), vec_x_val
         )
 

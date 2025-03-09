@@ -1,14 +1,18 @@
 from copy import copy, deepcopy
 import pytimeparse2
 import datetime
-import themachinethatgoesping as theping
 import numpy as np
 import pandas as pd
 from collections import defaultdict
 from scipy import stats
 from tqdm.auto import tqdm
 import warnings
-from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+
+# external Ping packages
+from themachinethatgoesping import tools
+
+# internal pingprocessing imports
+from themachinethatgoesping.pingprocessing.core.asserts import assert_length
 
 class LayerProcessor:
     def __init__(self, 
@@ -23,7 +27,7 @@ class LayerProcessor:
                  only_process_visible=False,
                  show_progress=True):
         
-        theping.pingprocessing.core.asserts.assert_length("LayerProcessor", echograms, [names])
+        assert_length("LayerProcessor", echograms, [names])
 
         self.__base_name = names[-1] if base_name is None else base_name
         self.__deltaT = deltaT
@@ -90,7 +94,7 @@ class LayerProcessor:
         self.__mark_outliers__()  
 
     def __str__(self):
-        printer = theping.tools.classhelper.ObjectPrinter("LayerProcessor", float_precission=3, superscript_exponents=False)
+        printer = tools.classhelper.ObjectPrinter("LayerProcessor", float_precission=3, superscript_exponents=False)
         printer.register_container("Echograms", list(self.__echograms.keys()))
         printer.register_string("Base name", self.__base_name)
         printer.register_string("Compare name", self.__compare_name)

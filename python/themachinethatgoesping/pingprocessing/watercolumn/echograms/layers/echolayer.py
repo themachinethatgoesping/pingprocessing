@@ -1,9 +1,14 @@
 # This is an internal class used by the echogram class to represent a layer in the echogram.
 
 import datetime as dt
-from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-import themachinethatgoesping as theping
 import numpy as np
+
+# external Ping packages
+from themachinethatgoesping import tools
+
+# internal pingprocessing imports
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+from themachinethatgoesping.pingprocessing.core.asserts import assert_length, assert_valid_argument
 
 class EchoLayer:
     def __init__(self, echodata, vec_x_val, vec_min_y, vec_max_y):
@@ -14,7 +19,7 @@ class EchoLayer:
             vec_max_y = np.empty(len(vec_x_val))
             vec_max_y.fill(echodata.x_coordinates[-1])
             
-        theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
+        assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
         
         # convert datetimes to timestamps
         if isinstance(vec_x_val[0], dt.datetime):
@@ -41,10 +46,10 @@ class EchoLayer:
         vec_x_val = vec_x_val[arg]
         
         # convert to to represent indices
-        #vec_min_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
-        #vec_max_y = theping.tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
-        vec_min_y = theping.tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
-        vec_max_y = theping.tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
+        #vec_min_y = tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
+        #vec_max_y = tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
+        vec_min_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
+        vec_max_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
 
         self.echodata = echodata
         # create layer indices representing the range (i1 = last element +1_
@@ -59,7 +64,7 @@ class EchoLayer:
 
     def set_indices(self, i0, i1):
         bss = self.echodata.beam_sample_selections
-        theping.pingprocessing.core.asserts.assert_length("set_indices", bss, [i0, i1])
+        assert_length("set_indices", bss, [i0, i1])
 
         self.i0 = np.array(i0)
         self.i1 = np.array(i1)
@@ -103,7 +108,7 @@ class EchoLayer:
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
     def combine(self, other):
-        theping.pingprocessing.core.asserts.assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
+        assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
         i0 = np.maximum(self.i0, other.i0)
         i1 = np.minimum(self.i1, other.i1)
 

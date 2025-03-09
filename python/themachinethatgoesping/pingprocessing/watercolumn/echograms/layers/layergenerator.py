@@ -1,5 +1,11 @@
 from copy import copy
-import themachinethatgoesping as theping
+
+
+# internal pingprocessing.watercolumn imports
+from themachinethatgoesping.pingprocessing.core.asserts import assert_length
+
+# submodules
+from .echolayer import EchoLayer
 
 class LayerGenerator:
     def __init__(self, echogram_base, echogram_second, cut_in_range=True, minslant_relative=0.95, minslant_absolute=-0.5):
@@ -9,9 +15,9 @@ class LayerGenerator:
         if echogram_base.y_axis_name != 'Range (m)':
             echogram_base.set_y_axis_range()
         
-        self.valid = theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_relative(echogram_base, 'minslant', None, minslant_relative)
-        self.valid.combine(theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_absolute(echogram_base, 'minslant', None, minslant_absolute))
-        self.valid.combine(theping.pingprocessing.watercolumn.echograms.layers.EchoLayer.from_ping_param_offsets_relative(echogram_base, 'bubbles', 1, None))
+        self.valid = EchoLayer.from_ping_param_offsets_relative(echogram_base, 'minslant', None, minslant_relative)
+        self.valid.combine(EchoLayer.from_ping_param_offsets_absolute(echogram_base, 'minslant', None, minslant_absolute))
+        self.valid.combine(EchoLayer.from_ping_param_offsets_relative(echogram_base, 'bubbles', 1, None))
 
         self.cut_in_range = cut_in_range
         self.echogram_base = echogram_base
