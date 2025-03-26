@@ -434,7 +434,7 @@ class LayerProcessor:
     def split_per_param(self, param_name, param_ranges):
         processor_per_param = {}
         
-        for name, r0, r1 in tqdm(param_ranges):
+        for name, r0, r1 in param_ranges:
             param_data = self.__data[self.__data[param_name] >= r0]
             param_data = param_data[param_data[param_name]<= r1]
             processor_per_param[name] = deepcopy(self)
