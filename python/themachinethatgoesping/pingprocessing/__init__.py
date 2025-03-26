@@ -4,12 +4,12 @@
 
 # folders
 from . import core
-from . import widgets
 from . import filter_pings
 from . import split_pings
 from . import group_pings
 from . import overview
 from . import watercolumn as watercolumn_ext  # flake8: noqa
+from . import widgets
 from . import testing
 
 # modules
