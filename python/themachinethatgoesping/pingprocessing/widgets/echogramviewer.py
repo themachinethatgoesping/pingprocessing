@@ -364,7 +364,7 @@ class EchogramViewer:
                     
 
                     if self.colorbar[i] is None:
-                        self.colorbar[i] = self.fig.colorbar(self.mapables[-1],ax=ax)
+                        self.colorbar[i] = self.fig.colorbar(self.mapables[-1],ax=ax, label="(dB)")
                     else:
                         self.colorbar[i].update_normal(self.mapables[-1])
 
