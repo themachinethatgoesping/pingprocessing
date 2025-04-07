@@ -335,7 +335,7 @@ class EchogramBuilder:
         data.verbose = verbose
         return data
 
-    def get_wci(self, nr):
+    def get_wci_range_stack(self, nr):
         sel = self.beam_sample_selections[nr]
         ping = self.pings[nr]
 
@@ -354,6 +354,50 @@ class EchogramBuilder:
                 wci = 10 * np.log10(wci)
 
             return wci
+        
+    def get_wci_depth_stack(self, nr):
+        sel = self.beam_sample_selections[nr]
+        
+        if not sel.empty():
+            ping = self.pings[nr]
+
+            # select which ping.watercolumn.get_ function to call based on wci_value
+            wci = wchelper.select_get_wci_image(ping, sel, self.wci_value)
+
+            if from_bottom_xyz:
+                xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=selection)
+            else:
+                xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=selection)
+            
+            geolocation = ping.get_geolocation()
+            
+            # y = theping.algorithms.geoprocessing.functions.to_raypoints(
+            #     0.,
+            #     np.array(xyz.y).astype(np.float32),
+            #     0.5,
+            #     np.array(bdsn+0.5).astype(np.float32),
+            #     np.array(range(wci.shape[1])).astype(np.float32))
+            
+            z = -theping.algorithms.geoprocessing.functions.to_raypoints(
+                geolocation.z,
+                np.array(xyz.z).astype(np.float32),
+                0.5,
+                np.array(bdsn+0.5).astype(np.float32),
+                np.array(range(wci.shape[1])).astype(np.float32))
+            
+            arg = np.where(np.isfinite(wci.flatten()))
+            wci = np.power(10,0.1*wci.flatten()[arg])
+            #y = y.flatten()[arg]
+            z = z.flatten()[arg]
+                
+            gridder = theping.algorithms.gridding.ForwardGridder1D.from_res(self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
+            v,w = gridder.interpolate_block_mean(wci, z)
+            column = 10*np.log10(v/w)
+            
+        else:
+            column = np.empty((len(self.y_coordinates)))
+            column.fill(np.nan)
+        return column
 
     @staticmethod
     def sample_y_coordinates(vec_min_y, vec_max_y, vec_res_y, min_y, max_y, max_steps=1024):
@@ -906,7 +950,7 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_wci(wci_index)
+            wci = self.get_wci_range_stack(wci_index)
             if len(wci) > 1:
                 y1, y2 = self.get_y_indices(wci_index)
                 image[image_index, y1] = wci[y2]
@@ -930,7 +974,7 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_wci(wci_index)
+            wci = self.get_wci_range_stack(wci_index)
             if len(wci) > 1:
                 if self.main_layer is None:
                     y1, y2 = self.get_y_indices(wci_index)
@@ -966,7 +1010,7 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_wci(wci_index)
+            wci = self.get_wci_range_stack(wci_index)
             if len(wci) > 1:
                 if self.main_layer is None:
                     y1, y2 = self.get_y_indices(wci_index)
@@ -986,8 +1030,8 @@ class EchogramBuilder:
 
         return image, layer_images, extent
 
-    def get_wci_layers(self, nr):
-        wci = self.get_wci(nr)
+    def get_wci_range_stack_layers(self, nr):
+        wci = self.get_wci_range_stack(nr)
 
         wci_layers = {}
         for key, layer in self.layers.items():
