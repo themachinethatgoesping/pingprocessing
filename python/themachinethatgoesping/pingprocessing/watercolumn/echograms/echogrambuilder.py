@@ -231,6 +231,7 @@ class EchogramBuilder:
         linear_mean=True,
         no_navigation=False,
         apply_pss_to_bottom=False,
+        force_angle=None,
         verbose=True,
     ):
 
@@ -265,9 +266,14 @@ class EchogramBuilder:
 
             c = ping.watercolumn.get_sound_speed_at_transducer()
             range_res = ping.watercolumn.get_sample_interval() * c * 0.5
-            angle_factor = np.cos(
-                np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
-            )
+            
+            if force_angle is None:
+                angle_factor = np.cos(
+                    np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
+                )
+            else:
+                angle_factor = np.cos(np.radians(force_angle))
+                
             min_s[nr] = sel.get_first_sample_number_ensemble()
             max_s[nr] = sel.get_last_sample_number_ensemble()
             min_r[nr] = min_s[nr] * range_res
