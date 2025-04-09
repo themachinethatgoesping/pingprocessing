@@ -59,19 +59,27 @@ class EchoLayer:
             if interpolator is not None:
                 i0[nr] = interpolator(vec_min_y[nr]) + 0.5
                 i1[nr] = interpolator(vec_max_y[nr]) + 1.5
+                
+        y0 = self.echodata.y_gridder.get_x_index(vec_min_y)
+        y1 = self.echodata.y_gridder.get_x_index(vec_max_y)+1
 
-        self.set_indices(i0, i1)
+        self.set_indices(i0, i1, y0, y1)
 
-    def set_indices(self, i0, i1):
+    def set_indices(self, i0, i1, y0, y1):
         bss = self.echodata.beam_sample_selections
         assert_length("set_indices", bss, [i0, i1])
 
         self.i0 = np.array(i0)
         self.i1 = np.array(i1)
+        self.y0 = np.array(y0)
+        self.y1 = np.array(y1)
 
         self.i0 = np.maximum(self.i0, 0)
         self.i1 = np.maximum(self.i1, self.i0)
         self.i1 = np.minimum(self.i1, [bss[i].get_number_of_samples_ensemble() for i in range(len(i1))])
+        self.y0 = np.maximum(self.y0, 0)
+        self.y1 = np.maximum(self.y1, self.y0)
+        self.y1 = np.minimum(self.y1, self.echodata.y_gridder.get_nx())
 
     @classmethod
     def from_static_layer(cls, echodata, min_y, max_y):
@@ -93,7 +101,7 @@ class EchoLayer:
         y1 = np.array(y) * offset_1 if offset_1 is not None else None
         return cls(echodata, x, y0, y1)
 
-    def get_y_indices(self, wci_nr):        
+    def get_y_indices_range_stack(self, wci_nr):        
         n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
         y_indices_image = np.arange(len(self.echodata.y_coordinates))
         y_indices_wci = np.round(self.echodata.y_coordinate_indice_interpolator[wci_nr](self.echodata.y_coordinates)).astype(int)
@@ -107,12 +115,26 @@ class EchoLayer:
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
+    def get_y_indices_depth_stack(self, wci_nr):                    
+        n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
+        
+        start_y = np.max([0, self.y0[wci_nr]])
+        end_y = np.min([self.echodata.y_gridder.get_nx(), self.y1[wci_nr]])        
+        if start_y >= end_y:
+            return None, None      
+        
+        y_indices = np.arange(start_y, end_y)
+
+        return y_indices,y_indices
+
     def combine(self, other):
         assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
         i0 = np.maximum(self.i0, other.i0)
         i1 = np.minimum(self.i1, other.i1)
+        y0 = np.maximum(self.y0, other.y0)
+        y1 = np.minimum(self.y1, other.y1)
 
-        self.set_indices(i0, i1)
+        self.set_indices(i0, i1, y0, y1)
     
 class PingData:
     def __init__(self, echodata, nr):
@@ -120,10 +142,10 @@ class PingData:
         self.nr = nr
 
     def get_wci(self):
-        return self.echodata.get_wci(self.nr)        
+        return self.echodata.get_wci_range_stack(self.nr)        
     
     def get_wci_layers(self):
-        return self.echodata.get_wci_layers(self.nr)
+        return self.echodata.get_wci_layers_range_stack(self.nr)
 
     def get_extent_layers(self, axis_name=None):
         return self.echodata.get_extent_layers(self.nr, axis_name=axis_name)
