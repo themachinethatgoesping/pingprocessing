@@ -27,9 +27,9 @@ class EchoLayer:
 
         
         # convert to numpy arrays
-        vec_x_val = np.array(vec_x_val)
-        vec_min_y = np.array(vec_min_y)
-        vec_max_y = np.array(vec_max_y)
+        vec_x_val = np.array(vec_x_val).astype(float)
+        vec_min_y = np.array(vec_min_y).astype(float)
+        vec_max_y = np.array(vec_max_y).astype(float)
         
         # filter nans and infs
         arg = np.where(np.isfinite(vec_x_val))[0]
@@ -60,23 +60,29 @@ class EchoLayer:
                 i0[nr] = interpolator(vec_min_y[nr]) + 0.5
                 i1[nr] = interpolator(vec_max_y[nr]) + 1.5
                 
-        y0 = self.echodata.y_gridder.get_x_index(vec_min_y)
-        y1 = self.echodata.y_gridder.get_x_index(vec_max_y)+1
 
-        self.set_indices(i0, i1, y0, y1)
+        self.set_indices(i0, i1, vec_min_y, vec_max_y)
 
-    def set_indices(self, i0, i1, y0, y1):
+    def set_indices(self, i0, i1, vec_min_y, vec_max_y):
         bss = self.echodata.beam_sample_selections
         assert_length("set_indices", bss, [i0, i1])
 
         self.i0 = np.array(i0)
         self.i1 = np.array(i1)
-        self.y0 = np.array(y0)
-        self.y1 = np.array(y1)
 
         self.i0 = np.maximum(self.i0, 0)
         self.i1 = np.maximum(self.i1, self.i0)
         self.i1 = np.minimum(self.i1, [bss[i].get_number_of_samples_ensemble() for i in range(len(i1))])
+        
+        self.vec_min_y = np.array(vec_min_y).astype(float)
+        self.vec_max_y = np.array(vec_max_y).astype(float)
+        self.update_y_gridder()
+        
+    def update_y_gridder(self):        
+        y0 = self.echodata.y_gridder.get_x_index(self.vec_min_y)
+        y1 = self.echodata.y_gridder.get_x_index(self.vec_max_y)+1
+        self.y0 = np.array(y0)
+        self.y1 = np.array(y1)
         self.y0 = np.maximum(self.y0, 0)
         self.y1 = np.maximum(self.y1, self.y0)
         self.y1 = np.minimum(self.y1, self.echodata.y_gridder.get_nx())
@@ -115,9 +121,7 @@ class EchoLayer:
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
-    def get_y_indices_depth_stack(self, wci_nr):                    
-        n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
-        
+    def get_y_indices_depth_stack(self, wci_nr):                            
         start_y = np.max([0, self.y0[wci_nr]])
         end_y = np.min([self.echodata.y_gridder.get_nx(), self.y1[wci_nr]])        
         if start_y >= end_y:
@@ -131,10 +135,10 @@ class EchoLayer:
         assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
         i0 = np.maximum(self.i0, other.i0)
         i1 = np.minimum(self.i1, other.i1)
-        y0 = np.maximum(self.y0, other.y0)
-        y1 = np.minimum(self.y1, other.y1)
+        vec_min_y = np.maximum(self.vec_min_y, other.vec_min_y)
+        vec_max_y = np.minimum(self.vec_max_y, other.vec_max_y)
 
-        self.set_indices(i0, i1, y0, y1)
+        self.set_indices(i0, i1, vec_min_y, vec_max_y)
     
 class PingData:
     def __init__(self, echodata, nr):

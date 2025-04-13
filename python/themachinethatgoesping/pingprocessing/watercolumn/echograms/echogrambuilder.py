@@ -8,6 +8,7 @@ from tqdm.auto import tqdm
 
 import matplotlib as mpl
 import matplotlib.dates as mdates
+import warnings
 
 # external Ping packages
 from themachinethatgoesping import echosounders
@@ -395,12 +396,20 @@ class EchogramBuilder:
                 np.array(range(wci.shape[1])).astype(np.float32))
             
             arg = np.where(np.isfinite(wci.flatten()))
-            wci = np.power(10,0.1*wci.flatten()[arg])
+            
+            if self.linear_mean:
+                wci = np.power(10,0.1*wci.flatten()[arg])
             #y = y.flatten()[arg]
             z = z.flatten()[arg]
                 
             v,w = self.y_gridder.interpolate_block_mean(z, wci)
-            column = 10*np.log10(v/w)
+            
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                if self.linear_mean:
+                    column = 10*np.log10(v/w)
+                else:
+                    column = v/w
             
         else:
             column = np.empty((len(self.y_coordinates)))
@@ -468,6 +477,10 @@ class EchogramBuilder:
         
         self.y_gridder = ForwardGridder1D.from_res(
             self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
+        if self.main_layer is not None:
+            self.main_layer.update_y_gridder()
+        for layer in self.layers.values():
+            layer.update_y_gridder()    
 
         self.y_coordinate_indice_interpolator = [None for _ in self.pings]
         self.y_indice_to_y_coordinate_interpolator = [None for _ in self.pings]
