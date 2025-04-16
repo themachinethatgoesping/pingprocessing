@@ -31,6 +31,8 @@ class LayerGenerator:
         if self.cut_in_range:
             if self.echogram_base.y_axis_name != 'Range (m)':
                 self.echogram_base.set_y_axis_range()
+            if self.echogram_base.y_axis_name != 'Range (m)':
+                self.echogram_base.set_y_axis_range()
         else:
             if self.echogram_base.y_axis_name != 'Depth (m)':
                 self.echogram_base.set_y_axis_depth()

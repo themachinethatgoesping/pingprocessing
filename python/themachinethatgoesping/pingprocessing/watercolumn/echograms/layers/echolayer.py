@@ -148,7 +148,7 @@ class PingData:
     def get_wci(self):
         return self.echodata.get_wci_range_stack(self.nr)        
     
-    def get_wci_layers(self):
+    def get_wci_layers_range_stack(self):
         return self.echodata.get_wci_layers_range_stack(self.nr)
 
     def get_extent_layers(self, axis_name=None):

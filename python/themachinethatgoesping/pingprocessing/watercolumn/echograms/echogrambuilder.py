@@ -1105,7 +1105,7 @@ class EchogramBuilder:
 
         return image, layer_images, extent
 
-    def get_wci_layers(self, nr):
+    def get_wci_layers_range_stack(self, nr):
         wci = self.get_wci_range_stack(nr)
 
         wci_layers = {}

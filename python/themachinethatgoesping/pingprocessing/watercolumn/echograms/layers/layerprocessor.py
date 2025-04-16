@@ -477,7 +477,7 @@ class LayerProcessor:
                 while True:
                     if t_min.iloc[ti] <= pt < t_max.iloc[ti]:
                         times_.append(pt)
-                        for k, v in pi.get_wci_layers().items():
+                        for k, v in pi.get_wci_layers_range_stack().items():
                             vals_[k].extend(v)
                         break
 
@@ -558,6 +558,8 @@ class LayerProcessor:
                     num_key = f"{k}-{name}-num"
 
                     n[name].extend(data[num_key][data[num_key] > 0])
+                    
+                    new_data[f"{k}-{name}-num-max"] = np.nanmax(data[num_key])
 
                 n[name] = np.array(n[name])
                 iqr = np.nanquantile(n[name], 0.75) - np.nanquantile(n[name], 0.25)
