@@ -389,8 +389,8 @@ class EchogramViewer:
 
     def callback_view(self):
         pass
-
-    def click_echogram(self, event):
+        
+    def on_key_press(self, event):
         with self.output:
             if self.pingviewer is None:
                 return
@@ -398,7 +398,7 @@ class EchogramViewer:
             #e = event
             with self.output:
                 #print(event)
-                if event.button == 2:
+                if event.key == 'p':
                     match self.x_axis_name:
                         case 'Date time':
                             t = mdates.num2date(event.xdata).timestamp()
@@ -464,8 +464,8 @@ class EchogramViewer:
                 
     def disconnect_pingviewer(self):
         with self.output:
-            if 'on_click' in self.fig_events.keys():
-                self.fig.canvas.mpl_disconnect(self.fig_events['on_click'])
+            if 'on_key_press' in self.fig_events.keys():
+                self.fig.canvas.mpl_disconnect(self.fig_events['on_key_press'])
 
             self.box_buttons = ipywidgets.HBox([
                     self.update_button, 
@@ -496,5 +496,5 @@ class EchogramViewer:
             children[3] = self.box_buttons
             self.layout.children = children
                 
-            self.fig_events['on_click'] = self.fig.canvas.mpl_connect("button_press_event", self.click_echogram)
+            self.fig_events['on_key_press'] = self.fig.canvas.mpl_connect("key_press_event", self.on_key_press)
         
