@@ -26,7 +26,10 @@ class EchogramViewer:
                  **kwargs):
 
         self.mapables = []
-        if not isinstance(echogramdata, list):
+        if isinstance(echogramdata, dict):
+            names = list(echogramdata.keys()) if names is None else names
+            echogramdata = list(echogramdata.values())
+        elif not isinstance(echogramdata, list):
             echogramdata = [echogramdata]
             
         self.echogramdata = echogramdata
