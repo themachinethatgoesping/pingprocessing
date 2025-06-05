@@ -108,6 +108,8 @@ def get_ignore_doc(header):
 
 headers = []
 for r, d, f in os.walk('../themachinethatgoesping/'):
+    if 'output' in r:
+        continue
     for file in f:
         if file.endswith(".doc.hpp"):
             continue
