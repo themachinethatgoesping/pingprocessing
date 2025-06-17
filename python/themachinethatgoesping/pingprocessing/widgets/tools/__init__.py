@@ -3,7 +3,4 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # folders
-from .tqdmwidget import *
-from .wciviewer import *
-from .echogramviewer import *
-from . import tools
+from .interactivelinebuilder import InteractiveLineBuilder  # noqa: F401

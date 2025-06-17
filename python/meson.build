@@ -9,6 +9,8 @@ sources = [
   'themachinethatgoesping/pingprocessing/widgets/echogramviewer.py',
   'themachinethatgoesping/pingprocessing/widgets/tqdmwidget.py',
   'themachinethatgoesping/pingprocessing/widgets/wciviewer.py',
+  'themachinethatgoesping/pingprocessing/widgets/tools/__init__.py',
+  'themachinethatgoesping/pingprocessing/widgets/tools/interactivelinebuilder.py',
   'themachinethatgoesping/pingprocessing/overview/__init__.py',
   'themachinethatgoesping/pingprocessing/overview/nav_plot.py',
   'themachinethatgoesping/pingprocessing/overview/pingoverview.py',
