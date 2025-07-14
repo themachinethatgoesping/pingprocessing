@@ -94,12 +94,12 @@ jobs:
     
     - name: configure meson
       run: |
-        meson setup builddir -Dpython.install_env=auto
+        meson setup builddir -Dunity=on -Dunity_size=9999999 -Dpython.install_env=auto
         # CXX=${{ matrix.llvm }}/bin/clang++ CC=${{ matrix.llvm }}/bin/clang \
         # LDFLAGS="-L${{ matrix.llvm }}/lib \
         #          -L${{ matrix.llvm }}/lib/c++ \
         #          -lunwind" \
-        #           meson setup builddir -Dpython.install_env=auto
+        #           meson setup builddir -Dunity=on -Dunity_size=9999999 -Dpython.install_env=auto
 
     - name: compile project
       run: meson compile -C builddir/

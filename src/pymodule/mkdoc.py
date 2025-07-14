@@ -101,7 +101,9 @@ def get_ignore_doc(header):
     with open(header, 'r', encoding="utf-8") as ifi:
         for line in ifi:
             if "IGNORE_DOC:" in line:
-                ignore_doc.append(line.split("IGNORE_DOC:")[-1].strip() + " ")
+                ignore_doc.append(line.split("IGNORE_DOC:")[-1].strip())
+                if ignore_doc[-1] == '':
+                    ignore_doc.pop()
 
     return ignore_doc
 
