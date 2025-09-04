@@ -83,17 +83,17 @@ class EchogramBuilder:
 
     def set_range_extent(self, min_ranges, max_ranges):
         assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
-        self.min_ranges = np.array(min_ranges)
-        self.max_ranges = np.array(max_ranges)
-        self.res_ranges = (self.max_ranges - self.min_ranges) / self.max_number_of_samples
+        self.min_ranges = np.array(min_ranges).astype(np.float32)
+        self.max_ranges = np.array(max_ranges).astype(np.float32)
+        self.res_ranges = ((self.max_ranges - self.min_ranges) / self.max_number_of_samples).astype(np.float32)
         self.has_ranges = True
         self.initialized = False
 
     def set_depth_extent(self, min_depths, max_depths):
         assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
-        self.min_depths = np.array(min_depths)
-        self.max_depths = np.array(max_depths)
-        self.res_depths = (self.max_depths - self.min_depths) / self.max_number_of_samples
+        self.min_depths = np.array(min_depths).astype(np.float32)
+        self.max_depths = np.array(max_depths).astype(np.float32)
+        self.res_depths = ((self.max_depths - self.min_depths) / self.max_number_of_samples).astype(np.float32)
         self.has_depths = True
         self.initialized = False
 
@@ -101,9 +101,9 @@ class EchogramBuilder:
         assert_length(
             "set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs]
         )
-        self.min_sample_nrs = np.array(min_sample_nrs)
-        self.max_sample_nrs = np.array(max_sample_nrs)
-        self.res_sample_nrs = (self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples
+        self.min_sample_nrs = np.array(min_sample_nrs).astype(np.float32)
+        self.max_sample_nrs = np.array(max_sample_nrs).astype(np.float32)
+        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(np.float32)
         self.has_sample_nrs = True
         self.initialized = False
 
@@ -416,44 +416,6 @@ class EchogramBuilder:
             column.fill(np.nan)
         return column
 
-    @staticmethod
-    def sample_y_coordinates(vec_min_y, vec_max_y, vec_res_y, min_y, max_y, max_steps=1024):
-        vec_min_y = np.array(vec_min_y)
-        vec_max_y = np.array(vec_max_y)
-
-        # vec_min_y = vec_min_y[vec_min_y >= 0]
-        # vec_max_y = vec_max_y[vec_max_y > 0]
-        vec_min_y = vec_min_y[np.isfinite(vec_min_y)]
-        vec_max_y = vec_max_y[np.isfinite(vec_max_y)]
-
-        # filter
-        if not np.isfinite(min_y):
-            iqr = np.nanquantile(vec_min_y, 0.90) - np.nanquantile(vec_min_y, 0.10)
-            med = np.nanmedian(vec_min_y)
-            min_y = med - iqr * 1.5
-            # print(f"min_y: {min_y}, med: {med}, iqr: {iqr}")
-        if not np.isfinite(max_y):
-            iqr = np.nanquantile(vec_max_y, 0.90) - np.nanquantile(vec_max_y, 0.10)
-            med = np.nanmedian(vec_max_y)
-            max_y = med + iqr * 1.5
-            # print(f"max_y: {max_y}, med: {med}, iqr: {iqr}")
-
-        iqr = np.nanquantile(vec_res_y, 0.75) - np.nanquantile(vec_res_y, 0.25)
-        med = np.nanmedian(vec_res_y)
-        min_resolution = med - iqr * 1.5
-
-        res = np.nanmax([np.nanmin(vec_res_y), min_resolution])
-        y_min = np.nanmax([np.nanmin(vec_min_y), min_y])
-        y_max = np.nanmin([np.nanmax(vec_max_y), max_y])
-
-        y_coordinates = np.arange(y_min, y_max + res, res)
-
-        if len(y_coordinates) > max_steps:
-            y_coordinates = np.linspace(y_min, y_max, max_steps)            
-            res = y_coordinates[1] - y_coordinates[0]
-
-        return y_coordinates, res
-
     def reinit(self):
         if self.initialized:
             return
@@ -461,13 +423,13 @@ class EchogramBuilder:
         self.y_axis_function(**self.__y_kwargs)
         self.x_axis_function(**self.__x_kwargs)
 
-    def set_y_coordinates(self, name, y_coordinates, y_resolution, vec_min_y, vec_max_y):
+    def set_y_coordinates(self, name, y_coordinates, vec_min_y, vec_max_y):
         assert (
             len(vec_min_y) == len(vec_max_y) == len(self.pings)
         ), f"ERROR min/max y vectors must have the same length as internal pings vector"
         self.y_axis_name = name
         self.y_coordinates = y_coordinates
-        self.y_resolution = y_resolution
+        self.y_resolution = y_coordinates[1] - y_coordinates[0]
         self.y_extent = [
             self.y_coordinates[-1] + self.y_resolution / 2,
             self.y_coordinates[0] - self.y_resolution / 2,
@@ -700,16 +662,16 @@ class EchogramBuilder:
             return
         self.__y_kwargs = y_kwargs
 
-        y_coordinates, y_res = self.sample_y_coordinates(
-            vec_min_y=vec_min_y,
-            vec_max_y=vec_max_y,
-            vec_res_y=np.ones((len(self.pings))),
-            min_y=min_sample_nr,
-            max_y=max_sample_nr,
+        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
+            values_min=vec_min_y,
+            values_max=vec_max_y,
+            values_res=np.ones((len(self.pings))).astype(np.float32),
+            grid_min=min_sample_nr,
+            grid_max=max_sample_nr,
             max_steps=max_steps,
         )
 
-        self.set_y_coordinates("Y indice", y_coordinates, y_res, vec_min_y, vec_max_y)
+        self.set_y_coordinates("Y indice", y_coordinates, vec_min_y, vec_max_y)
 
     def set_y_axis_depth(
         self,
@@ -725,17 +687,17 @@ class EchogramBuilder:
         if self.y_axis_name == "Depth (m)" and self.__y_kwargs == y_kwargs:
             return
         self.__y_kwargs = y_kwargs
-
-        y_coordinates, y_res = self.sample_y_coordinates(
-            vec_min_y=self.min_depths,
-            vec_max_y=self.max_depths,
-            vec_res_y=self.res_depths,
-            min_y=min_depth,
-            max_y=max_depth,
+        
+        y_coordinates= theping.algorithms.gridding.functions.compute_resampled_coordinates(
+            values_min=self.min_depths,
+            values_max=self.max_depths,
+            values_res=elf.res_depths,
+            grid_min=min_depth,
+            grid_max=max_depth,
             max_steps=max_steps,
         )
 
-        self.set_y_coordinates("Depth (m)", y_coordinates, y_res, self.min_depths, self.max_depths)
+        self.set_y_coordinates("Depth (m)", y_coordinates, self.min_depths, self.max_depths)
 
     def set_y_axis_range(
         self,
@@ -752,16 +714,16 @@ class EchogramBuilder:
             return
         self.__y_kwargs = y_kwargs
 
-        y_coordinates, y_res = self.sample_y_coordinates(
-            vec_min_y=self.min_ranges,
-            vec_max_y=self.max_ranges,
-            vec_res_y=self.res_ranges,
-            min_y=min_range,
-            max_y=max_range,
+        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
+            values_min=self.min_ranges,
+            values_max=self.max_ranges,
+            values_res=self.res_ranges,
+            grid_min=min_range,
+            grid_max=max_range,
             max_steps=max_steps,
         )
 
-        self.set_y_coordinates("Range (m)", y_coordinates, y_res, self.min_ranges, self.max_ranges)
+        self.set_y_coordinates("Range (m)", y_coordinates, self.min_ranges, self.max_ranges)
 
     def set_y_axis_sample_nr(
         self,
@@ -780,16 +742,16 @@ class EchogramBuilder:
             return
         self.__y_kwargs = y_kwargs
 
-        y_coordinates, y_res = self.sample_y_coordinates(
-            vec_min_y=self.min_sample_nrs,
-            vec_max_y=self.max_sample_nrs,
-            vec_res_y=self.res_sample_nrs,
-            min_y=min_sample_nr,
-            max_y=max_sample_nr,
+        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
+            values_min=self.min_sample_nrs,
+            values_max=self.max_sample_nrs,
+            values_res=self.res_sample_nrs,
+            grid_min=min_sample_nr,
+            grid_max=max_sample_nr,
             max_steps=max_steps,
         )
 
-        self.set_y_coordinates("Sample number", y_coordinates, y_res, self.min_sample_nrs, self.max_sample_nrs)
+        self.set_y_coordinates("Sample number", y_coordinates, self.min_sample_nrs, self.max_sample_nrs)
 
     def set_x_axis_ping_nr(
         self,

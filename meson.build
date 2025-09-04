@@ -8,7 +8,7 @@ project(
   'themachinethatgoesping_pingprocessing',
   'cpp',
   license: 'MPL-2.0',
-  version: '0.11.5',
+  version: '0.11.6',
   default_options: ['warning_level=2', 'buildtype=release', 'cpp_std=c++20'],
   meson_version: '>=1.8.1' #there is a problem with meson 1.8.0 so just use a higher version
 )
