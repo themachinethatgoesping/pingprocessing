@@ -13,39 +13,40 @@ sources = [
 headers = [
   'watercolumn/echograms/echogrambase.hpp',
   'watercolumn/echograms/.docstrings/echogrambase.doc.hpp',
+  'watercolumn/echograms/.docstrings/pingindexconverter.doc.hpp',
   'watercolumn/image/make_wci.hpp',
   'watercolumn/image/.docstrings/make_wci.doc.hpp',
 ]
 
 # -- targets --
 # for now force static linking on windows
-# if build_machine.system() != 'linux'
-#   pingprocessing_lib = static_library(libname,sources,
-#                         dependencies : [
-#                           boost_dep, 
-#                           echosounders_dep,
-#                           tools_dep
-#                           ],
-#                         override_options: [
-#                           'b_lundef=false'
-#                       ],
-#                         install : true, 
-#                         install_tag : 'library'
-#                         )
-# else  
-#   pingprocessing_lib = library(libname,sources,
-#                         dependencies : [
-#                           boost_dep, 
-#                           echosounders_dep,
-#                           tools_dep
-#                           ],
-#                         override_options: [
-#                           'b_lundef=false'
-#                       ],
-#                         install : true, 
-#                         install_tag : 'library'
-#                         )
-# endif
+if build_machine.system() != 'linux'
+  pingprocessing_lib = static_library(libname,sources,
+                        dependencies : [
+                          boost_dep, 
+                          echosounders_dep,
+                          tools_dep
+                          ],
+                        override_options: [
+                          'b_lundef=false'
+                      ],
+                        install : true, 
+                        install_tag : 'library'
+                        )
+else  
+  pingprocessing_lib = library(libname,sources,
+                        dependencies : [
+                          boost_dep, 
+                          echosounders_dep,
+                          tools_dep
+                          ],
+                        override_options: [
+                          'b_lundef=false'
+                      ],
+                        install : true, 
+                        install_tag : 'library'
+                        )
+endif
                       
 
 # -- internal dependency --
@@ -55,7 +56,7 @@ pingprocessing_dep = declare_dependency(
     echosounders_dep,
     tools_dep
   ],
-  #link_with : [pingprocessing_lib],
+  link_with : [pingprocessing_lib],
   include_directories : ['../../']
   )
 
@@ -68,7 +69,7 @@ if headers != ['']
 endif
 
 # create pkgconfig file
-# pkg = import('pkgconfig')
-# pkg.generate(pingprocessing_lib,
-#              description : 'Library for processing themachinethatgoesping pings',
-#              url : 'https://github.com/themachinethatgoesping/pingprocessing')
+pkg = import('pkgconfig')
+pkg.generate(pingprocessing_lib,
+             description : 'Library for processing themachinethatgoesping pings',
+             url : 'https://github.com/themachinethatgoesping/pingprocessing')

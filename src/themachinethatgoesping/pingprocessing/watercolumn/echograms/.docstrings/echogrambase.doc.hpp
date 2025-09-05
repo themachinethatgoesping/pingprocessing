@@ -1,4 +1,4 @@
-//sourcehash: 3affb92d7b5419f6d172a1e2ac5318f3c21f381de48d05e1137b992ebfbee6bb
+//sourcehash: cd350f2caeb82716a551550b34c25b17514682c23a687c4792f1b508823f5f2c
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -44,6 +44,8 @@ images Allows for converting between ping_nr/sample_nr to
 time/depth/range and vice versa Allows for adding parameters in
 different units (e.g. time, depth, range) and convert them to echogram
 coordinates)doc";
+
+static const char *__doc_themachinethatgoesping_pingprocessing_watercolumn_echograms_EchogramBase_EchogramBase = R"doc()doc";
 
 #if defined(__GNUG__)
 #pragma GCC diagnostic pop

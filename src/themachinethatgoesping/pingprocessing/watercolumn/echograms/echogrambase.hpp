@@ -34,7 +34,10 @@ namespace echograms {
  * Allows for adding parameters in different units (e.g. time, depth, range) and convert them to echogram coordinates
  */
 class EchogramBase {
-    
+    /* x/time/ping_nr coordinate conversion */
+
+    public:
+    EchogramBase() = default;
 };
 
 }
