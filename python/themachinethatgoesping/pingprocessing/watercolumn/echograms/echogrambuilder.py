@@ -11,6 +11,7 @@ import matplotlib.dates as mdates
 import warnings
 
 # external Ping packages
+import themachinethatgoesping as theping
 from themachinethatgoesping import echosounders
 from themachinethatgoesping import tools
 
@@ -36,6 +37,7 @@ class EchogramBuilder:
             beam_sample_selections
         ), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
         self.beam_sample_selections = beam_sample_selections
+        self.feature_mapper = theping.algorithms.featuremapping.NearestFeatureMapper()
 
         self.depth_stack = depth_stack
         self.layers = {}
@@ -49,8 +51,8 @@ class EchogramBuilder:
         self.max_number_of_samples = np.array(
             [sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections]
         )
+        self.set_ping_numbers(np.arange(len(self.pings)))
         self.set_ping_times(times)
-        self.ping_numbers = np.arange(len(self.pings))
 
         self.param = {}
 
@@ -58,11 +60,14 @@ class EchogramBuilder:
         self.has_depths = False
         self.has_sample_nrs = False
         self.set_y_axis_y_indice()
-        self.set_x_axis_ping_nr()
+        self.set_x_axis_ping_index()
         self.initialized = True
+        
+        self.mp_cores = 1
 
     def set_depth_stack(self, depth_stack=True):
         self.depth_stack = depth_stack
+
     def set_range_stack(self, range_stack=True):
         self.depth_stack = not range_stack
 
@@ -72,11 +77,14 @@ class EchogramBuilder:
 
     def set_ping_numbers(self, ping_numbers):
         assert_length("set_ping_numbers", self.pings, [ping_numbers])
+        self.feature_mapper.set_feature("Ping index", ping_numbers)
         self.ping_numbers = ping_numbers
         self.initialized = False
 
     def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
         assert_length("set_ping_times", self.pings, [ping_times])
+        self.feature_mapper.set_feature("Ping time", ping_times)
+        self.feature_mapper.set_feature("Date time", ping_times)
         self.ping_times = ping_times
         self.time_zone = time_zone
         self.initialized = False
@@ -98,22 +106,18 @@ class EchogramBuilder:
         self.initialized = False
 
     def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
-        assert_length(
-            "set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs]
-        )
+        assert_length("set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs])
         self.min_sample_nrs = np.array(min_sample_nrs).astype(np.float32)
         self.max_sample_nrs = np.array(max_sample_nrs).astype(np.float32)
-        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(np.float32)
+        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(
+            np.float32
+        )
         self.has_sample_nrs = True
         self.initialized = False
 
     def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
-        assert_valid_argument(
-            "add_ping_param", x_reference, ["Ping number", "Ping time", "Date time"]
-        )
-        assert_valid_argument(
-            "add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"]
-        )
+        assert_valid_argument("add_ping_param", x_reference, ["Ping index", "Ping time", "Date time"])
+        assert_valid_argument("add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"])
 
         # convert datetimes to timestamps
         if isinstance(vec_x_val[0], dt.datetime):
@@ -132,7 +136,7 @@ class EchogramBuilder:
         vec_y_val = vec_y_val[arg]
 
         match x_reference:
-            case "Ping number":
+            case "Ping index":
                 comp_vec_x_val = self.ping_numbers
             case "Ping time":
                 comp_vec_x_val = self.ping_times
@@ -153,22 +157,21 @@ class EchogramBuilder:
         vec_y_val = averaged_y_vals
 
         # convert to to represent indices
-        vec_y_val = tools.vectorinterpolators.LinearInterpolator(
-            vec_x_val, vec_y_val, extrapolation_mode="nearest"
-        )(comp_vec_x_val)
+        vec_y_val = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_y_val, extrapolation_mode="nearest")(
+            comp_vec_x_val
+        )
 
         self.param[name] = y_reference, vec_y_val
 
     def get_ping_param(self, name, use_x_coordinates=False):
         self.reinit()
         assert name in self.param.keys(), f"ERROR[get_ping_param]: name '{name}' not registered"
-        # x_coordinates = self.indice_to_x_coordinate_interpolator(np.arange(len(self.pings)))
         if use_x_coordinates:
-            x_coordinates = self.x_coordinates
-            x_indices = np.array(self.x_coordinate_indice_interpolator(x_coordinates))
+            x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+            x_indices = np.array(self.feature_mapper.feature_to_index(self.x_axis_name, x_coordinates), mp_cores=self.mp_cores)
         else:
             x_indices = np.arange(len(self.pings))
-            x_coordinates = self.vec_x_val[x_indices]
+            x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
 
         reference, param = self.param[name]
         param = np.array(param)[x_indices]
@@ -276,14 +279,14 @@ class EchogramBuilder:
 
             c = ping.watercolumn.get_sound_speed_at_transducer()
             range_res = ping.watercolumn.get_sample_interval() * c * 0.5
-            
+
             if force_angle is None:
                 angle_factor = np.cos(
                     np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
                 )
             else:
                 angle_factor = np.cos(np.radians(force_angle))
-                
+
             min_s[nr] = sel.get_first_sample_number_ensemble()
             max_s[nr] = sel.get_last_sample_number_ensemble()
             min_r[nr] = min_s[nr] * range_res
@@ -328,7 +331,7 @@ class EchogramBuilder:
                             minslant_d.append(md)
                     except Exception as e:
                         pass
-                        #TODO: this should create a warning in the log
+                        # TODO: this should create a warning in the log
 
         data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean, depth_stack=depth_stack)
         data.set_sample_nr_extent(min_s, max_s)
@@ -364,10 +367,10 @@ class EchogramBuilder:
                 wci = 10 * np.log10(wci)
 
             return wci
-        
+
     def get_wci_depth_stack(self, nr, from_bottom_xyz=False):
         sel = self.beam_sample_selections[nr]
-        
+
         if not sel.empty():
             ping = self.pings[nr]
 
@@ -378,39 +381,40 @@ class EchogramBuilder:
                 xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=sel)
             else:
                 xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=sel)
-            
+
             geolocation = ping.get_geolocation()
-            
+
             # y = to_raypoints(
             #     0.,
             #     np.array(xyz.y).astype(np.float32),
             #     0.5,
             #     np.array(bdsn+0.5).astype(np.float32),
             #     np.array(range(wci.shape[1])).astype(np.float32))
-            
+
             z = to_raypoints(
                 geolocation.z,
                 np.array(xyz.z).astype(np.float32),
                 0.5,
-                np.array(bdsn+0.5).astype(np.float32),
-                np.array(range(wci.shape[1])).astype(np.float32))
-            
+                np.array(bdsn + 0.5).astype(np.float32),
+                np.array(range(wci.shape[1])).astype(np.float32),
+            )
+
             arg = np.where(np.isfinite(wci.flatten()))
-            
+
             if self.linear_mean:
-                wci = np.power(10,0.1*wci.flatten()[arg])
-            #y = y.flatten()[arg]
+                wci = np.power(10, 0.1 * wci.flatten()[arg])
+            # y = y.flatten()[arg]
             z = z.flatten()[arg]
-                
-            v,w = self.y_gridder.interpolate_block_mean(z, wci)
-            
+
+            v, w = self.y_gridder.interpolate_block_mean(z, wci)
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 if self.linear_mean:
-                    column = 10*np.log10(v/w)
+                    column = 10 * np.log10(v / w)
                 else:
-                    column = v/w
-            
+                    column = v / w
+
         else:
             column = np.empty((len(self.y_coordinates)))
             column.fill(np.nan)
@@ -436,13 +440,12 @@ class EchogramBuilder:
         ]
         self.vec_min_y = vec_min_y
         self.vec_max_y = vec_max_y
-        
-        self.y_gridder = ForwardGridder1D.from_res(
-            self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
+
+        self.y_gridder = ForwardGridder1D.from_res(self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
         if self.main_layer is not None:
             self.main_layer.update_y_gridder()
         for layer in self.layers.values():
-            layer.update_y_gridder()    
+            layer.update_y_gridder()
 
         self.y_coordinate_indice_interpolator = [None for _ in self.pings]
         self.y_indice_to_y_coordinate_interpolator = [None for _ in self.pings]
@@ -525,12 +528,12 @@ class EchogramBuilder:
         vec_x_val = vec_x_val[arg]
 
         # convert to to represent indices
-        vec_min_y = tools.vectorinterpolators.LinearInterpolator(
-            vec_x_val, vec_min_y, extrapolation_mode="nearest"
-        )(self.vec_x_val)
-        vec_max_y = tools.vectorinterpolators.LinearInterpolator(
-            vec_x_val, vec_max_y, extrapolation_mode="nearest"
-        )(self.vec_x_val)
+        vec_min_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode="nearest")(
+            self.feature_mapper.get_feature_values(self.x_axis_name)
+        )
+        vec_max_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode="nearest")(
+            self.feature_mapper.get_feature_values(self.x_axis_name)
+        )
 
         # wc_data = [np.empty(0) for _ in self.wc_data]
         beam_sample_selections = deepcopy(self.beam_sample_selections)
@@ -611,8 +614,8 @@ class EchogramBuilder:
                 other.set_x_axis_date_time(**self.__x_kwargs)
             case "Ping time":
                 other.set_x_axis_ping_time(**self.__x_kwargs)
-            case "Ping number":
-                other.set_x_axis_ping_nr(**self.__x_kwargs)
+            case "Ping index":
+                other.set_x_axis_ping_index(**self.__x_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
 
@@ -628,23 +631,21 @@ class EchogramBuilder:
             case _:
                 raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
 
-    def set_x_coordinates(self, name, x_coordinates, x_resolution, x_interpolation_limit, vec_x_val):
+    def set_x_coordinates(self, name, x_coordinates, x_interpolation_limit):
+        if len(x_coordinates) < 2:
+            raise RuntimeError("ERROR: x_coordinates must contain at least two values")
+        
         self.x_axis_name = name
-        self.vec_x_val = vec_x_val
-        self.x_coordinates = x_coordinates
-        self.x_resolution = x_resolution
+        
+        x_resolution = x_coordinates[1] - x_coordinates[0]
+        
         self.x_interpolation_limit = x_interpolation_limit
         self.x_extent = [
-            self.x_coordinates[0] - self.x_resolution / 2,
-            self.x_coordinates[-1] + self.x_resolution / 2,
+            x_coordinates[0] - x_resolution / 2,
+            x_coordinates[-1] + x_resolution / 2,
         ]
 
-        self.x_coordinate_indice_interpolator = tools.vectorinterpolators.NearestInterpolatorDI(
-            vec_x_val, np.arange(len(self.pings))
-        )
-        self.indice_to_x_coordinate_interpolator = tools.vectorinterpolators.NearestInterpolator(
-            np.arange(len(self.pings)), vec_x_val
-        )
+        self.feature_mapper.set_feature("X coordinate", x_coordinates)
 
     def set_y_axis_y_indice(
         self,
@@ -653,8 +654,8 @@ class EchogramBuilder:
         max_steps=1024,
         **kwargs,  # to catch [and ignore] any additional arguments
     ):
-        vec_min_y = np.zeros((len(self.pings)))
-        vec_max_y = self.max_number_of_samples
+        vec_min_y = np.zeros((len(self.pings))).astype(np.float32)
+        vec_max_y = self.max_number_of_samples.astype(np.float32)
 
         y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_steps": max_steps}
         self.y_axis_function = self.set_y_axis_y_indice
@@ -687,11 +688,11 @@ class EchogramBuilder:
         if self.y_axis_name == "Depth (m)" and self.__y_kwargs == y_kwargs:
             return
         self.__y_kwargs = y_kwargs
-        
-        y_coordinates= theping.algorithms.gridding.functions.compute_resampled_coordinates(
+
+        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
             values_min=self.min_depths,
             values_max=self.max_depths,
-            values_res=elf.res_depths,
+            values_res=self.res_depths,
             grid_min=min_depth,
             grid_max=max_depth,
             max_steps=max_steps,
@@ -753,33 +754,33 @@ class EchogramBuilder:
 
         self.set_y_coordinates("Sample number", y_coordinates, self.min_sample_nrs, self.max_sample_nrs)
 
-    def set_x_axis_ping_nr(
+    def set_x_axis_ping_index(
         self,
-        min_ping_nr=0,
-        max_ping_nr=np.nan,
+        min_ping_index=0,
+        max_ping_index=np.nan,
         max_steps=4096,
         **kwargs,  # to catch [and ignore] any additional arguments
     ):
 
         x_kwargs = {
-            "min_ping_nr": min_ping_nr,
-            "max_ping_nr": max_ping_nr,
+            "min_ping_index": min_ping_index,
+            "max_ping_index": max_ping_index,
             "max_steps": max_steps,
         }
 
-        self.x_axis_function = self.set_x_axis_ping_nr
-        if self.x_axis_name == "Ping number" and self.__x_kwargs == x_kwargs:
+        self.x_axis_function = self.set_x_axis_ping_index
+        if self.x_axis_name == "Ping index" and self.__x_kwargs == x_kwargs:
             return
 
         self.__x_kwargs = x_kwargs
 
-        if not np.isfinite(max_ping_nr):
-            max_ping_nr = np.max(self.ping_numbers)
+        if not np.isfinite(max_ping_index):
+            max_ping_index = np.max(self.ping_numbers)
 
-        if not np.isfinite(max_ping_nr):
-            max_ping_nr = np.max(self.ping_numbers)
+        if not np.isfinite(max_ping_index):
+            max_ping_index = np.max(self.ping_numbers)
 
-        npings = int(max_ping_nr - min_ping_nr) + 1
+        npings = int(max_ping_index - min_ping_index) + 1
 
         if npings > len(self.pings):
             npings = len(self.pings)
@@ -787,13 +788,9 @@ class EchogramBuilder:
         if npings > max_steps:
             npings = max_steps
 
-        x_coordinates = np.linspace(min_ping_nr, max_ping_nr, npings)
-        if npings > 1:
-            x_resolution = x_coordinates[1] - x_coordinates[0]
-        else:
-            x_resolution = 1
+        x_coordinates = np.linspace(min_ping_index, max_ping_index, npings)
 
-        self.set_x_coordinates("Ping number", x_coordinates, x_resolution, 1, self.ping_numbers)
+        self.set_x_coordinates("Ping index", x_coordinates, 1)
 
     def set_x_axis_ping_time(
         self,
@@ -850,16 +847,12 @@ class EchogramBuilder:
 
             if arange or len(x_coordinates) > max_steps:
                 x_coordinates = np.linspace(min_timestamp, max_timestamp, max_steps)
-                if max_steps > 1:
-                    time_resolution = x_coordinates[1] - x_coordinates[0]
-                else:
-                    time_resolution = 1
         except Exception as e:
             message = f"{e}\n -min_timestamp: {min_timestamp}\n -max_timestamp: {max_timestamp}\n -time_resolution: {time_resolution}\n -max_steps: {max_steps}"
 
             raise RuntimeError(message)
 
-        self.set_x_coordinates("Ping time", x_coordinates, time_resolution, time_interpolation_limit, self.ping_times)
+        self.set_x_coordinates("Ping time", x_coordinates, time_interpolation_limit)
 
     def set_x_axis_date_time(
         self,
@@ -916,13 +909,13 @@ class EchogramBuilder:
         valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < n_samples))[0]
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
-    
-    def get_y_indices_depth_stack(self, wci_nr, y_gridder = None):            
+
+    def get_y_indices_depth_stack(self, wci_nr, y_gridder=None):
         y_indices_image = np.arange(len(self.y_coordinates))
-        
+
         if y_gridder is None:
-            return y_indices_image,y_indices_image
-        
+            return y_indices_image, y_indices_image
+
         y_indices_wci = y_gridder.get_x_index(self.y_coordinates)
 
         valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < y_gridder.get_nx()))[0]
@@ -930,17 +923,23 @@ class EchogramBuilder:
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
     def get_x_indices(self):
-        image_index, wci_index = np.arange(len(self.x_coordinates)), np.array(
-            self.x_coordinate_indice_interpolator(self.x_coordinates)
+        x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+        vec_x_val = np.array(self.feature_mapper.get_feature_values(self.x_axis_name))
+        
+        image_index = np.array(self.feature_mapper.get_feature_indices("X coordinate"))
+        wci_index = self.feature_mapper.feature_to_index(
+            self.x_axis_name, x_coordinates,
+            mp_cores=self.mp_cores
         )
-        delta_x = np.abs(self.vec_x_val[wci_index] - self.x_coordinates)
+
+        delta_x = np.abs(vec_x_val[wci_index] - x_coordinates)
         valid = np.where(delta_x < self.x_interpolation_limit)[0]
         return image_index[valid], wci_index[valid]
 
     def build_image(self, progress=None):
         self.reinit()
         ny = len(self.y_coordinates)
-        nx = len(self.x_coordinates)
+        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
 
         image = np.empty((nx, ny), dtype=np.float32)
         image.fill(np.nan)
@@ -969,7 +968,7 @@ class EchogramBuilder:
     def build_image_and_layer_image(self, progress=None):
         self.reinit()
         ny = len(self.y_coordinates)
-        nx = len(self.x_coordinates)
+        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
 
         image = np.empty((nx, ny), dtype=np.float32)
         image.fill(np.nan)
@@ -1018,7 +1017,7 @@ class EchogramBuilder:
     def build_image_and_layer_images(self, progress=None):
         self.reinit()
         ny = len(self.y_coordinates)
-        nx = len(self.x_coordinates)
+        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
 
         image = np.empty((nx, ny), dtype=np.float32)
         image.fill(np.nan)

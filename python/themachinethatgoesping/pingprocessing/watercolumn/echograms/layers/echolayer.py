@@ -48,13 +48,13 @@ class EchoLayer:
         # convert to to represent indices
         #vec_min_y = tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
         #vec_max_y = tools.vectorinterpolators.AkimaInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
-        vec_min_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)
-        vec_max_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.vec_x_val)       
+        vec_min_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode = 'nearest')(echodata.feature_mapper.get_feature_values(echodata.x_axis_name))
+        vec_max_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode = 'nearest')(echodata.feature_mapper.get_feature_values(echodata.x_axis_name))       
 
         self.echodata = echodata
         # create layer indices representing the range (i1 = last element +1_
-        i0 = np.empty(len(echodata.ping_times),dtype = int)
-        i1 = np.empty(len(echodata.ping_times),dtype = int)
+        i0 = np.empty(len(echodata.pings),dtype = int)
+        i1 = np.empty(len(echodata.pings),dtype = int)
         for nr,interpolator in enumerate(echodata.y_coordinate_indice_interpolator):
             if interpolator is not None:
                 i0[nr] = interpolator(vec_min_y[nr]) + 0.5
@@ -89,9 +89,11 @@ class EchoLayer:
 
     @classmethod
     def from_static_layer(cls, echodata, min_y, max_y):
+        vec_x_val = echodata.feature_mapper.get_feature_values(echodata.x_axis_name)
+        
         min_y = [min_y, min_y] if min_y is not None else None
         max_y = [max_y, max_y] if max_y is not None else None
-        return cls(echodata, [echodata.vec_x_val[0], echodata.vec_x_val[-1]], min_y, max_y)
+        return cls(echodata, [vec_x_val[0], vec_x_val[-1]], min_y, max_y)
 
     @classmethod
     def from_ping_param_offsets_absolute(cls, echodata, ping_param_name, offset_0, offset_1):
@@ -158,7 +160,7 @@ class PingData:
         return self.echodata.get_limits_layers(self.nr, axis_name=axis_name)
 
     def get_ping_time(self):
-        return self.echodata.ping_times[self.nr]
+        return self.echodata.feature_mapper.index_to_feature(self.nr)
 
     def get_datetime(self):
         return dt.datetime.fromtimestamp(self.get_ping_time(), self.echodata.time_zone)
