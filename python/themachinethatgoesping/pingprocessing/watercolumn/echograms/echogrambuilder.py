@@ -21,6 +21,8 @@ from themachinethatgoesping.pingprocessing.core.asserts import assert_length, as
 from themachinethatgoesping.algorithms.geoprocessing.functions import to_raypoints
 from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 
+from themachinethatgoesping.algorithms_nanopy.featuremapping import NearestFeatureMapper
+
 from themachinethatgoesping.pingprocessing.watercolumn import helper as wchelper
 
 # subpackages
@@ -37,7 +39,7 @@ class EchogramBuilder:
             beam_sample_selections
         ), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
         self.beam_sample_selections = beam_sample_selections
-        self.feature_mapper = theping.algorithms.featuremapping.NearestFeatureMapper()
+        self.feature_mapper = NearestFeatureMapper()
 
         self.depth_stack = depth_stack
         self.layers = {}
@@ -945,7 +947,7 @@ class EchogramBuilder:
         image.fill(np.nan)
 
         image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+        image_indices = get_progress_iterator(image_indices, progress, desc="sBuilding echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
             if self.depth_stack:
