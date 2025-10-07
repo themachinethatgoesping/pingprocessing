@@ -355,7 +355,7 @@ class EchogramBuilder:
         ping = self.pings[nr]
 
         # select which ping.watercolumn.get_ function to call based on wci_value
-        wci = wchelper.select_get_wci_image(ping, sel, self.wci_value)
+        wci = wchelper.select_get_wci_image(ping, sel, self.wci_value, self.mp_cores)
 
         if wci.shape[0] == 1:
             return wci[0]
@@ -377,7 +377,7 @@ class EchogramBuilder:
             ping = self.pings[nr]
 
             # select which ping.watercolumn.get_ function to call based on wci_value
-            wci = wchelper.select_get_wci_image(ping, sel, self.wci_value)
+            wci = wchelper.select_get_wci_image(ping, sel, self.wci_value, self.mp_cores)
 
             if from_bottom_xyz:
                 xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=sel)

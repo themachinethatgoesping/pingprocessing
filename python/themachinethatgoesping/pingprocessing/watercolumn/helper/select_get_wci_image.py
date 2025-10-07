@@ -36,7 +36,7 @@ def apply_pss(ping, pss, apply_pss_to_bottom):
 
     return sel
 
-def select_get_wci_image(ping, selection, wci_value):
+def select_get_wci_image(ping, selection, wci_value, mp_cores = 1):
     if callable(wci_value):
         return wci_value(ping, selection)
 
@@ -83,25 +83,25 @@ def select_get_wci_image(ping, selection, wci_value):
 
     match wci_value:
         case "amp":
-            wci = ping.watercolumn.get_amplitudes(selection)
+            wci = ping.watercolumn.get_amplitudes(selection, mp_cores=mp_cores)
         case "av":
-            wci = ping.watercolumn.get_av(selection)
+            wci = ping.watercolumn.get_av(selection, mp_cores=mp_cores)
         case "ap":
-            wci = ping.watercolumn.get_ap(selection)
+            wci = ping.watercolumn.get_ap(selection, mp_cores=mp_cores)
         case "power":
-            wci = ping.watercolumn.get_power(selection)
+            wci = ping.watercolumn.get_power(selection, mp_cores=mp_cores)
         case "sp":
-            wci = ping.watercolumn.get_sp(selection)
+            wci = ping.watercolumn.get_sp(selection, mp_cores=mp_cores)
         case "sv":
-            wci = ping.watercolumn.get_sv(selection)
+            wci = ping.watercolumn.get_sv(selection, mp_cores=mp_cores)
         case "pv":
-            wci = ping.watercolumn.get_pv(selection)
+            wci = ping.watercolumn.get_pv(selection, mp_cores=mp_cores)
         case "rv":
-            wci = ping.watercolumn.get_rv(selection)
+            wci = ping.watercolumn.get_rv(selection, mp_cores=mp_cores)
         case "rp":
-            wci = ping.watercolumn.get_rp(selection)
+            wci = ping.watercolumn.get_rp(selection, mp_cores=mp_cores)
         case "pp":
-            wci = ping.watercolumn.get_pp(selection)
+            wci = ping.watercolumn.get_pp(selection, mp_cores=mp_cores)
         case _:
             raise ValueError(
                 f"Invalid value for wci_value: {wci_value}. Choose any of ['amp','power', 'rp', 'rv',  'pp', 'pv',  'ap', 'av',  'sp', 'sv', 'power/amp', 'sp/ap/pp/rp', 'sv/av/pv/rv']."

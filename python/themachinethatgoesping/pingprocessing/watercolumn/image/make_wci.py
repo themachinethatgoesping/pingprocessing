@@ -248,6 +248,7 @@ def make_beam_sample_image(
     wci_value: str = "sv/av/pv/rv",
     ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
     apply_pss_to_bottom: bool = False,
+    mp_cores: int = 1,
     **kwargs,
 ):
 
@@ -283,7 +284,7 @@ def make_beam_sample_image(
     sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
 
     # select which ping.watercolumn.get_ function to call based on wci_value
-    wci = wchelper.select_get_wci_image(ping, sel, wci_value)
+    wci = wchelper.select_get_wci_image(ping, sel, wci_value, mp_cores=mp_cores)
 
     return wci, [-0.5, wci.shape[0] + 0.5, wci.shape[1] + 0.5, -0.5]
 
@@ -370,7 +371,7 @@ def make_wci(
         # t.append(time()) # 6
 
         # select which ping.watercolumn.get_ function to call based on wci_value
-        wci = wchelper.select_get_wci_image(ping, sel, wci_value)
+        wci = wchelper.select_get_wci_image(ping, sel, wci_value, mp_cores=mp_cores)
 
         # t.append(time()) # 7
         # lookup beam/sample numbers for each pixel
