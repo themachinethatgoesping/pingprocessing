@@ -1,5 +1,3 @@
-//sourcehash: 6a3f1b81358f3637c76480fc687f4856da99ae43e81dc409cc48856d110b432f
-
 /*
   This file contains docstrings for use in the Python bindings.
   Do not edit! They were automatically extracted by pybind11_mkdoc.
@@ -32,16 +30,3 @@
 #define DOC(...) __EXPAND(__EXPAND(__CAT2(__DOC, __VA_SIZE(__VA_ARGS__)))(__VA_ARGS__))
 
 #endif // NEW_DOC_HEADER_HPP
-#if defined(__GNUG__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-variable"
-#endif
-
-
-static const char *__doc_themachinethatgoesping_pingprocessing_watercolumn_image_make_wci = R"doc()doc";
-
-#if defined(__GNUG__)
-#pragma GCC diagnostic pop
-#endif
-
-

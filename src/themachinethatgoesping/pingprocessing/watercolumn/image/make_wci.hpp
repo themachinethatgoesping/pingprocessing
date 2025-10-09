@@ -11,7 +11,6 @@
 
 
 #include <xtensor/containers/xtensor.hpp>
-#include <xtensor-python/pytensor.hpp> // Numpy bindings
 
 #include <themachinethatgoesping/echosounders/filetemplates/datatypes/i_ping.hpp>
 
