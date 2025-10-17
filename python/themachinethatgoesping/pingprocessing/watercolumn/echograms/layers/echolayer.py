@@ -17,7 +17,7 @@ class EchoLayer:
 
         if vec_max_y is None:
             vec_max_y = np.empty(len(vec_x_val))
-            vec_max_y.fill(echodata.x_coordinates[-1])
+            vec_max_y.fill(echodata.feature_mapper.get_feature_values('X coordinate')[-1])
             
         assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
         
