@@ -13,7 +13,6 @@ sources = [
 headers = [
   'watercolumn/echograms/echogrambase.hpp',
   'watercolumn/echograms/.docstrings/echogrambase.doc.hpp',
-  'watercolumn/echograms/.docstrings/pingindexconverter.doc.hpp',
   'watercolumn/image/make_wci.hpp',
   'watercolumn/image/.docstrings/make_wci.doc.hpp',
 ]
