@@ -6,5 +6,6 @@
 from .tqdmwidget import *
 from .wciviewer import *
 from .echogramviewer import *
-from .echogramviewer_vispy import *
+from .wciviewer_pyqtgraph import *
+from .echogramviewer_pyqtgraph import *
 from . import tools
