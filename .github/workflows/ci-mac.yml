@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-name: mac
+name: linux
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
       - '.github/workflows/cibuildwheels*'
       - '.github/workflows/rattler*'
       - '.github/workflows/test_*'
-      - '.github/workflows/ci-linux*'
+      - '.github/workflows/ci-mac*'
       - '.github/workflows/ci-win*'
       - 'conda.recipe/*'
       - '*.md'
@@ -31,7 +31,7 @@ on:
       - '.github/workflows/cibuildwheels*'
       - '.github/workflows/rattler*'
       - '.github/workflows/test_*'
-      - '.github/workflows/ci-linux*'
+      - '.github/workflows/ci-mac*'
       - '.github/workflows/ci-win*'
       - 'conda.recipe/*'
       - '*.md'
@@ -54,52 +54,66 @@ concurrency:
   #BUILD_TYPE: Release
   
 jobs:
-  macos_arm:
-    name: CI ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: ci on ${{matrix.name}}
     strategy:
       fail-fast: false
       matrix:
-        boost: ["$(brew --prefix boost)"]
-        libomp: ["$(brew --prefix libomp)"]
-        llvm: ["$(brew --prefix llvm@18)"]
-        os: ["macos-15"] 
-        
-    steps:
+        include:  
+          - { name: 'ubuntu-dep',
+              container: 'ghcr.io/themachinethatgoesping/ubuntu-dep:latest',
+              ccache: 'true',
+              pip2: 'pip install -r requirements.txt --break-system-packages' }
+          - { name: 'ubuntu-24.04',
+              runs-on: 'ubuntu-24.04',
+              ccache: 'true',
+              dep : 'sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential ccache pkg-config cmake python3-pip libboost-all-dev libcurl4-openssl-dev libgl1 libglib2.0-0 ninja-build', 
+              pip : 'sudo pip install meson meson-python --break-system-packages && pip install pytest numpy --break-system-packages',
+              pip2: 'pip install -r requirements.txt --break-system-packages' }
+          - { name: 'archlinux',
+              container: 'archlinux', 
+              pre-dep : 'pacman -Syu --noconfirm; pacman -Syy sudo git git-lfs --noconfirm', 
+              dep : 'sudo pacman -Syy --noconfirm base-devel ccache pkg-config cmake python-pip boost curl mesa glib2 fontconfig libxkbcommon', 
+              pip : 'pip install meson meson-python ninja pytest numpy --break-system-packages',
+              pip2: 'pip install -r requirements.txt --break-system-packages --pre' }
     
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
+    runs-on: ${{ matrix.runs-on || 'ubuntu-latest' }}
+    container: ${{ matrix.container || '' }}
 
-    # - name: Install LLVM and Clang
-    #   uses: KyleMayes/install-llvm-action@v2
-    #   with:
-    #     version: "18.1"
-    #     env: true
-        
+    steps:
+    - name: install perquisites
+      if:  ${{matrix.pre-dep}}
+      run: ${{matrix.pre-dep}}
+
     - name: checkout main repository
       uses: actions/checkout@v4
       with:
         submodules: recursive
         lfs: false
-
+    
     - name: ccache
+      if: ${{ matrix.ccache }}
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: super-ci-mac-2  # name for the cache
-        
-    - run: brew install libomp boost coreutils llvm@18
-    
-    - run: pip install meson meson-python ninja pytest numpy
-    
-    - name: configure meson
+        key: super-ci-${{ matrix.container }}  # name for the cache
+
+    - name: install dependencies (c++)
+      if:  ${{matrix.dep}}
+      run: ${{matrix.dep}}
+      
+    - name: install dependencies (meson & python)
+      if:  ${{matrix.pip}}
+      run: ${{matrix.pip}}
+
+    - name: activate gcc-14 toolchain
+      if: ${{ matrix.name == 'ubuntu-24.04' }}
       run: |
-        meson setup builddir -Dunity=on -Dunity_size=9999999 -Dpython.install_env=auto
-        # CXX=${{ matrix.llvm }}/bin/clang++ CC=${{ matrix.llvm }}/bin/clang \
-        # LDFLAGS="-L${{ matrix.llvm }}/lib \
-        #          -L${{ matrix.llvm }}/lib/c++ \
-        #          -lunwind" \
-        #           meson setup builddir -Dunity=on -Dunity_size=9999999 -Dpython.install_env=auto
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-14 g++-14
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+
+    - name: configure meson
+      run: meson setup builddir -Dunity=on -Dunity_size=9999999 -Dpython.install_env=auto -Dprefix=/usr/;
 
     - name: compile project
       run: meson compile -C builddir/
@@ -108,10 +122,11 @@ jobs:
       run: meson test -C builddir/ --print-errorlogs
 
     - name: install project
-      run: sudo meson install -C builddir/
+      run: ${{ matrix.container && 'meson install -C builddir/' || 'sudo meson install -C builddir/' }}
 
     - name: install pip requirements
-      run: pip install -r requirements.txt
+      if:  ${{matrix.pip2}}
+      run: ${{matrix.pip2}}
 
     - name: test (pytest)
       run: pytest -v
@@ -120,6 +135,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: failure()
       with:
-        name: ${{matrix.container}}_testlog
+        name: ${{matrix.name}}_testlog
         path: builddir/meson-logs/meson-log.txt
         retention-days: 5
+    
