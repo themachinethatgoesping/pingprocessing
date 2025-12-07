@@ -35,6 +35,8 @@ WCI_VALUE_CHOICES = [
     "rv",
     "rp",
     "power",
+    "sv_vs_av",
+    "sp_vs_ap"
 ]
 
 class WCIViewerPyQtGraph:
@@ -157,8 +159,8 @@ class WCIViewerPyQtGraph:
         self.w_stack_step = ipywidgets.IntText(value=1, description="stack step", layout=ipywidgets.Layout(width="15%"))
         self.w_mp_cores = ipywidgets.IntText(value=self.args_imagebuilder["mp_cores"], description="mp_cores", layout=ipywidgets.Layout(width="15%"))
 
-        self.w_vmin = ipywidgets.FloatSlider(description="vmin", min=-150, max=100, step=5, value=self.args_plot["vmin"])
-        self.w_vmax = ipywidgets.FloatSlider(description="vmax", min=-150, max=100, step=5, value=self.args_plot["vmax"])
+        self.w_vmin = ipywidgets.FloatSlider(description="vmin", min=-150, max=100, step=0.5, value=self.args_plot["vmin"])
+        self.w_vmax = ipywidgets.FloatSlider(description="vmax", min=-150, max=100, step=0.5, value=self.args_plot["vmax"])
 
         self.w_stack_linear = ipywidgets.Checkbox(
             description="stack_linear",
@@ -441,3 +443,209 @@ class WCIViewerPyQtGraph:
         self.widget_height_px = max(1, int(height_px))
         pgh.apply_widget_layout(self.graphics, self.widget_width_px, self.widget_height_px)
         self._request_remote_draw()
+
+    # -------------------------------------------------------------------------
+    # Export functionality
+    # -------------------------------------------------------------------------
+
+    def export_image(self, filename: str, width: Optional[int] = None, height: Optional[int] = None) -> None:
+        """Export the current view as an image file (PNG, JPG, TIFF, etc.).
+        
+        Parameters
+        ----------
+        filename : str
+            Output filename. Format is determined by extension.
+        width : int, optional
+            Image width in pixels. If None, uses current widget size.
+        height : int, optional  
+            Image height in pixels. If None, uses current widget size.
+        
+        Example:
+            viewer.export_image('watercolumn.png')
+            viewer.export_image('watercolumn.png', width=1920, height=1080)
+        """
+        from pyqtgraph.exporters import ImageExporter
+        exporter = ImageExporter(self.plot)
+        if width is not None:
+            exporter.parameters()['width'] = width
+        if height is not None:
+            exporter.parameters()['height'] = height
+        exporter.export(filename)
+
+    def export_svg(self, filename: str) -> None:
+        """Export the current view as an SVG file.
+        
+        Parameters
+        ----------
+        filename : str
+            Output filename (should end with .svg).
+        
+        Example:
+            viewer.export_svg('watercolumn.svg')
+        """
+        from pyqtgraph.exporters import SVGExporter
+        exporter = SVGExporter(self.plot)
+        exporter.export(filename)
+
+    def export_matplotlib(self) -> "matplotlib.figure.Figure":
+        """Export the current view to a matplotlib figure.
+        
+        Note: MatplotlibExporter works best with line plots. For image data
+        like water column images, consider using `get_figure_data()` instead
+        to recreate the plot in matplotlib directly.
+        
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The matplotlib figure containing the exported plot.
+        
+        Example:
+            fig = viewer.export_matplotlib()
+            fig.savefig('watercolumn_mpl.png', dpi=300)
+        """
+        from pyqtgraph.exporters import MatplotlibExporter
+        exporter = MatplotlibExporter(self.plot)
+        exporter.export()
+        # The exporter opens a window; get the figure from it
+        if exporter.windows:
+            return exporter.windows[-1].getFigure()
+        return None
+
+    def get_figure_data(self) -> Dict[str, Any]:
+        """Get the current image data and metadata for external plotting.
+        
+        This is useful for recreating the plot in matplotlib or other
+        plotting libraries with full control over the output.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'image': The 2D numpy array of the water column image
+            - 'extent': Tuple (x0, x1, y0, y1) for image positioning
+            - 'vmin': Colorbar minimum value
+            - 'vmax': Colorbar maximum value
+            - 'cmap': Colormap name (if available)
+            - 'xlabel': X-axis label
+            - 'ylabel': Y-axis label
+            - 'title': Plot title (ping info)
+        
+        Example:
+            import matplotlib.pyplot as plt
+            data = viewer.get_figure_data()
+            fig, ax = plt.subplots()
+            im = ax.imshow(data['image'].T, extent=data['extent'],
+                          aspect='auto', origin='upper',
+                          vmin=data['vmin'], vmax=data['vmax'],
+                          cmap='YlGnBu_r')
+            ax.set_xlabel(data['xlabel'])
+            ax.set_ylabel(data['ylabel'])
+            plt.colorbar(im, label='dB')
+            plt.savefig('watercolumn.png', dpi=300)
+        """
+        return {
+            'image': self.wci.copy() if self.wci is not None else None,
+            'extent': self.extent,
+            'vmin': float(self.w_vmin.value),
+            'vmax': float(self.w_vmax.value),
+            'xlabel': 'Horizontal distance (m)',
+            'ylabel': 'Depth (m)',
+            'title': f'{self.name} - Ping {self.w_index.value}',
+            'date': self.w_date.value,
+            'time': self.w_time.value,
+        }
+
+    def to_matplotlib(self, ax: Optional["matplotlib.axes.Axes"] = None, 
+                      cmap: str = 'YlGnBu_r',
+                      colorbar: bool = True,
+                      **kwargs: Any) -> "matplotlib.axes.Axes":
+        """Render the current water column image using matplotlib.
+        
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to plot on. If None, creates a new figure.
+        cmap : str, default 'YlGnBu_r'
+            Matplotlib colormap name.
+        colorbar : bool, default True
+            Whether to add a colorbar.
+        **kwargs
+            Additional arguments passed to ax.imshow().
+        
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes containing the plot.
+        
+        Example:
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(10, 6))
+            viewer.to_matplotlib(ax=ax)
+            plt.savefig('watercolumn.png', dpi=300)
+        """
+        import matplotlib.pyplot as plt
+        
+        if self.wci is None or self.extent is None:
+            raise ValueError("No image data available. Call update_data() first.")
+        
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.get_figure()
+        
+        data = self.get_figure_data()
+        x0, x1, y0, y1 = data['extent']
+        
+        # imshow expects extent as [left, right, bottom, top]
+        im_kwargs = {
+            'extent': [x0, x1, y1, y0],  # y1, y0 for origin='upper'
+            'aspect': 'auto',
+            'origin': 'upper',
+            'vmin': data['vmin'],
+            'vmax': data['vmax'],
+            'cmap': cmap,
+        }
+        im_kwargs.update(kwargs)
+        
+        im = ax.imshow(data['image'].T, **im_kwargs)
+        ax.set_xlabel(data['xlabel'])
+        ax.set_ylabel(data['ylabel'])
+        ax.set_title(f"{data['title']} ({data['date']} {data['time']})")
+        
+        if colorbar:
+            plt.colorbar(im, ax=ax, label='dB')
+        
+        return ax
+
+    def copy_to_clipboard(self) -> None:
+        """Copy the current view as an image to the clipboard.
+        
+        Example:
+            viewer.copy_to_clipboard()
+            # Now paste into any application
+        """
+        from pyqtgraph.exporters import ImageExporter
+        exporter = ImageExporter(self.plot)
+        exporter.export(copy=True)
+
+    def get_image_bytes(self, format: str = 'png') -> bytes:
+        """Get the current view as image bytes.
+        
+        Parameters
+        ----------
+        format : str, default 'png'
+            Image format ('png', 'jpg', etc.)
+        
+        Returns
+        -------
+        bytes
+            The image data as bytes.
+        
+        Example:
+            img_bytes = viewer.get_image_bytes()
+            with open('watercolumn.png', 'wb') as f:
+                f.write(img_bytes)
+        """
+        from pyqtgraph.exporters import ImageExporter
+        exporter = ImageExporter(self.plot)
+        return exporter.export(toBytes=True)
