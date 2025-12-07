@@ -380,6 +380,63 @@ class WCIViewerPyQtGraph:
         if callable(request_draw):
             request_draw()
 
+    def process_events(self) -> None:
+        """Process pending Qt events.
+        
+        Call this method when updating the viewer from a loop to ensure
+        the UI remains responsive and updates are displayed.
+        
+        Example:
+            for i in range(len(viewer.pings)):
+                viewer.w_index.value = i
+                viewer.process_events()
+        """
+        self._process_qt_events()
+
+    def redraw(self, force: bool = True) -> None:
+        """Force an immediate redraw of the widget.
+        
+        Processes pending Qt events and sends frame to browser.
+        Use this when updating the viewer from a loop to ensure changes
+        are immediately visible.
+        
+        Parameters
+        ----------
+        force : bool, default True
+            If True, bypasses the normal frame scheduling and sends the
+            frame directly (required for updates in tight loops).
+            If False, uses the standard request_draw mechanism.
+        
+        Example:
+            for i in range(len(viewer.pings)):
+                viewer.w_index.value = i
+                viewer.redraw()
+        """
+        self._process_qt_events()
+        if force:
+            self._force_send_frame()
+        else:
+            self._request_remote_draw()
+
+    def _force_send_frame(self) -> None:
+        """Bypass RFB scheduling and send frame directly to browser."""
+        graphics = self.graphics
+        # Get the frame from the widget
+        get_frame = getattr(graphics, "get_frame", None)
+        if not callable(get_frame):
+            return
+        try:
+            array = get_frame()
+            if array is None:
+                return
+            # Access the internal _rfb_send_frame method
+            send_frame = getattr(graphics, "_rfb_send_frame", None)
+            if callable(send_frame):
+                send_frame(array)
+        except Exception:
+            # Fall back to request_draw if direct send fails
+            self._request_remote_draw()
+
     def set_widget_height(self, height_px: int) -> None:
         self.widget_height_px = max(1, int(height_px))
         pgh.apply_widget_layout(self.graphics, self.widget_width_px, self.widget_height_px)
