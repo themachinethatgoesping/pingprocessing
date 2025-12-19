@@ -3,6 +3,7 @@ from collections import defaultdict
 import numpy as np
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+from themachinethatgoesping.navigation.navtools import cumulative_latlon_distances_m
 
 
 from typing import List
@@ -85,6 +86,29 @@ class PingOverview:
             max_points=max_points,
             **kwargs
         )
+        
+    def get_speed_in_knots(self):
+        dt = np.array(self.variables['timestamp'])-self.variables['timestamp'][0]
+        dd = cumulative_latlon_distances_m(self.variables['latitude'],self.variables['longitude'])
+        speed_m_per_s = dd[1:] / dt[1:]
+        speed_knots = speed_m_per_s * 1.94384
+        return np.concatenate((speed_knots, [speed_knots[-1]]))
+        
+    def plot_speed_in_knots(self, ax, **kwargs):
+        """
+        Plot speed in knots over time on a given axis.
+
+        Parameters:
+            ax (matplotlib.axes.Axes): The axis on which to plot the speed.
+            **kwargs: Additional keyword arguments to be passed to the plot function.
+        Returns:
+            None
+        """
+        speed_knots = self.get_speed_in_knots()
+        ax.plot(self.variables['datetime'], speed_knots, **kwargs)
+        ax.set_ylabel('Speed (knots)')
+        ax.set_xlabel('DateTime')
+            
 
     def add_ping_list(self, ping_list: List, progress: bool = False) -> None:
         """
@@ -112,6 +136,7 @@ class PingOverview:
             A ping to add to the overview.
         """
         self.variables["timestamp"].append(ping.get_timestamp())
+        self.variables["datetime"].append(ping.get_datetime())
 
         geolocation = ping.get_geolocation()
         self.variables["latitude"].append(geolocation.latitude)
