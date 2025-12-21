@@ -412,8 +412,9 @@ class LayerProcessor:
         processor = deepcopy(self)
         t0 = pm.get_start_time(station)
         t1 = pm.get_end_time(station)
-        processor.__data = processor.__data[processor.__data.index < t0]
-        pd.concat([processor.__data, self.__data[self.__data.index > t1]])
+        before_station = processor.__data[processor.__data.index < t0]
+        after_station = self.__data[self.__data.index > t1]
+        processor.__data = pd.concat([before_station, after_station])
 
         return processor
 
