@@ -13,6 +13,28 @@ import themachinethatgoesping.pingprocessing.watercolumn.helper.make_image_helpe
 
 from themachinethatgoesping.pingprocessing.widgets import TqdmWidget
 
+WCI_VALUE_CHOICES = [
+    "sv/av/pv/rv",
+    "sv/av/pv",
+    "sv/av",
+    "sp/ap/pp/rp",
+    "sp/ap/pp",
+    "sp/ap",
+    "power/amp",
+    "av",
+    "ap",
+    "amp",
+    "sv",
+    "sp",
+    "pv",
+    "pp",
+    "rv",
+    "rp",
+    "power",
+    "sv_vs_av",
+    "sp_vs_ap"
+]
+
 class WCIViewer:
     def __init__(self, pings, horizontal_pixels=1024, name="WCI", figure=None, progress=None, show=True, cmap="YlGnBu_r", **kwargs):
 
@@ -165,25 +187,7 @@ class WCIViewer:
         )
         self.w_wci_value = ipywidgets.Dropdown(
             description="wci value",
-            options=[
-                "sv/av/pv/rv",
-                "sv/av/pv",
-                "sv/av",
-                "sp/ap/pp/rp",
-                "sp/ap/pp",
-                "sp/ap",
-                "power/amp",
-                "av",
-                "ap",
-                "amp",
-                "sv",
-                "sp",
-                "pv",
-                "pp",
-                "rv",
-                "rp",
-                "power",
-            ],
+            options=WCI_VALUE_CHOICES,
             value=self.args_imagebuilder["wci_value"],
         )
         self.w_wci_render = ipywidgets.Dropdown(
