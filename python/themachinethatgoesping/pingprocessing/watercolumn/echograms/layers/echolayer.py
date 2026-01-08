@@ -53,8 +53,9 @@ class EchoLayer:
 
         self.echodata = echodata
         # create layer indices representing the range (i1 = last element +1_
-        i0 = np.empty(len(echodata.pings),dtype = int)
-        i1 = np.empty(len(echodata.pings),dtype = int)
+        n_pings = echodata._backend.n_pings if hasattr(echodata, '_backend') else len(echodata.pings)
+        i0 = np.empty(n_pings, dtype=int)
+        i1 = np.empty(n_pings, dtype=int)
         for nr,interpolator in enumerate(echodata.y_coordinate_indice_interpolator):
             if interpolator is not None:
                 i0[nr] = interpolator(vec_min_y[nr]) + 0.5
@@ -64,7 +65,13 @@ class EchoLayer:
         self.set_indices(i0, i1, vec_min_y, vec_max_y)
 
     def set_indices(self, i0, i1, vec_min_y, vec_max_y):
-        bss = self.echodata.beam_sample_selections
+        # Support both old (pings-based) and new (backend-based) EchogramBuilder
+        if hasattr(self.echodata, '_backend'):
+            bss = self.echodata.beam_sample_selections
+            max_samples = self.echodata.max_number_of_samples
+        else:
+            bss = self.echodata.beam_sample_selections
+            max_samples = None
         assert_length("set_indices", bss, [i0, i1])
 
         self.i0 = np.array(i0)
@@ -72,7 +79,12 @@ class EchoLayer:
 
         self.i0 = np.maximum(self.i0, 0)
         self.i1 = np.maximum(self.i1, self.i0)
-        self.i1 = np.minimum(self.i1, [bss[i].get_number_of_samples_ensemble() for i in range(len(i1))])
+        
+        # Get max samples per ping
+        if max_samples is not None:
+            self.i1 = np.minimum(self.i1, max_samples + 1)
+        else:
+            self.i1 = np.minimum(self.i1, [bss[i].get_number_of_samples_ensemble() for i in range(len(i1))])
         
         self.vec_min_y = np.array(vec_min_y).astype(float)
         self.vec_max_y = np.array(vec_max_y).astype(float)
@@ -109,8 +121,12 @@ class EchoLayer:
         y1 = np.array(y) * offset_1 if offset_1 is not None else None
         return cls(echodata, x, y0, y1)
 
-    def get_y_indices_range_stack(self, wci_nr):        
-        n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
+    def get_y_indices_range_stack(self, wci_nr):
+        # Support both old (pings-based) and new (backend-based) EchogramBuilder
+        if hasattr(self.echodata, '_backend'):
+            n_samples = int(self.echodata.max_number_of_samples[wci_nr]) + 1
+        else:
+            n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
         y_indices_image = np.arange(len(self.echodata.y_coordinates))
         y_indices_wci = np.round(self.echodata.y_coordinate_indice_interpolator[wci_nr](self.echodata.y_coordinates)).astype(int)
 
