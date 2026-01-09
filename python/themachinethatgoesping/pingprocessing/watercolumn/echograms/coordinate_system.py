@@ -16,6 +16,7 @@ from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 from themachinethatgoesping.algorithms_nanopy.featuremapping import NearestFeatureMapper
 
 from themachinethatgoesping.pingprocessing.core.asserts import assert_valid_argument
+from .indexers import EchogramImageRequest
 
 
 class EchogramCoordinateSystem:
@@ -826,3 +827,96 @@ class EchogramCoordinateSystem:
                 other.set_y_axis_y_indice(**self._y_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
+
+    # =========================================================================
+    # Image request generation
+    # =========================================================================
+
+    def _estimate_affine_y_to_sample(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Estimate affine parameters for y→sample index mapping per ping.
+        
+        The y_coordinate_indice_interpolator is a LinearInterpolator, so
+        it's exactly: sample_idx = a + b * y
+        
+        Returns:
+            Tuple of (a, b) arrays, each shape (n_pings,).
+            Values are NaN where interpolator is not defined.
+        """
+        n_pings = self._n_pings
+        a = np.full(n_pings, np.nan, dtype=np.float32)
+        b = np.full(n_pings, np.nan, dtype=np.float32)
+        
+        y = np.asarray(self.y_coordinates, dtype=np.float32)
+        if y.size < 2:
+            return a, b
+        
+        # Pick two well-separated points for numerical stability
+        y0 = float(y[0])
+        y1 = float(y[-1])
+        if y1 == y0:
+            y1 = y0 + 1.0
+        
+        for p in range(n_pings):
+            interpolator = self.y_coordinate_indice_interpolator[p]
+            if interpolator is None:
+                continue
+            
+            # Evaluate at two points to extract slope and intercept
+            i0 = float(interpolator(y0))
+            i1 = float(interpolator(y1))
+            
+            bp = (i1 - i0) / (y1 - y0)
+            ap = i0 - bp * y0
+            
+            a[p] = ap
+            b[p] = bp
+        
+        return a, b
+
+    def make_image_request(self) -> EchogramImageRequest:
+        """Create a backend-ready request for building the current image.
+        
+        This method generates all the indexing information needed for a backend
+        to produce a downsampled (nx, ny) echogram image without needing to
+        know about the coordinate system internals.
+        
+        The request includes:
+        - ping_indexer: which ping to use for each output x column
+        - affine params (a, b): for computing sample indices from y coordinates
+        - max_sample_indices: for bounds checking
+        
+        Returns:
+            EchogramImageRequest with all necessary indexing information.
+        """
+        self.reinit()
+        
+        # Get x mapping
+        x_coords = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+        nx = len(x_coords)
+        
+        image_indices, wci_indices = self.get_x_indices()
+        
+        # Build dense ping indexer: -1 means no valid ping
+        ping_indexer = np.full(nx, -1, dtype=np.int64)
+        ping_indexer[np.asarray(image_indices, dtype=np.int64)] = np.asarray(wci_indices, dtype=np.int64)
+        
+        # Get affine params
+        affine_a, affine_b = self._estimate_affine_y_to_sample()
+        
+        # Get y coordinates
+        y_coords = np.asarray(self.y_coordinates, dtype=np.float32)
+        ny = len(y_coords)
+        
+        # Max sample indices for bounds checking
+        max_sample_idx = self.max_number_of_samples.astype(np.int64) + 1
+        
+        return EchogramImageRequest(
+            nx=nx,
+            ny=ny,
+            y_coordinates=y_coords,
+            ping_indexer=ping_indexer,
+            affine_a=affine_a,
+            affine_b=affine_b,
+            max_sample_indices=max_sample_idx,
+            fill_value=np.nan,
+        )

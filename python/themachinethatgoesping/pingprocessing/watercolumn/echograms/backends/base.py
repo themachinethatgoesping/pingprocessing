@@ -1,9 +1,12 @@
 """Abstract base class for echogram data backends."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Iterator, Optional, Tuple, Iterable
+from typing import Dict, Iterator, Optional, Tuple, Iterable, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from ..indexers import EchogramImageRequest
 
 
 class EchogramDataBackend(ABC):
@@ -169,3 +172,21 @@ class EchogramDataBackend(ABC):
     def clear_cache(self) -> None:
         """Clear any cached data. Override in subclasses that implement caching."""
         pass
+
+    # =========================================================================
+    # Image generation (vectorized)
+    # =========================================================================
+
+    @abstractmethod
+    def get_image(self, request: "EchogramImageRequest") -> np.ndarray:
+        """Build a complete echogram image from a request.
+        
+        Each backend implements this differently based on its data storage format.
+        
+        Args:
+            request: Image request with ping mapping and affine parameters.
+            
+        Returns:
+            2D array of shape (nx, ny) with echogram data (ping, sample).
+        """
+        ...

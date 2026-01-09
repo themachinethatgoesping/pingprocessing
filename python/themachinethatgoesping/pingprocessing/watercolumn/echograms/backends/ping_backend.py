@@ -11,6 +11,7 @@ from themachinethatgoesping.algorithms.geoprocessing.functions import to_raypoin
 from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 
 from .base import EchogramDataBackend
+from ..indexers import EchogramImageRequest
 from ...helper import select_get_wci_image, apply_pss
 from ...helper import make_image_helper
 
@@ -410,3 +411,38 @@ class PingDataBackend(EchogramDataBackend):
     def beam_sample_selections(self):
         """Direct access to beam sample selections (for backward compatibility)."""
         return self._beam_sample_selections
+
+    # =========================================================================
+    # Image generation
+    # =========================================================================
+
+    def get_image(self, request: EchogramImageRequest) -> np.ndarray:
+        """Build a complete echogram image from a request.
+        
+        Loops over x columns using get_column() to build the image.
+        
+        Args:
+            request: Image request with ping mapping and affine parameters.
+            
+        Returns:
+            2D array of shape (nx, ny) with echogram data (ping, sample).
+        """
+        image = np.full((request.nx, request.ny), request.fill_value, dtype=np.float32)
+        
+        for x_idx in range(request.nx):
+            ping_idx = request.ping_indexer[x_idx]
+            if ping_idx < 0:
+                continue
+                
+            # Get sample indices for this ping
+            sample_indices = request.compute_sample_indices(ping_idx)
+            
+            # Get column data for this ping
+            column_data = self.get_column(ping_idx)
+            
+            # Map sample indices to values
+            valid_mask = sample_indices >= 0
+            if np.any(valid_mask):
+                image[x_idx, valid_mask] = column_data[sample_indices[valid_mask]]
+        
+        return image

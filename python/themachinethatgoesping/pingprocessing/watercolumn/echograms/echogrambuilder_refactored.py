@@ -378,28 +378,26 @@ class EchogramBuilder:
     def build_image(self, progress=None):
         """Build the echogram image.
         
+        Uses the backend's get_image() method with affine indexing for efficiency.
+        Backends can override get_image() for vectorized implementations (e.g., Zarr/Dask).
+        
+        Args:
+            progress: Optional progress bar or None (not currently used).
+            
         Returns:
-            Tuple of (image, extent) where image is a 2D numpy array
+            Tuple of (image, extent) where image is a 2D numpy array of shape (nx, ny)
             and extent is [x_min, x_max, y_max, y_min].
         """
         self.reinit()
         cs = self._coord_system
-        ny = len(cs.y_coordinates)
-        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
-
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
-
-        image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
-
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_column(wci_index)
-            if len(wci) > 1:
-                y1, y2 = self.get_y_indices(wci_index)
-                if len(y1) > 0:
-                    image[image_index, y1] = wci[y2]
-
+        
+        # Create image request with affine parameters
+        request = cs.make_image_request()
+        
+        # Use backend's get_image() method (may be overridden for Dask/Zarr)
+        # Backend returns (nx, ny) - ping, sample
+        image = self._backend.get_image(request)
+        
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
 
@@ -699,3 +697,180 @@ class EchogramBuilder:
             return None
             
         return raw_column[sample_start:sample_end], (sample_start, sample_end)
+
+    # =========================================================================
+    # Zarr export
+    # =========================================================================
+
+    def to_zarr(
+        self,
+        path: str,
+        chunks: tuple = (64, -1),
+        compressor: str = "zstd",
+        compression_level: int = 3,
+        progress: bool = True,
+    ) -> str:
+        """Export echogram data to a Zarr store for fast lazy loading.
+        
+        Reads and writes data in chunks for memory efficiency and speed.
+        Each chunk of pings is read, assembled in memory, and written at once.
+        
+        Args:
+            path: Path for the Zarr store (directory, will be created).
+            chunks: Chunk sizes as (ping_chunk, sample_chunk). 
+                    Use -1 for full dimension. Default (64, -1) = 64 pings per chunk.
+            compressor: Compression algorithm ('zstd', 'lz4', 'zlib', 'none').
+            compression_level: Compression level (1-22 for zstd, higher = smaller/slower).
+            progress: Whether to show progress bar.
+            
+        Returns:
+            Path to the created Zarr store.
+        """
+        try:
+            import zarr
+            import json
+            from tqdm.auto import tqdm
+        except ImportError:
+            raise ImportError(
+                "zarr is required for to_zarr(). Install with: pip install zarr"
+            )
+        
+        from .backends.zarr_backend import ZARR_FORMAT_VERSION
+        
+        # Get dimensions
+        n_pings = self._backend.n_pings
+        max_samples = int(self._backend.max_sample_counts.max()) + 1
+        
+        # Configure chunks
+        ping_chunk = chunks[0] if chunks[0] > 0 else n_pings
+        sample_chunk = chunks[1] if chunks[1] > 0 else max_samples
+        
+        # Configure compressor
+        if compressor == "none":
+            comp = None
+        elif compressor == "zstd":
+            comp = zarr.codecs.ZstdCodec(level=compression_level)
+        elif compressor == "lz4":
+            comp = zarr.codecs.LZ4Codec()
+        elif compressor == "zlib":
+            comp = zarr.codecs.GzipCodec(level=compression_level)
+        else:
+            raise ValueError(f"Unknown compressor: {compressor}")
+        
+        # Create Zarr store (v3)
+        store = zarr.open_group(path, mode="w")
+        
+        # Create the main data array with dimension names for xarray compatibility
+        wci_data = store.create_array(
+            "wci_data",
+            shape=(n_pings, max_samples),
+            chunks=(ping_chunk, sample_chunk),
+            dtype=np.float32,
+            fill_value=np.nan,
+            compressors=[comp] if comp else None,
+            dimension_names=["ping", "sample"],
+        )
+        
+        # Write in chunks for efficiency
+        # Each iteration: read ping_chunk columns, assemble in RAM, write as one block
+        n_chunks = (n_pings + ping_chunk - 1) // ping_chunk
+        
+        chunk_iter = range(n_chunks)
+        if progress:
+            # Show pings/second in progress bar
+            chunk_iter = tqdm(
+                chunk_iter, 
+                desc="Writing WCI data", 
+                delay=1,
+                unit="chunk",
+                postfix={"pings": 0},
+            )
+        
+        pings_written = 0
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * ping_chunk
+            chunk_end = min(chunk_start + ping_chunk, n_pings)
+            chunk_size = chunk_end - chunk_start
+            
+            # Allocate buffer for this chunk
+            chunk_buffer = np.full((chunk_size, max_samples), np.nan, dtype=np.float32)
+            
+            # Read columns into buffer
+            for i, ping_idx in enumerate(range(chunk_start, chunk_end)):
+                column = self._backend.get_column(ping_idx)
+                chunk_buffer[i, :len(column)] = column
+            
+            # Write entire chunk at once
+            wci_data[chunk_start:chunk_end, :] = chunk_buffer
+            
+            pings_written += chunk_size
+            if progress:
+                # Update progress with pings/sec
+                elapsed = chunk_iter.format_dict.get('elapsed', 1) or 1
+                pings_per_sec = pings_written / elapsed
+                chunk_iter.set_postfix({"pings/s": f"{pings_per_sec:.0f}"})
+        
+        # Write metadata arrays with dimension names for xarray compatibility
+        store.create_array("ping_times", data=self._backend.ping_times.astype(np.float64), dimension_names=["ping"])
+        store.create_array("max_sample_counts", data=self._backend.max_sample_counts.astype(np.int32), dimension_names=["ping"])
+        
+        # Sample number extents
+        min_s, max_s = self._backend.sample_nr_extents
+        store.create_array("sample_nr_min", data=min_s.astype(np.float32), dimension_names=["ping"])
+        store.create_array("sample_nr_max", data=max_s.astype(np.float32), dimension_names=["ping"])
+        
+        # Range extents (optional)
+        range_ext = self._backend.range_extents
+        if range_ext is not None:
+            min_r, max_r = range_ext
+            store.create_array("range_min", data=min_r.astype(np.float32), dimension_names=["ping"])
+            store.create_array("range_max", data=max_r.astype(np.float32), dimension_names=["ping"])
+        
+        # Depth extents (optional)
+        depth_ext = self._backend.depth_extents
+        if depth_ext is not None:
+            min_d, max_d = depth_ext
+            store.create_array("depth_min", data=min_d.astype(np.float32), dimension_names=["ping"])
+            store.create_array("depth_max", data=max_d.astype(np.float32), dimension_names=["ping"])
+        
+        # Ping parameters (these are per-param, not per-ping, so use different dim name)
+        ping_params = self._backend.get_ping_params()
+        params_meta = {}
+        for name, (y_ref, (times, values)) in ping_params.items():
+            params_meta[name] = y_ref
+            store.create_array(f"ping_param_{name}_times", data=np.asarray(times, dtype=np.float64), dimension_names=[f"param_{name}"])
+            store.create_array(f"ping_param_{name}_values", data=np.asarray(values, dtype=np.float32), dimension_names=[f"param_{name}"])
+        
+        # Store attributes
+        store.attrs["format_version"] = ZARR_FORMAT_VERSION
+        store.attrs["wci_value"] = self._backend.wci_value
+        store.attrs["linear_mean"] = self._backend.linear_mean
+        store.attrs["has_navigation"] = self._backend.has_navigation
+        store.attrs["ping_params_meta"] = json.dumps(params_meta)
+        store.attrs["n_pings"] = n_pings
+        store.attrs["max_samples"] = max_samples
+        
+        # Consolidate metadata for faster reads (single file instead of many)
+        zarr.consolidate_metadata(path)
+        
+        return path
+
+    @classmethod
+    def from_zarr(
+        cls,
+        path: str,
+        chunks: dict = None,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a Zarr store.
+        
+        Args:
+            path: Path to the Zarr store (directory).
+            chunks: Optional chunk sizes for Dask loading.
+            
+        Returns:
+            EchogramBuilder with ZarrDataBackend.
+        """
+        from .backends import ZarrDataBackend
+        
+        backend = ZarrDataBackend.from_zarr(path, chunks=chunks)
+        return cls(backend)
