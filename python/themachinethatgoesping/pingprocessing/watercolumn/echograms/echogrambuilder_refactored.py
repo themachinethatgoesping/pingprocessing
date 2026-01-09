@@ -751,11 +751,14 @@ class EchogramBuilder:
         elif compressor == "zstd":
             comp = zarr.codecs.ZstdCodec(level=compression_level)
         elif compressor == "lz4":
-            comp = zarr.codecs.LZ4Codec()
+            # LZ4 is available via BloscCodec in Zarr v3
+            comp = zarr.codecs.BloscCodec(cname="lz4", clevel=compression_level)
         elif compressor == "zlib":
             comp = zarr.codecs.GzipCodec(level=compression_level)
+        elif compressor == "blosc":
+            comp = zarr.codecs.BloscCodec(cname="zstd", clevel=compression_level)
         else:
-            raise ValueError(f"Unknown compressor: {compressor}")
+            raise ValueError(f"Unknown compressor: {compressor}. Options: none, zstd, lz4, zlib, blosc")
         
         # Create Zarr store (v3)
         store = zarr.open_group(path, mode="w")

@@ -128,9 +128,12 @@ class ZarrDataBackend(EchogramDataBackend):
             chunks = {}
         
         # Open with xarray + dask for lazy loading
-        # consolidated=True reads all metadata from single .zmetadata file (fast)
-        # Falls back gracefully if not consolidated
-        ds = xr.open_zarr(path, chunks=chunks, consolidated=True)
+        # Try consolidated=True first (faster), fall back to False
+        try:
+            ds = xr.open_zarr(path, chunks=chunks, consolidated=True)
+        except ValueError:
+            # Consolidated metadata not found, try without
+            ds = xr.open_zarr(path, chunks=chunks, consolidated=False)
         
         # Verify format version
         version = ds.attrs.get("format_version", "unknown")
@@ -247,13 +250,10 @@ class ZarrDataBackend(EchogramDataBackend):
         # Get the underlying array (may be dask or numpy)
         wci_data = self._ds["wci_data"].data
         
-        # Pre-compute all sample indices (vectorized)
-        all_sample_indices = request.compute_all_sample_indices()  # (n_pings, ny)
-        
         # Create output array
         image = np.full((request.nx, request.ny), request.fill_value, dtype=np.float32)
         
-        # Find unique pings we need to load
+        # Find valid x indices (where ping_indexer >= 0)
         valid_x_mask = request.ping_indexer >= 0
         valid_x_indices = np.where(valid_x_mask)[0]
         
@@ -261,27 +261,47 @@ class ZarrDataBackend(EchogramDataBackend):
             return image
         
         # Get unique pings and their x positions
-        unique_pings = np.unique(request.ping_indexer[valid_x_mask])
+        unique_pings, inverse_indices = np.unique(request.ping_indexer[valid_x_mask], return_inverse=True)
         
-        # Load all needed ping data at once
-        # Handle both dask arrays (have .compute()) and numpy arrays
-        ping_data_slice = wci_data[unique_pings, :]
+        # For efficient Dask loading, load a contiguous range instead of scattered indices
+        # This is much faster when pings are spread across many chunks
+        ping_min, ping_max = unique_pings.min(), unique_pings.max()
+        
+        # Load contiguous range (Dask can optimize this much better)
+        ping_data_slice = wci_data[ping_min:ping_max+1, :]
         if hasattr(ping_data_slice, 'compute'):
-            ping_data = ping_data_slice.compute()  # Dask array
+            ping_data_contiguous = ping_data_slice.compute()  # Dask array
         else:
-            ping_data = np.asarray(ping_data_slice)  # Already numpy or similar
+            ping_data_contiguous = np.asarray(ping_data_slice)  # Already numpy
         
-        # Create mapping from ping index to loaded data index
-        ping_to_loaded = {p: i for i, p in enumerate(unique_pings)}
+        # Map unique pings to positions in contiguous array
+        unique_pings_local = unique_pings - ping_min
         
-        # Fill image
-        for x_idx in valid_x_indices:
-            ping_idx = request.ping_indexer[x_idx]
-            loaded_idx = ping_to_loaded[ping_idx]
-            
-            sample_indices = all_sample_indices[ping_idx]  # (ny,)
+        # Extract only the pings we need from the contiguous data
+        ping_data = ping_data_contiguous[unique_pings_local, :]
+        
+        # Compute sample indices only for unique pings (not all n_pings)
+        y_coords = request.y_coordinates  # shape (ny,)
+        a_unique = request.affine_a[unique_pings]  # shape (n_unique,)
+        b_unique = request.affine_b[unique_pings]  # shape (n_unique,)
+        max_samples_unique = request.max_sample_indices[unique_pings]  # shape (n_unique,)
+        
+        # Vectorized sample index computation: (n_unique, ny)
+        unique_sample_indices = np.rint(
+            a_unique[:, np.newaxis] + b_unique[:, np.newaxis] * y_coords
+        ).astype(np.int32)
+        
+        # Mark out-of-bounds as invalid
+        for i in range(len(unique_pings)):
+            max_s = int(max_samples_unique[i])
+            invalid = (unique_sample_indices[i] < 0) | (unique_sample_indices[i] >= max_s)
+            unique_sample_indices[i, invalid] = -1
+        
+        # Fill image using inverse indices to map x positions to loaded data
+        for i, x_idx in enumerate(valid_x_indices):
+            loaded_idx = inverse_indices[i]
+            sample_indices = unique_sample_indices[loaded_idx]
             valid_mask = sample_indices >= 0
-            
             if np.any(valid_mask):
                 image[x_idx, valid_mask] = ping_data[loaded_idx, sample_indices[valid_mask]]
         

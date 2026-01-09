@@ -209,14 +209,12 @@ class EchogramCoordinateSystem:
             case "Ping time" | "Date time":
                 comp_vec_x_val = self.ping_times
 
-        # average vec_y_val for all double vec_x_vals
+        # average vec_y_val for all duplicate vec_x_vals using vectorized numpy
         unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
-        averaged_y_vals = np.zeros(len(unique_x_vals))
+        # Use bincount to sum y values per unique x, then divide by counts
+        sums = np.bincount(indices, weights=vec_y_val)
         counts = np.bincount(indices)
-        for i in range(len(unique_x_vals)):
-            start_index = np.where(indices == i)[0][0]
-            end_index = start_index + counts[i]
-            averaged_y_vals[i] = np.mean(vec_y_val[start_index:end_index])
+        averaged_y_vals = sums / counts
 
         vec_x_val = unique_x_vals
         vec_y_val = averaged_y_vals
