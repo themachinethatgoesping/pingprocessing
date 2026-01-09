@@ -201,3 +201,4 @@ cython_debug/
 
 *nogit.*
 *.wcd.tmtgp.cache
+*.tmtgp.index

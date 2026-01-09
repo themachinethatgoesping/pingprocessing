@@ -8,6 +8,7 @@ import warnings
 
 from themachinethatgoesping import echosounders
 from themachinethatgoesping.algorithms.geoprocessing.functions import to_raypoints
+from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 
 from .base import EchogramDataBackend
 from ...helper import select_get_wci_image, apply_pss
@@ -33,6 +34,7 @@ class PingDataBackend(EchogramDataBackend):
         range_extents: Optional[Tuple[np.ndarray, np.ndarray]],
         depth_extents: Optional[Tuple[np.ndarray, np.ndarray]],
         ping_params: Dict[str, Tuple[str, np.ndarray]],
+        depth_stack: bool = False,
         mp_cores: int = 1,
     ):
         """Initialize PingDataBackend.
@@ -50,6 +52,7 @@ class PingDataBackend(EchogramDataBackend):
             range_extents: Tuple of (min_ranges, max_ranges) arrays, or None.
             depth_extents: Tuple of (min_depths, max_depths) arrays, or None.
             ping_params: Dictionary of pre-computed ping parameters.
+            depth_stack: If True, use depth stacking mode (requires navigation).
             mp_cores: Number of cores for parallel processing.
         """
         self._pings = pings
@@ -62,7 +65,11 @@ class PingDataBackend(EchogramDataBackend):
         self._range_extents = range_extents
         self._depth_extents = depth_extents
         self._ping_params = ping_params
+        self._depth_stack = depth_stack
         self._mp_cores = mp_cores
+        
+        if depth_stack and depth_extents is None:
+            raise ValueError("depth_stack=True requires navigation data (depth_extents)")
 
     # =========================================================================
     # Factory method
@@ -78,6 +85,7 @@ class PingDataBackend(EchogramDataBackend):
         no_navigation: bool = False,
         apply_pss_to_bottom: bool = False,
         force_angle: Optional[float] = None,
+        depth_stack: bool = False,
         verbose: bool = True,
         mp_cores: int = 1,
     ) -> "PingDataBackend":
@@ -91,6 +99,7 @@ class PingDataBackend(EchogramDataBackend):
             no_navigation: If True, skip depth calculations (useful for data without nav).
             apply_pss_to_bottom: Whether to apply PSS to bottom detection.
             force_angle: Force a specific angle for depth projection (radians).
+            depth_stack: If True, use depth stacking mode (requires navigation).
             verbose: Whether to show progress bar.
             mp_cores: Number of cores for parallel processing.
             
@@ -209,6 +218,7 @@ class PingDataBackend(EchogramDataBackend):
             range_extents=range_extents,
             depth_extents=depth_extents,
             ping_params=ping_params,
+            depth_stack=depth_stack,
             mp_cores=mp_cores,
         )
 
@@ -268,7 +278,25 @@ class PingDataBackend(EchogramDataBackend):
     # Data access methods
     # =========================================================================
 
-    def get_range_stack_column(self, ping_index: int) -> np.ndarray:
+    def get_column(self, ping_index: int) -> np.ndarray:
+        """Get column data for a ping.
+        
+        Returns beam-averaged water column data. If depth_stack mode is enabled,
+        the data is transformed via raypoints and re-gridded to depth coordinates
+        with the same number of samples.
+        
+        Args:
+            ping_index: Index of the ping to retrieve.
+            
+        Returns:
+            1D array of shape (n_samples,) with processed values.
+        """
+        if self._depth_stack:
+            return self._get_depth_stack_column(ping_index)
+        else:
+            return self._get_range_stack_column(ping_index)
+
+    def _get_range_stack_column(self, ping_index: int) -> np.ndarray:
         """Get beam-averaged column data for a ping (range-stacked)."""
         sel = self._beam_sample_selections[ping_index]
         ping = self._pings[ping_index]
@@ -288,17 +316,32 @@ class PingDataBackend(EchogramDataBackend):
 
             return wci
 
-    def get_depth_stack_column(self, ping_index: int, y_gridder, from_bottom_xyz: bool = False) -> np.ndarray:
-        """Get depth-gridded column data for a ping."""
+    def _get_depth_stack_column(self, ping_index: int, from_bottom_xyz: bool = False) -> np.ndarray:
+        """Get depth-gridded column data for a ping.
+        
+        Uses internal gridder based on depth_extents, returns array of same
+        size as range_stack (n_samples).
+        """
         sel = self._beam_sample_selections[ping_index]
-
-        if sel.empty():
-            column = np.empty(y_gridder.get_nx())
+        n_samples = int(self._max_sample_counts[ping_index]) + 1
+        
+        if sel.empty() or n_samples <= 1:
+            column = np.empty(n_samples)
             column.fill(np.nan)
             return column
 
-        ping = self._pings[ping_index]
+        min_d = self._depth_extents[0][ping_index]
+        max_d = self._depth_extents[1][ping_index]
+        
+        if not (np.isfinite(min_d) and np.isfinite(max_d) and min_d < max_d):
+            column = np.empty(n_samples)
+            column.fill(np.nan)
+            return column
+        
+        # Create internal gridder: depth range mapped to n_samples bins
+        y_gridder = ForwardGridder1D.from_res((max_d-min_d)/n_samples,min_d, max_d)
 
+        ping = self._pings[ping_index]
         wci = select_get_wci_image(ping, sel, self._wci_value, self._mp_cores)
 
         if from_bottom_xyz:
@@ -336,10 +379,11 @@ class PingDataBackend(EchogramDataBackend):
         return column
 
     def get_raw_column(self, ping_index: int) -> np.ndarray:
-        """Get full-resolution beam-averaged column data for a ping."""
-        # For raw access, we use the same logic as range_stack
-        # but this could be extended to bypass certain processing
-        return self.get_range_stack_column(ping_index)
+        """Get full-resolution beam-averaged column data for a ping.
+        
+        Always returns range-stacked data regardless of depth_stack mode.
+        """
+        return self._get_range_stack_column(ping_index)
 
     def get_beam_sample_selection(self, ping_index: int):
         """Get the beam sample selection for a ping."""

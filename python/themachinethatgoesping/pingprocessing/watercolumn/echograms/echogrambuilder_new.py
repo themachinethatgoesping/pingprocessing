@@ -44,14 +44,12 @@ class EchogramBuilder:
     def __init__(
         self,
         backend: "EchogramDataBackend",
-        depth_stack: bool = False,
         ping_numbers: Optional[np.ndarray] = None,
     ):
         """Initialize EchogramBuilder with a data backend.
         
         Args:
             backend: Data backend providing access to echogram data.
-            depth_stack: If True, use depth stacking; if False, use range stacking.
             ping_numbers: Optional array of ping numbers. If None, uses 0..n_pings-1.
         """
         if backend.n_pings == 0:
@@ -60,7 +58,6 @@ class EchogramBuilder:
         self._backend = backend
         self.feature_mapper = NearestFeatureMapper()
 
-        self.depth_stack = depth_stack
         self.layers = {}
         self.main_layer = None
         
@@ -138,7 +135,7 @@ class EchogramBuilder:
             no_navigation: If True, skip depth calculations.
             apply_pss_to_bottom: Whether to apply PSS to bottom detection.
             force_angle: Force a specific angle for depth projection (degrees).
-            depth_stack: If True, use depth stacking.
+            depth_stack: If True, use depth stacking mode (requires navigation).
             verbose: Whether to show progress bar.
             mp_cores: Number of cores for parallel processing.
             
@@ -156,11 +153,12 @@ class EchogramBuilder:
             no_navigation=no_navigation,
             apply_pss_to_bottom=apply_pss_to_bottom,
             force_angle=force_angle,
+            depth_stack=depth_stack,
             verbose=verbose,
             mp_cores=mp_cores,
         )
         
-        builder = cls(backend=backend, depth_stack=depth_stack)
+        builder = cls(backend=backend)
         builder.verbose = verbose
         builder.mp_cores = mp_cores
         return builder
@@ -169,18 +167,16 @@ class EchogramBuilder:
     def from_backend(
         cls,
         backend: "EchogramDataBackend",
-        depth_stack: bool = False,
     ) -> "EchogramBuilder":
         """Create an EchogramBuilder from an existing backend.
         
         Args:
             backend: Data backend instance.
-            depth_stack: If True, use depth stacking.
             
         Returns:
             EchogramBuilder instance.
         """
-        return cls(backend=backend, depth_stack=depth_stack)
+        return cls(backend=backend)
 
     # =========================================================================
     # Backend access (for backward compatibility and advanced use)
@@ -222,16 +218,12 @@ class EchogramBuilder:
         return self._backend.linear_mean
 
     # =========================================================================
-    # Depth/range stack control
+    # Data access methods (delegate to backend)
     # =========================================================================
 
-    def set_depth_stack(self, depth_stack: bool = True):
-        """Set depth stacking mode."""
-        self.depth_stack = depth_stack
-
-    def set_range_stack(self, range_stack: bool = True):
-        """Set range stacking mode (inverse of depth stack)."""
-        self.depth_stack = not range_stack
+    def get_column(self, nr):
+        """Get column data for a ping from backend."""
+        return self._backend.get_column(nr)
 
     # =========================================================================
     # Ping numbers and times
@@ -430,18 +422,6 @@ class EchogramBuilder:
 
     def get_y_kwargs(self):
         return deepcopy(self.__y_kwargs)
-
-    # =========================================================================
-    # Data access methods (delegate to backend)
-    # =========================================================================
-
-    def get_wci_range_stack(self, nr):
-        """Get beam-averaged column data for a ping (range-stacked)."""
-        return self._backend.get_range_stack_column(nr)
-
-    def get_wci_depth_stack(self, nr, from_bottom_xyz=False):
-        """Get depth-gridded column data for a ping."""
-        return self._backend.get_depth_stack_column(nr, self.y_gridder, from_bottom_xyz=from_bottom_xyz)
 
     # =========================================================================
     # Coordinate system management
@@ -842,8 +822,12 @@ class EchogramBuilder:
     # Index mapping
     # =========================================================================
 
-    def get_y_indices_range_stack(self, wci_nr):
-        """Get Y indices for range stack mode."""
+    def get_y_indices(self, wci_nr):
+        """Get Y indices mapping image coordinates to data indices.
+        
+        Returns:
+            Tuple of (image_indices, data_indices) arrays.
+        """
         # Handle pings with no valid data (interpolator is None)
         interpolator = self.y_coordinate_indice_interpolator[wci_nr]
         if interpolator is None:
@@ -854,19 +838,6 @@ class EchogramBuilder:
         y_indices_wci = np.round(interpolator(self.y_coordinates)).astype(int)
 
         valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < n_samples))[0]
-
-        return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
-
-    def get_y_indices_depth_stack(self, wci_nr, y_gridder=None):
-        """Get Y indices for depth stack mode."""
-        y_indices_image = np.arange(len(self.y_coordinates))
-
-        if y_gridder is None:
-            return y_indices_image, y_indices_image
-
-        y_indices_wci = y_gridder.get_x_index(self.y_coordinates)
-
-        valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < y_gridder.get_nx()))[0]
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
@@ -907,18 +878,11 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.get_y_indices_range_stack(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                y1, y2 = self.get_y_indices(wci_index)
+                if len(y1) > 0:
+                    image[image_index, y1] = wci[y2]
 
         extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
@@ -943,38 +907,21 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_depth_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    if len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
 
-                    for k, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_depth_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_image[image_index, y1_layer] = wci[y2_layer]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_range_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_range_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-
-                    for k, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_range_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_image[image_index, y1_layer] = wci[y2_layer]
+                for k, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None and len(y1_layer) > 0:
+                        layer_image[image_index, y1_layer] = wci[y2_layer]
 
         extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
@@ -1002,38 +949,21 @@ class EchogramBuilder:
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_depth_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    if len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
 
-                    for key, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_depth_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_range_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_range_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-
-                    for key, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_range_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
+                for key, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None and len(y1_layer) > 0:
+                        layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
         extent = deepcopy(self.x_extent)
         extent.extend(self.y_extent)
@@ -1044,9 +974,9 @@ class EchogramBuilder:
     # Layer management
     # =========================================================================
 
-    def get_wci_layers_range_stack(self, nr):
+    def get_wci_layers(self, nr):
         """Get WCI data split by layers."""
-        wci = self.get_wci_range_stack(nr)
+        wci = self.get_column(nr)
 
         wci_layers = {}
         for key, layer in self.layers.items():

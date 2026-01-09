@@ -96,32 +96,18 @@ class EchogramDataBackend(ABC):
     # =========================================================================
 
     @abstractmethod
-    def get_range_stack_column(self, ping_index: int) -> np.ndarray:
-        """Get beam-averaged column data for a ping (range-stacked).
+    def get_column(self, ping_index: int) -> np.ndarray:
+        """Get column data for a ping.
         
-        Returns the water column data averaged across beams, indexed by sample number.
+        Returns beam-averaged water column data. The processing method
+        (range stack vs depth stack) is determined by the backend's configuration.
+        Both modes return data of the same shape (n_samples for the ping).
         
         Args:
             ping_index: Index of the ping to retrieve.
             
         Returns:
-            1D array of shape (n_samples,) with beam-averaged values.
-        """
-        ...
-
-    @abstractmethod
-    def get_depth_stack_column(self, ping_index: int, y_gridder) -> np.ndarray:
-        """Get depth-gridded column data for a ping.
-        
-        Transforms water column data from sample-indexed to depth-indexed coordinates
-        using beam geometry.
-        
-        Args:
-            ping_index: Index of the ping to retrieve.
-            y_gridder: ForwardGridder1D instance defining the depth grid.
-            
-        Returns:
-            1D array of shape (n_depth_bins,) with depth-gridded values.
+            1D array of shape (n_samples,) with processed values.
         """
         ...
 
@@ -133,8 +119,9 @@ class EchogramDataBackend(ABC):
     def get_raw_column(self, ping_index: int) -> np.ndarray:
         """Get full-resolution beam-averaged column data for a ping.
         
-        Unlike get_range_stack_column, this always returns the complete data
-        without any sample selection applied by viewing parameters.
+        Unlike get_column, this always returns range-stacked data regardless
+        of the backend's stacking mode. Used for layer extraction where
+        sample indices need to be preserved.
         
         Args:
             ping_index: Index of the ping to retrieve.

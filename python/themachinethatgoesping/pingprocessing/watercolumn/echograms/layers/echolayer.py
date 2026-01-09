@@ -121,14 +121,24 @@ class EchoLayer:
         y1 = np.array(y) * offset_1 if offset_1 is not None else None
         return cls(echodata, x, y0, y1)
 
-    def get_y_indices_range_stack(self, wci_nr):
+    def get_y_indices(self, wci_nr):
+        """Get Y indices constrained to layer bounds.
+        
+        Returns:
+            Tuple of (image_indices, data_indices) arrays, or (None, None) if no valid range.
+        """
         # Support both old (pings-based) and new (backend-based) EchogramBuilder
         if hasattr(self.echodata, '_backend'):
             n_samples = int(self.echodata.max_number_of_samples[wci_nr]) + 1
         else:
             n_samples = self.echodata.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
+        
+        interpolator = self.echodata.y_coordinate_indice_interpolator[wci_nr]
+        if interpolator is None:
+            return None, None
+            
         y_indices_image = np.arange(len(self.echodata.y_coordinates))
-        y_indices_wci = np.round(self.echodata.y_coordinate_indice_interpolator[wci_nr](self.echodata.y_coordinates)).astype(int)
+        y_indices_wci = np.round(interpolator(self.echodata.y_coordinates)).astype(int)
 
         start_y = np.max([0, self.i0[wci_nr]])
         end_y = np.min([n_samples, self.i1[wci_nr]])
@@ -138,16 +148,6 @@ class EchoLayer:
         valid_coordinates = np.where(np.logical_and(y_indices_wci >= start_y, y_indices_wci < end_y))[0]
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
-
-    def get_y_indices_depth_stack(self, wci_nr):                            
-        start_y = np.max([0, self.y0[wci_nr]])
-        end_y = np.min([self.echodata.y_gridder.get_nx(), self.y1[wci_nr]])        
-        if start_y >= end_y:
-            return None, None      
-        
-        y_indices = np.arange(start_y, end_y)
-
-        return y_indices,y_indices
 
     def combine(self, other):
         assert_length("get_filtered_by_y_extent", self.i0, [other.i0, self.i1, other.i1])
@@ -164,10 +164,10 @@ class PingData:
         self.nr = nr
 
     def get_wci(self):
-        return self.echodata.get_wci_range_stack(self.nr)        
+        return self.echodata.get_column(self.nr)        
     
-    def get_wci_layers_range_stack(self):
-        return self.echodata.get_wci_layers_range_stack(self.nr)
+    def get_wci_layers(self):
+        return self.echodata.get_wci_layers(self.nr)
 
     def get_extent_layers(self, axis_name=None):
         return self.echodata.get_extent_layers(self.nr, axis_name=axis_name)

@@ -405,6 +405,8 @@ class EchogramBuilder:
 
             if self.linear_mean:
                 wci = np.power(10, 0.1 * wci.flatten()[arg])
+            else:
+                wci = wci.flatten()[arg]
             # y = y.flatten()[arg]
             z = z.flatten()[arg]
 

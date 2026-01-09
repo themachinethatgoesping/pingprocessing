@@ -103,10 +103,7 @@ class ZarrDataBackend(EchogramDataBackend):
     def get_ping_params(self) -> Dict[str, Tuple[str, np.ndarray]]:
         raise NotImplementedError()
 
-    def get_range_stack_column(self, ping_index: int) -> np.ndarray:
-        raise NotImplementedError()
-
-    def get_depth_stack_column(self, ping_index: int, y_gridder) -> np.ndarray:
+    def get_column(self, ping_index: int) -> np.ndarray:
         raise NotImplementedError()
 
     def get_raw_column(self, ping_index: int) -> np.ndarray:
