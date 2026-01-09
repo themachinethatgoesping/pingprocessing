@@ -14,6 +14,13 @@ import themachinethatgoesping as theping
 from . import pyqtgraph_helpers as pgh
 
 
+def _get_axis_names(echogram):
+    """Get x_axis_name and y_axis_name from echogram (old or new builder)."""
+    if hasattr(echogram, 'coord_system'):
+        return echogram.coord_system.x_axis_name, echogram.coord_system.y_axis_name
+    return echogram.x_axis_name, echogram.y_axis_name
+
+
 class EchogramViewerPyQtGraph:
     """Replacement for Matplotlib-based EchogramViewer using PyQtGraph."""
 
@@ -66,8 +73,7 @@ class EchogramViewerPyQtGraph:
                 self.names.append(None)
         self.nechograms = len(self.echogramdata)
         if self.echogramdata:
-            self.x_axis_name = self.echogramdata[-1].x_axis_name
-            self.y_axis_name = self.echogramdata[-1].y_axis_name
+            self.x_axis_name, self.y_axis_name = _get_axis_names(self.echogramdata[-1])
         else:
             self.x_axis_name = "Ping number"
             self.y_axis_name = "Depth (m)"
@@ -233,8 +239,7 @@ class EchogramViewerPyQtGraph:
     def init_ax(self, adapt_axis_names: bool = True) -> None:
         with self.output:
             if adapt_axis_names and self.echogramdata:
-                new_x = self.echogramdata[-1].x_axis_name
-                new_y = self.echogramdata[-1].y_axis_name
+                new_x, new_y = _get_axis_names(self.echogramdata[-1])
                 self.x_axis_name = new_x
                 self.y_axis_name = new_y
                 new_flag = self.x_axis_name == "Date time"

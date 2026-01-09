@@ -1,0 +1,701 @@
+"""Builder for echogram images with coordinate system and layer management.
+
+This module provides the EchogramBuilder class which handles:
+- Image building from data backends
+- Layer management for region selection
+- Coordinate system delegation to EchogramCoordinateSystem
+"""
+
+import numpy as np
+from typing import Optional
+from copy import deepcopy
+import datetime as dt
+
+# external Ping packages
+from themachinethatgoesping import echosounders
+
+# internal Ping.pingprocessing packages
+from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+
+# Local imports
+from .coordinate_system import EchogramCoordinateSystem
+from .backends import EchogramDataBackend, PingDataBackend
+from .layers.echolayer import EchoLayer, PingData
+
+
+class EchogramBuilder:
+    """Builder for echogram images with coordinate system and layer management.
+    
+    The EchogramBuilder controls:
+    - Image building using data from a backend
+    - Layer management for region selection
+    
+    Coordinate systems are delegated to an EchogramCoordinateSystem instance.
+    Data access is delegated to an EchogramDataBackend.
+    """
+
+    def __init__(
+        self,
+        backend: "EchogramDataBackend",
+        ping_numbers: Optional[np.ndarray] = None,
+    ):
+        """Initialize EchogramBuilder with a data backend.
+        
+        Args:
+            backend: Data backend providing access to echogram data.
+            ping_numbers: Optional array of ping numbers. If None, uses 0..n_pings-1.
+        """
+        if backend.n_pings == 0:
+            raise RuntimeError("ERROR[EchogramBuilder]: trying to initialize with empty data (no valid pings)")
+
+        self._backend = backend
+        
+        # Create coordinate system
+        self._coord_system = EchogramCoordinateSystem(
+            n_pings=backend.n_pings,
+            max_number_of_samples=backend.max_sample_counts,
+            ping_times=backend.ping_times,
+            ping_numbers=ping_numbers,
+        )
+
+        # Layer management
+        self.layers = {}
+        self.main_layer = None
+
+        # Set extents from backend
+        min_s, max_s = backend.sample_nr_extents
+        self._coord_system.set_sample_nr_extent(min_s, max_s)
+        
+        if backend.range_extents is not None:
+            min_r, max_r = backend.range_extents
+            self._coord_system.set_range_extent(min_r, max_r)
+            
+        if backend.depth_extents is not None:
+            min_d, max_d = backend.depth_extents
+            self._coord_system.set_depth_extent(min_d, max_d)
+
+        # Initialize ping params from backend
+        self._init_ping_params_from_backend()
+
+        # Set default axes
+        self._coord_system.set_y_axis_y_indice(layer_update_callback=self._update_layers)
+        self._coord_system.set_x_axis_ping_index()
+        
+        self.mp_cores = 1
+        self.verbose = True
+
+    def _init_ping_params_from_backend(self):
+        """Initialize ping parameters from backend's pre-computed values."""
+        ping_params = self._backend.get_ping_params()
+        for name, (y_reference, (times, values)) in ping_params.items():
+            self._coord_system.add_ping_param(name, "Ping time", y_reference, times, values)
+
+    def _update_layers(self):
+        """Update all layers after coordinate system change."""
+        if self.main_layer is not None:
+            self.main_layer.update_y_gridder()
+        for layer in self.layers.values():
+            layer.update_y_gridder()
+
+    # =========================================================================
+    # Factory methods
+    # =========================================================================
+
+    @classmethod
+    def from_pings(
+        cls,
+        pings,
+        pss=None,
+        wci_value: str = "sv/av/pv/rv",
+        linear_mean: bool = True,
+        no_navigation: bool = False,
+        apply_pss_to_bottom: bool = False,
+        force_angle: Optional[float] = None,
+        depth_stack: bool = False,
+        verbose: bool = True,
+        mp_cores: int = 1,
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from a list of pings.
+        
+        Args:
+            pings: List of ping objects.
+            pss: PingSampleSelector for beam/sample selection. If None, uses default.
+            wci_value: Water column image value type (e.g., 'sv', 'av', 'sv/av/pv/rv').
+            linear_mean: Whether to use linear mean for beam averaging.
+            no_navigation: If True, skip depth calculations.
+            apply_pss_to_bottom: Whether to apply PSS to bottom detection.
+            force_angle: Force a specific angle for depth projection (degrees).
+            depth_stack: If True, use depth stacking mode (requires navigation).
+            verbose: Whether to show progress bar.
+            mp_cores: Number of cores for parallel processing.
+            
+        Returns:
+            EchogramBuilder instance.
+        """
+        if pss is None:
+            pss = echosounders.pingtools.PingSampleSelector()
+            
+        backend = PingDataBackend.from_pings(
+            pings=pings,
+            pss=pss,
+            wci_value=wci_value,
+            linear_mean=linear_mean,
+            no_navigation=no_navigation,
+            apply_pss_to_bottom=apply_pss_to_bottom,
+            force_angle=force_angle,
+            depth_stack=depth_stack,
+            verbose=verbose,
+            mp_cores=mp_cores,
+        )
+        
+        builder = cls(backend=backend)
+        builder.verbose = verbose
+        builder.mp_cores = mp_cores
+        return builder
+
+    @classmethod
+    def from_backend(
+        cls,
+        backend: "EchogramDataBackend",
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from an existing backend.
+        
+        Args:
+            backend: Data backend instance.
+            
+        Returns:
+            EchogramBuilder instance.
+        """
+        return cls(backend=backend)
+
+    # =========================================================================
+    # Coordinate system access
+    # =========================================================================
+
+    @property
+    def coord_system(self) -> EchogramCoordinateSystem:
+        """Access the coordinate system.
+        
+        All coordinate-related properties are available through this object:
+        - x_axis_name, y_axis_name: Current axis names
+        - x_extent, y_extent: Data extents
+        - y_coordinates, y_resolution, y_gridder: Y-axis grid info
+        - feature_mapper: X-axis mapping
+        - ping_times, ping_numbers: Ping information
+        - time_zone: Timezone for datetime conversions
+        - max_number_of_samples: Per-ping sample counts
+        - has_depths, has_ranges, has_sample_nrs: Available coordinate types
+        - Various interpolators for coordinate transformations
+        """
+        return self._coord_system
+
+    # =========================================================================
+    # Backend access
+    # =========================================================================
+
+    @property
+    def backend(self) -> "EchogramDataBackend":
+        """Access the data backend."""
+        return self._backend
+
+    @property
+    def pings(self):
+        """Direct access to pings (for backward compatibility).
+        
+        Only works with PingDataBackend.
+        """
+        if hasattr(self._backend, 'pings'):
+            return self._backend.pings
+        raise AttributeError("Backend does not provide direct ping access")
+
+    @property
+    def beam_sample_selections(self):
+        """Direct access to beam sample selections (for backward compatibility).
+        
+        Only works with PingDataBackend.
+        """
+        if hasattr(self._backend, 'beam_sample_selections'):
+            return self._backend.beam_sample_selections
+        raise AttributeError("Backend does not provide beam sample selections")
+
+    @property
+    def wci_value(self) -> str:
+        """Water column image value type from backend."""
+        return self._backend.wci_value
+
+    @property
+    def linear_mean(self) -> bool:
+        """Whether linear mean is used for beam averaging."""
+        return self._backend.linear_mean
+
+    # =========================================================================
+    # Coordinate system methods (delegating to coord_system)
+    # =========================================================================
+
+    def reinit(self):
+        """Reinitialize coordinate systems if needed."""
+        self._coord_system.reinit()
+
+    def get_x_kwargs(self):
+        return self._coord_system.get_x_kwargs()
+
+    def get_y_kwargs(self):
+        return self._coord_system.get_y_kwargs()
+
+    # Y-axis setters
+    def set_y_axis_y_indice(self, min_sample_nr=0, max_sample_nr=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to sample indices."""
+        self._coord_system.set_y_axis_y_indice(
+            min_sample_nr=min_sample_nr,
+            max_sample_nr=max_sample_nr,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to depth in meters."""
+        self._coord_system.set_y_axis_depth(
+            min_depth=min_depth,
+            max_depth=max_depth,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_range(self, min_range=np.nan, max_range=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to range in meters."""
+        self._coord_system.set_y_axis_range(
+            min_range=min_range,
+            max_range=max_range,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to sample numbers."""
+        self._coord_system.set_y_axis_sample_nr(
+            min_sample_nr=min_sample_nr,
+            max_sample_nr=max_sample_nr,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    # X-axis setters
+    def set_x_axis_ping_index(self, min_ping_index=0, max_ping_index=np.nan, max_steps=4096, **kwargs):
+        """Set X axis to ping index."""
+        self._coord_system.set_x_axis_ping_index(
+            min_ping_index=min_ping_index,
+            max_ping_index=max_ping_index,
+            max_steps=max_steps,
+            **kwargs
+        )
+
+    def set_x_axis_ping_time(self, min_timestamp=np.nan, max_timestamp=np.nan,
+                             time_resolution=np.nan, time_interpolation_limit=np.nan,
+                             max_steps=4096, **kwargs):
+        """Set X axis to ping time (Unix timestamp)."""
+        self._coord_system.set_x_axis_ping_time(
+            min_timestamp=min_timestamp,
+            max_timestamp=max_timestamp,
+            time_resolution=time_resolution,
+            time_interpolation_limit=time_interpolation_limit,
+            max_steps=max_steps,
+            **kwargs
+        )
+
+    def set_x_axis_date_time(self, min_ping_time=np.nan, max_ping_time=np.nan,
+                             time_resolution=np.nan, time_interpolation_limit=np.nan,
+                             max_steps=4096, **kwargs):
+        """Set X axis to datetime."""
+        self._coord_system.set_x_axis_date_time(
+            min_ping_time=min_ping_time,
+            max_ping_time=max_ping_time,
+            time_resolution=time_resolution,
+            time_interpolation_limit=time_interpolation_limit,
+            max_steps=max_steps,
+            **kwargs
+        )
+
+    def copy_xy_axis(self, other: "EchogramBuilder"):
+        """Copy X/Y axis settings to another EchogramBuilder."""
+        self._coord_system.copy_xy_axis_to(other._coord_system)
+
+    # Ping numbers/times setters
+    def set_ping_numbers(self, ping_numbers):
+        """Set ping numbers for x-axis indexing."""
+        self._coord_system.set_ping_numbers(ping_numbers)
+
+    def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
+        """Set ping times for x-axis time display."""
+        self._coord_system.set_ping_times(ping_times, time_zone)
+
+    # Extent setters
+    def set_range_extent(self, min_ranges, max_ranges):
+        """Set range extents."""
+        self._coord_system.set_range_extent(min_ranges, max_ranges)
+
+    def set_depth_extent(self, min_depths, max_depths):
+        """Set depth extents."""
+        self._coord_system.set_depth_extent(min_depths, max_depths)
+
+    def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
+        """Set sample number extents."""
+        self._coord_system.set_sample_nr_extent(min_sample_nrs, max_sample_nrs)
+
+    # Ping parameters
+    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
+        """Add a ping parameter (e.g., bottom depth, layer boundary)."""
+        self._coord_system.add_ping_param(name, x_reference, y_reference, vec_x_val, vec_y_val)
+
+    def get_ping_param(self, name, use_x_coordinates=False):
+        """Get a ping parameter's values in current coordinate system."""
+        return self._coord_system.get_ping_param(name, use_x_coordinates)
+
+    # Index mapping
+    def get_y_indices(self, wci_nr):
+        """Get Y indices mapping image coordinates to data indices."""
+        return self._coord_system.get_y_indices(wci_nr)
+
+    def get_x_indices(self):
+        """Get X indices mapping image coordinates to ping indices."""
+        return self._coord_system.get_x_indices()
+
+    # =========================================================================
+    # Data access methods (delegate to backend)
+    # =========================================================================
+
+    def get_column(self, nr):
+        """Get column data for a ping from backend."""
+        return self._backend.get_column(nr)
+
+    # =========================================================================
+    # Image building
+    # =========================================================================
+
+    def build_image(self, progress=None):
+        """Build the echogram image.
+        
+        Returns:
+            Tuple of (image, extent) where image is a 2D numpy array
+            and extent is [x_min, x_max, y_max, y_min].
+        """
+        self.reinit()
+        cs = self._coord_system
+        ny = len(cs.y_coordinates)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+
+        image = np.empty((nx, ny), dtype=np.float32)
+        image.fill(np.nan)
+
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                y1, y2 = self.get_y_indices(wci_index)
+                if len(y1) > 0:
+                    image[image_index, y1] = wci[y2]
+
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
+
+        return image, extent
+
+    def build_image_and_layer_image(self, progress=None):
+        """Build echogram image and combined layer image.
+        
+        Returns:
+            Tuple of (image, layer_image, extent).
+        """
+        self.reinit()
+        cs = self._coord_system
+        ny = len(cs.y_coordinates)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+
+        image = np.empty((nx, ny), dtype=np.float32)
+        image.fill(np.nan)
+        layer_image = image.copy()
+
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    if len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+
+                for k, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None and len(y1_layer) > 0:
+                        layer_image[image_index, y1_layer] = wci[y2_layer]
+
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
+
+        return image, layer_image, extent
+
+    def build_image_and_layer_images(self, progress=None):
+        """Build echogram image and individual layer images.
+        
+        Returns:
+            Tuple of (image, layer_images_dict, extent).
+        """
+        self.reinit()
+        cs = self._coord_system
+        ny = len(cs.y_coordinates)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+
+        image = np.empty((nx, ny), dtype=np.float32)
+        image.fill(np.nan)
+
+        layer_images = {}
+        for key in self.layers.keys():
+            layer_images[key] = image.copy()
+
+        image_indices, wci_indices = self.get_x_indices()
+        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            wci = self.get_column(wci_index)
+            if len(wci) > 1:
+                if self.main_layer is None:
+                    y1, y2 = self.get_y_indices(wci_index)
+                    if len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
+
+                for key, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                    if y1_layer is not None and len(y1_layer) > 0:
+                        layer_images[key][image_index, y1_layer] = wci[y2_layer]
+
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
+
+        return image, layer_images, extent
+
+    # =========================================================================
+    # Layer management
+    # =========================================================================
+
+    def get_wci_layers(self, nr):
+        """Get WCI data split by layers."""
+        wci = self.get_column(nr)
+
+        wci_layers = {}
+        for key, layer in self.layers.items():
+            wci_layers[key] = wci[layer.i0[nr]:layer.i1[nr]]
+
+        return wci_layers
+
+    def get_extent_layers(self, nr, axis_name=None):
+        """Get extents for each layer at a given ping."""
+        cs = self._coord_system
+        if axis_name is None:
+            axis_name = cs.y_axis_name
+        extents = {}
+
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
+
+                case "Sample number":
+                    assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
+                    extents[key] = cs.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case "Depth (m)":
+                    assert cs.has_depths, "ERROR: Depths values not initialized"
+                    extents[key] = cs.y_indice_to_depth_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case "Range (m)":
+                    assert cs.has_ranges, "ERROR: Ranges values not initialized"
+                    extents[key] = cs.y_indice_to_range_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case _:
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
+
+        return extents
+
+    def get_limits_layers(self, nr, axis_name=None):
+        """Get limits for each layer at a given ping."""
+        cs = self._coord_system
+        if axis_name is None:
+            axis_name = cs.y_axis_name
+        extents = {}
+
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
+
+                case "Sample number":
+                    assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
+                    extents[key] = cs.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case "Depth (m)":
+                    assert cs.has_depths, "ERROR: Depths values not initialized"
+                    extents[key] = cs.y_indice_to_depth_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case "Range (m)":
+                    assert cs.has_ranges, "ERROR: Ranges values not initialized"
+                    extents[key] = cs.y_indice_to_range_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case _:
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
+
+        return extents
+
+    def _set_layer(self, name, layer):
+        """Internal method to set or combine layers."""
+        if name == "main":
+            if self.main_layer is not None:
+                self.main_layer.combine(layer)
+            else:
+                self.main_layer = layer
+        else:
+            if name in self.layers.keys():
+                self.layers[name].combine(layer)
+            else:
+                self.layers[name] = layer
+
+    # Backward compatibility alias
+    __set_layer__ = _set_layer
+
+    def add_layer(self, name, vec_x_val, vec_min_y, vec_max_y):
+        """Add a layer with explicit boundaries."""
+        layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
+        self._set_layer(name, layer)
+
+    def add_layer_from_static_layer(self, name, min_y, max_y):
+        """Add a layer with static boundaries."""
+        layer = EchoLayer.from_static_layer(self, min_y, max_y)
+        self._set_layer(name, layer)
+
+    def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on absolute offsets from a ping parameter."""
+        layer = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
+        self._set_layer(name, layer)
+
+    def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on relative offsets from a ping parameter."""
+        layer = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
+        self._set_layer(name, layer)
+
+    def remove_layer(self, name):
+        """Remove a layer by name."""
+        if name == "main":
+            self.main_layer = None
+        elif name in self.layers.keys():
+            self.layers.pop(name)
+
+    def clear_layers(self):
+        """Remove all layers except main."""
+        self.layers = {}
+
+    def clear_main_layer(self):
+        """Remove the main layer."""
+        self.main_layer = None
+
+    def iterate_ping_data(self, keep_to_xlimits=True):
+        """Iterate over ping data objects."""
+        if keep_to_xlimits:
+            xcoord = self.get_x_indices()[1]
+            nrs = np.arange(xcoord[0], xcoord[-1] + 1)
+        else:
+            nrs = range(self._backend.n_pings)
+
+        return [PingData(self, nr) for nr in nrs]
+
+    # =========================================================================
+    # Raw data access (for layers, non-downsampled)
+    # =========================================================================
+
+    def get_raw_layer_data(self, layer_name, ping_indices=None):
+        """Get raw (non-downsampled) data for a specific layer.
+        
+        Args:
+            layer_name: Name of the layer to extract data from.
+            ping_indices: Optional list of ping indices. If None, uses visible x range.
+            
+        Yields:
+            Tuples of (ping_index, raw_data, (sample_start, sample_end)).
+        """
+        if layer_name not in self.layers:
+            raise KeyError(f"Layer '{layer_name}' not found")
+        
+        layer = self.layers[layer_name]
+        
+        if ping_indices is None:
+            _, ping_indices = self.get_x_indices()
+        
+        for ping_idx in ping_indices:
+            raw_column = self._backend.get_raw_column(ping_idx)
+            sample_start = layer.i0[ping_idx]
+            sample_end = layer.i1[ping_idx]
+            
+            if sample_start < len(raw_column) and sample_end > sample_start:
+                layer_data = raw_column[sample_start:sample_end]
+                yield ping_idx, layer_data, (sample_start, sample_end)
+
+    def get_raw_data_at_coordinates(self, x_coord, y_start, y_end):
+        """Get raw (non-downsampled) data at specific coordinates.
+        
+        Args:
+            x_coord: X coordinate (ping time, index, or datetime).
+            y_start: Start Y coordinate (depth, range, or sample number).
+            y_end: End Y coordinate.
+            
+        Returns:
+            Tuple of (raw_data, (sample_start, sample_end)) or None if not found.
+        """
+        self.reinit()
+        
+        # Convert x_coord to ping index
+        if isinstance(x_coord, dt.datetime):
+            x_coord = x_coord.timestamp()
+        
+        cs = self._coord_system
+        x_coordinates = np.array([x_coord])
+        ping_indices = cs.feature_mapper.feature_to_index(
+            cs.x_axis_name, x_coordinates, mp_cores=self.mp_cores
+        )
+        
+        if len(ping_indices) == 0:
+            return None
+            
+        ping_idx = ping_indices[0]
+        
+        # Convert y coordinates to sample indices
+        interpolator = cs.y_coordinate_indice_interpolator[ping_idx]
+        if interpolator is None:
+            return None
+            
+        sample_start = int(interpolator(y_start) + 0.5)
+        sample_end = int(interpolator(y_end) + 0.5)
+        
+        # Get raw data
+        raw_column = self._backend.get_raw_column(ping_idx)
+        
+        # Clamp to valid range
+        sample_start = max(0, sample_start)
+        sample_end = min(len(raw_column), sample_end)
+        
+        if sample_end <= sample_start:
+            return None
+            
+        return raw_column[sample_start:sample_end], (sample_start, sample_end)

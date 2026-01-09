@@ -18,6 +18,14 @@ from IPython.display import display
 import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
+
+def _get_axis_names(echogram):
+    """Get x_axis_name and y_axis_name from echogram (old or new builder)."""
+    if hasattr(echogram, 'coord_system'):
+        return echogram.coord_system.x_axis_name, echogram.coord_system.y_axis_name
+    return echogram.x_axis_name, echogram.y_axis_name
+
+
 try:  # pragma: no cover - import guard required at runtime
     from vispy import app, scene
     from vispy.color import Colormap, get_colormap
@@ -320,8 +328,7 @@ class EchogramViewerVispy:
     # ------------------------------------------------------------------
     def init_ax(self) -> None:
         with self.output:
-            self.x_axis_name = self.echogramdata[-1].x_axis_name
-            self.y_axis_name = self.echogramdata[-1].y_axis_name
+            self.x_axis_name, self.y_axis_name = _get_axis_names(self.echogramdata[-1])
             if self._has_titles:
                 for widget, name in zip(self._title_widgets, self.names, strict=False):
                     widget.value = name or ""

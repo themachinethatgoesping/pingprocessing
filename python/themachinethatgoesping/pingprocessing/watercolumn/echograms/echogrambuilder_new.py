@@ -1,6 +1,6 @@
 import numpy as np
 
-from typing import Optional, TYPE_CHECKING, Dict
+from typing import Optional, TYPE_CHECKING
 from copy import deepcopy
 import datetime as dt
 
@@ -22,11 +22,10 @@ from themachinethatgoesping.algorithms_nanopy.featuremapping import NearestFeatu
 from .backends import EchogramDataBackend, PingDataBackend
 
 # subpackages
-from .layers.echolayer import PingData
+from .layers.echolayer import EchoLayer, PingData
 
 if TYPE_CHECKING:
     from .backends import EchogramDataBackend
-    from .layers.layermanager import LayerManager
 
 
 class EchogramBuilder:
@@ -58,6 +57,9 @@ class EchogramBuilder:
 
         self._backend = backend
         self.feature_mapper = NearestFeatureMapper()
+
+        self.layers = {}
+        self.main_layer = None
         
         # Initialize from backend metadata
         self.max_number_of_samples = backend.max_sample_counts
@@ -449,6 +451,10 @@ class EchogramBuilder:
         self.vec_max_y = vec_max_y
 
         self.y_gridder = ForwardGridder1D.from_res(self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
+        if self.main_layer is not None:
+            self.main_layer.update_y_gridder()
+        for layer in self.layers.values():
+            layer.update_y_gridder()
 
         # Initialize interpolators
         self.y_coordinate_indice_interpolator = [None for _ in range(n_pings)]
@@ -883,17 +889,8 @@ class EchogramBuilder:
 
         return image, extent
 
-    def build_image_and_layer_image(
-        self,
-        layer_manager: Optional["LayerManager"] = None,
-        progress=None
-    ):
+    def build_image_and_layer_image(self, progress=None):
         """Build echogram image and combined layer image.
-        
-        Args:
-            layer_manager: Optional LayerManager containing layer definitions.
-                If None, builds image without layers (layer_image will be all NaN).
-            progress: Progress callback.
         
         Returns:
             Tuple of (image, layer_image, extent).
@@ -909,28 +906,20 @@ class EchogramBuilder:
         image_indices, wci_indices = self.get_x_indices()
         image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
-        # Pre-compute layer indices if we have a layer manager
-        main_indices = None
-        layer_indices = {}
-        if layer_manager is not None:
-            main_indices, layer_indices = layer_manager.compute_indices(self)
-
         for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.get_column(wci_index)
             if len(wci) > 1:
-                # Main image: use main layer if set, otherwise full data
-                if main_indices is not None:
-                    y1, y2 = layer_manager.get_y_indices_for_layer(self, main_indices, wci_index)
-                    if y1 is not None and len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-                else:
+                if self.main_layer is None:
                     y1, y2 = self.get_y_indices(wci_index)
                     if len(y1) > 0:
                         image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
 
-                # Layer image: combine all named layers
-                for name, indices in layer_indices.items():
-                    y1_layer, y2_layer = layer_manager.get_y_indices_for_layer(self, indices, wci_index)
+                for k, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
                     if y1_layer is not None and len(y1_layer) > 0:
                         layer_image[image_index, y1_layer] = wci[y2_layer]
 
@@ -939,17 +928,8 @@ class EchogramBuilder:
 
         return image, layer_image, extent
 
-    def build_image_and_layer_images(
-        self,
-        layer_manager: Optional["LayerManager"] = None,
-        progress=None
-    ) -> tuple:
+    def build_image_and_layer_images(self, progress=None):
         """Build echogram image and individual layer images.
-        
-        Args:
-            layer_manager: Optional LayerManager containing layer definitions.
-                If None, builds image without layers (layer_images will be empty dict).
-            progress: Progress callback.
         
         Returns:
             Tuple of (image, layer_images_dict, extent).
@@ -961,15 +941,8 @@ class EchogramBuilder:
         image = np.empty((nx, ny), dtype=np.float32)
         image.fill(np.nan)
 
-        # Pre-compute layer indices if we have a layer manager
-        main_indices = None
-        layer_indices = {}
-        if layer_manager is not None:
-            main_indices, layer_indices = layer_manager.compute_indices(self)
-
-        # Create layer images dict
-        layer_images: Dict[str, np.ndarray] = {}
-        for key in layer_indices.keys():
+        layer_images = {}
+        for key in self.layers.keys():
             layer_images[key] = image.copy()
 
         image_indices, wci_indices = self.get_x_indices()
@@ -978,19 +951,17 @@ class EchogramBuilder:
         for image_index, wci_index in zip(image_indices, wci_indices):
             wci = self.get_column(wci_index)
             if len(wci) > 1:
-                # Main image: use main layer if set, otherwise full data
-                if main_indices is not None:
-                    y1, y2 = layer_manager.get_y_indices_for_layer(self, main_indices, wci_index)
-                    if y1 is not None and len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-                else:
+                if self.main_layer is None:
                     y1, y2 = self.get_y_indices(wci_index)
                     if len(y1) > 0:
                         image[image_index, y1] = wci[y2]
+                else:
+                    y1, y2 = self.main_layer.get_y_indices(wci_index)
+                    if y1 is not None and len(y1) > 0:
+                        image[image_index, y1] = wci[y2]
 
-                # Individual layer images
-                for key, indices in layer_indices.items():
-                    y1_layer, y2_layer = layer_manager.get_y_indices_for_layer(self, indices, wci_index)
+                for key, layer in self.layers.items():
+                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
                     if y1_layer is not None and len(y1_layer) > 0:
                         layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
@@ -1000,8 +971,128 @@ class EchogramBuilder:
         return image, layer_images, extent
 
     # =========================================================================
-    # Iteration utilities
+    # Layer management
     # =========================================================================
+
+    def get_wci_layers(self, nr):
+        """Get WCI data split by layers."""
+        wci = self.get_column(nr)
+
+        wci_layers = {}
+        for key, layer in self.layers.items():
+            wci_layers[key] = wci[layer.i0[nr] : layer.i1[nr]]
+
+        return wci_layers
+
+    def get_extent_layers(self, nr, axis_name=None):
+        """Get extents for each layer at a given ping."""
+        if axis_name is None:
+            axis_name = self.y_axis_name
+        extents = {}
+
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
+
+                case "Sample number":
+                    assert self.has_sample_nrs, \
+                        "ERROR: Sample nr values not initialized"
+                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case "Depth (m)":
+                    assert self.has_depths, \
+                        "ERROR: Depths values not initialized"
+                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case "Range (m)":
+                    assert self.has_ranges, \
+                        "ERROR: Ranges values not initialized"
+                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+
+                case _:
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
+
+        return extents
+
+    def get_limits_layers(self, nr, axis_name=None):
+        """Get limits for each layer at a given ping."""
+        if axis_name is None:
+            axis_name = self.y_axis_name
+        extents = {}
+
+        for key, layer in self.layers.items():
+            match axis_name:
+                case "Y indice":
+                    extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
+
+                case "Sample number":
+                    assert self.has_sample_nrs, \
+                        "ERROR: Sample nr values not initialized"
+                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case "Depth (m)":
+                    assert self.has_depths, \
+                        "ERROR: Depths values not initialized"
+                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case "Range (m)":
+                    assert self.has_ranges, \
+                        "ERROR: Ranges values not initialized"
+                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+
+                case _:
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
+
+        return extents
+
+    def __set_layer__(self, name, layer):
+        """Internal method to set or combine layers."""
+        if name == "main":
+            if self.main_layer is not None:
+                self.main_layer.combine(layer)
+            else:
+                self.main_layer = layer
+        else:
+            if name in self.layers.keys():
+                self.layers[name].combine(layer)
+            else:
+                self.layers[name] = layer
+
+    def add_layer(self, name, vec_x_val, vec_min_y, vec_max_y):
+        """Add a layer with explicit boundaries."""
+        layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
+        self.__set_layer__(name, layer)
+
+    def add_layer_from_static_layer(self, name, min_y, max_y):
+        """Add a layer with static boundaries."""
+        layer = EchoLayer.from_static_layer(self, min_y, max_y)
+        self.__set_layer__(name, layer)
+
+    def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on absolute offsets from a ping parameter."""
+        layer = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
+        self.__set_layer__(name, layer)
+
+    def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on relative offsets from a ping parameter."""
+        layer = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
+        self.__set_layer__(name, layer)
+
+    def remove_layer(self, name):
+        """Remove a layer by name."""
+        if name == "main":
+            self.main_layer = None
+        elif name in self.layers.keys():
+            self.layers.pop(name)
+
+    def clear_layers(self):
+        """Remove all layers except main."""
+        self.layers = {}
+
+    def clear_main_layer(self):
+        """Remove the main layer."""
+        self.main_layer = None
 
     def iterate_ping_data(self, keep_to_xlimits=True):
         """Iterate over ping data objects."""
@@ -1014,33 +1105,23 @@ class EchogramBuilder:
         return [PingData(self, nr) for nr in nrs]
 
     # =========================================================================
-    # Raw data access (non-downsampled)
+    # Raw data access (for layers, non-downsampled)
     # =========================================================================
 
-    def get_raw_layer_data(
-        self,
-        layer_manager: "LayerManager",
-        layer_name: str,
-        ping_indices=None
-    ):
+    def get_raw_layer_data(self, layer_name, ping_indices=None):
         """Get raw (non-downsampled) data for a specific layer.
         
         Args:
-            layer_manager: LayerManager containing layer definitions.
             layer_name: Name of the layer to extract data from.
             ping_indices: Optional list of ping indices. If None, uses visible x range.
             
         Yields:
             Tuples of (ping_index, raw_data, (sample_start, sample_end)).
         """
-        if layer_name not in layer_manager:
+        if layer_name not in self.layers:
             raise KeyError(f"Layer '{layer_name}' not found")
         
-        _, layer_indices = layer_manager.compute_indices(self)
-        if layer_name not in layer_indices:
-            raise KeyError(f"Layer '{layer_name}' not found in computed indices")
-        
-        indices = layer_indices[layer_name]
+        layer = self.layers[layer_name]
         
         if ping_indices is None:
             # Use visible x range
@@ -1048,8 +1129,8 @@ class EchogramBuilder:
         
         for ping_idx in ping_indices:
             raw_column = self._backend.get_raw_column(ping_idx)
-            sample_start = indices.i0[ping_idx]
-            sample_end = indices.i1[ping_idx]
+            sample_start = layer.i0[ping_idx]
+            sample_end = layer.i1[ping_idx]
             
             if sample_start < len(raw_column) and sample_end > sample_start:
                 layer_data = raw_column[sample_start:sample_end]

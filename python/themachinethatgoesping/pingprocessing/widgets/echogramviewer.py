@@ -12,6 +12,13 @@ import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
 
 
+def _get_axis_names(echogram):
+    """Get x_axis_name and y_axis_name from echogram (old or new builder)."""
+    if hasattr(echogram, 'coord_system'):
+        return echogram.coord_system.x_axis_name, echogram.coord_system.y_axis_name
+    return echogram.x_axis_name, echogram.y_axis_name
+
+
 class EchogramViewer:
     def __init__(self, 
                  echogramdata, 
@@ -182,8 +189,7 @@ class EchogramViewer:
     def init_ax(self, adapt_axis_names=True):
         with self.output:
             if adapt_axis_names:
-                self.x_axis_name = self.echogramdata[-1].x_axis_name
-                self.y_axis_name = self.echogramdata[-1].y_axis_name
+                self.x_axis_name, self.y_axis_name = _get_axis_names(self.echogramdata[-1])
                 
             for i,ax in enumerate(self.axes):
                 ax.clear()
@@ -234,7 +240,8 @@ class EchogramViewer:
             #check x/y axis
             for i,echogram in enumerate(self.echogramdata):
                 self.progress.set_description('Updating echogram')
-                if echogram.x_axis_name != self.x_axis_name or echogram.y_axis_name != self.y_axis_name:
+                x_name, y_name = _get_axis_names(echogram)
+                if x_name != self.x_axis_name or y_name != self.y_axis_name:
                     self.show_background_echogram()
                     break
                     
