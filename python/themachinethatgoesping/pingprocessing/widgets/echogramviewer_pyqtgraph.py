@@ -1,6 +1,8 @@
 """PyQtGraph-based echogram viewer that streams via pyqtgraph's Jupyter widgets."""
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -37,6 +39,8 @@ class EchogramViewerPyQtGraph:
         fps: int = 25,
         widget_height_px: Optional[int] = None,
         widget_width_px: int = 900,
+        auto_update: bool = True,
+        auto_update_delay_ms: int = 300,
         **kwargs: Any,
     ) -> None:
         pg.setConfigOptions(imageAxisOrder="row-major")
@@ -109,7 +113,15 @@ class EchogramViewerPyQtGraph:
         self.box_sliders = ipywidgets.HBox([self.w_vmin, self.w_vmax, self.w_interpolation])
         self.update_ping_line_button = ipywidgets.Button(description="update pingline")
         self.update_ping_line_button.on_click(self.update_ping_line)
-        self.box_buttons = ipywidgets.HBox([self.update_button, self.clear_button])
+        
+        # Auto-update checkbox (create before box_buttons)
+        self.w_auto_update = ipywidgets.Checkbox(
+            value=auto_update,
+            description="Auto-update on zoom",
+            indent=False,
+        )
+        self.w_auto_update.observe(self._on_auto_update_toggle, names="value")
+        self.box_buttons = ipywidgets.HBox([self.update_button, self.clear_button, self.w_auto_update])
 
         self.plot_items: List[pg.PlotItem] = []
         self.image_layers: List[Dict[str, pg.ImageItem]] = []
@@ -126,11 +138,24 @@ class EchogramViewerPyQtGraph:
         self.layer_images: List[Optional[np.ndarray]] = []
         self.layer_extents: List[Optional[Tuple[float, float, float, float]]] = []
 
+        # Auto-update on zoom/pan state
+        self._auto_update_enabled = auto_update
+        self._auto_update_delay_ms = auto_update_delay_ms
+        self._ignore_range_changes = False  # Flag to ignore programmatic range changes
+        self._last_range_change_time: float = 0.0  # For debouncing
+        self._debounce_task: Optional[asyncio.Task] = None
+        self._startup_complete = False  # Flag to ignore initial draws
+        self._original_request_draw = None  # Will be set in _setup_auto_update
+
         self._make_plot_items()
         self._connect_scene_events()
+        self._setup_auto_update()
         if show:
             self.show()
         self.show_background_echogram()
+        
+        # Mark startup as complete after initial rendering
+        self._startup_complete = True
 
     def _make_plot_items(self) -> None:
         self.plot_items.clear()
@@ -198,6 +223,92 @@ class EchogramViewerPyQtGraph:
         for plot in self.plot_items[1:]:
             plot.setXLink(master)
             plot.setYLink(master)
+
+    # =========================================================================
+    # Auto-update on zoom/pan
+    # =========================================================================
+
+    def _setup_auto_update(self) -> None:
+        """Set up the auto-update mechanism by hooking into the widget's redraw cycle.
+        
+        Note: Qt signals don't work properly in pyqtgraph's Jupyter widget because 
+        there's no running Qt event loop. Instead, we monkey-patch the request_draw
+        method to detect when the user interacts with the plot.
+        """
+        # Store original request_draw method and patch it
+        self._original_request_draw = self.graphics.request_draw
+        self._startup_complete = False  # Flag to ignore initial draws
+        self._last_view_range = None  # Track view range to detect actual changes
+        
+        # Use self reference for closure
+        viewer = self
+        
+        def patched_request_draw():
+            """Wrapper that detects user interaction and triggers auto-update."""
+            # Call original
+            viewer._original_request_draw()
+            
+            # Skip during startup
+            if not viewer._startup_complete:
+                return
+            
+            # Skip if auto-update disabled or ignoring changes
+            if not viewer._auto_update_enabled or viewer._ignore_range_changes:
+                return
+            
+            # Get current view range
+            if viewer.plot_items:
+                vb = viewer.plot_items[0].getViewBox()
+                current_range = tuple(tuple(r) for r in vb.viewRange())
+                
+                # Only trigger if view range actually changed
+                if current_range != viewer._last_view_range:
+                    viewer._last_view_range = current_range
+                    viewer._last_range_change_time = time.time()
+                    viewer._schedule_debounced_update()
+        
+        self.graphics.request_draw = patched_request_draw
+
+    def _on_auto_update_toggle(self, change: Dict[str, Any]) -> None:
+        """Handle auto-update checkbox toggle."""
+        self._auto_update_enabled = change["new"]
+        if not self._auto_update_enabled and self._debounce_task is not None:
+            self._debounce_task.cancel()
+            self._debounce_task = None
+
+    def _schedule_debounced_update(self) -> None:
+        """Schedule a debounced auto-update using asyncio.
+        
+        This works in Jupyter because Jupyter has an asyncio event loop running.
+        """
+        # Cancel any existing debounce task
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+        
+        async def debounced_update():
+            """Wait for debounce delay, then trigger update if no new changes."""
+            try:
+                await asyncio.sleep(self._auto_update_delay_ms / 1000.0)
+                # Check if more changes happened during the wait
+                elapsed = time.time() - self._last_range_change_time
+                if elapsed >= (self._auto_update_delay_ms / 1000.0) - 0.01:
+                    # No new changes, call the same function as the update button
+                    self.show_background_zoom()
+            except asyncio.CancelledError:
+                pass  # Task was cancelled by a new range change
+        
+        # Get the running event loop (Jupyter provides one)
+        try:
+            loop = asyncio.get_running_loop()
+            self._debounce_task = loop.create_task(debounced_update())
+        except RuntimeError:
+            # No running event loop - fall back to immediate update
+            self.show_background_zoom()
+
+    def cleanup(self) -> None:
+        """Clean up resources (call when done with the viewer)."""
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
 
     def _refresh_axis_items(self) -> None:
         if not self.plot_items:
@@ -366,47 +477,52 @@ class EchogramViewerPyQtGraph:
         return float(vmin), float(vmax)
 
     def update_view(self, _widget: Any = None, reset: bool = False) -> None:
-        with self.output:
-            try:
-                minx = np.inf
-                maxx = -np.inf
-                miny = np.inf
-                maxy = -np.inf
-                for idx in range(self.nechograms):
-                    background = self.images_background[idx]
-                    extent = self.extents_background[idx]
-                    if background is None or extent is None:
-                        continue
-                    self._update_plot_image(idx, "background", background, extent)
-                    if reset:
-                        x0, x1, y0, y1 = self._numeric_extent(extent)
-                        minx = min(minx, x0)
-                        maxx = max(maxx, x1)
-                        miny = min(miny, y0)
-                        maxy = max(maxy, y1)
-                    if self.high_res_images[idx] is not None and self.high_res_extents[idx] is not None:
-                        self._update_plot_image(idx, "high", self.high_res_images[idx], self.high_res_extents[idx])
-                    else:
-                        self.image_layers[idx]["high"].hide()
-                    if self.layer_images[idx] is not None and self.layer_extents[idx] is not None:
-                        self._update_plot_image(idx, "layer", self.layer_images[idx], self.layer_extents[idx])
-                        layer_cbar = self.layer_colorbars[idx]
-                        if layer_cbar is not None:
-                            layer_cbar.show()
-                    else:
-                        self.image_layers[idx]["layer"].hide()
-                        layer_cbar = self.layer_colorbars[idx]
-                        if layer_cbar is not None:
-                            layer_cbar.hide()
-                if reset and np.all(np.isfinite([minx, maxx, miny, maxy])) and self.plot_items:
-                    master_plot = self.plot_items[0]
-                    master_plot.setXRange(minx, maxx, padding=0)
-                    master_plot.setYRange(miny, maxy, padding=0)
-                self.callback_view()
-                self._process_qt_events()
-                self._request_remote_draw()
-            except Exception as error:  # pragma: no cover
-                raise error
+        # Temporarily ignore range changes to prevent recursive updates
+        self._ignore_range_changes = True
+        try:
+            with self.output:
+                try:
+                    minx = np.inf
+                    maxx = -np.inf
+                    miny = np.inf
+                    maxy = -np.inf
+                    for idx in range(self.nechograms):
+                        background = self.images_background[idx]
+                        extent = self.extents_background[idx]
+                        if background is None or extent is None:
+                            continue
+                        self._update_plot_image(idx, "background", background, extent)
+                        if reset:
+                            x0, x1, y0, y1 = self._numeric_extent(extent)
+                            minx = min(minx, x0)
+                            maxx = max(maxx, x1)
+                            miny = min(miny, y0)
+                            maxy = max(maxy, y1)
+                        if self.high_res_images[idx] is not None and self.high_res_extents[idx] is not None:
+                            self._update_plot_image(idx, "high", self.high_res_images[idx], self.high_res_extents[idx])
+                        else:
+                            self.image_layers[idx]["high"].hide()
+                        if self.layer_images[idx] is not None and self.layer_extents[idx] is not None:
+                            self._update_plot_image(idx, "layer", self.layer_images[idx], self.layer_extents[idx])
+                            layer_cbar = self.layer_colorbars[idx]
+                            if layer_cbar is not None:
+                                layer_cbar.show()
+                        else:
+                            self.image_layers[idx]["layer"].hide()
+                            layer_cbar = self.layer_colorbars[idx]
+                            if layer_cbar is not None:
+                                layer_cbar.hide()
+                    if reset and np.all(np.isfinite([minx, maxx, miny, maxy])) and self.plot_items:
+                        master_plot = self.plot_items[0]
+                        master_plot.setXRange(minx, maxx, padding=0)
+                        master_plot.setYRange(miny, maxy, padding=0)
+                    self.callback_view()
+                    self._process_qt_events()
+                    self._request_remote_draw()
+                except Exception as error:  # pragma: no cover
+                    raise error
+        finally:
+            self._ignore_range_changes = False
 
     def _update_plot_image(self, idx: int, key: str, data: np.ndarray, extent: Tuple[float, float, float, float]) -> None:
         image_item = self.image_layers[idx][key]

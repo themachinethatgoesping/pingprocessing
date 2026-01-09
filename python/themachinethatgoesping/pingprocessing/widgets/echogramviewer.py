@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from IPython.display import display
 import asyncio
+from typing import Optional, Any
 
 import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
@@ -29,7 +30,9 @@ class EchogramViewer:
                  show=True, 
                  voffsets=None,
                  cmap="YlGnBu_r", 
-                 cmap_layer="jet", 
+                 cmap_layer="jet",
+                 auto_update: bool = True,
+                 auto_update_delay_ms: int = 300,
                  **kwargs):
 
         self.mapables = []
@@ -148,6 +151,22 @@ class EchogramViewer:
         
         self.output = ipywidgets.Output()
         
+        # Auto-update on zoom/pan state
+        self._auto_update_enabled = auto_update
+        self._auto_update_delay_ms = auto_update_delay_ms
+        self._last_range_change_time: float = 0.0
+        self._debounce_task: Optional[Any] = None
+        self._last_view_range: Optional[tuple] = None
+        self._ignore_range_changes = False
+        
+        # Auto-update checkbox
+        self.w_auto_update = ipywidgets.Checkbox(
+            value=auto_update,
+            description="Auto-update on zoom",
+            indent=False,
+        )
+        self.w_auto_update.observe(self._on_auto_update_toggle, names="value")
+        
         # observers for view changers
         for w in [self.w_vmin, self.w_vmax, self.w_interpolation]:
             w.observe(self.update_view, names=["value"])
@@ -155,6 +174,7 @@ class EchogramViewer:
         self.box_buttons = ipywidgets.HBox([
                 self.update_button, 
                 self.clear_button,
+                self.w_auto_update,
         ])
         self.box_sliders = ipywidgets.HBox([
                 self.w_vmin, 
@@ -206,6 +226,7 @@ class EchogramViewer:
     def show_background_echogram(self):
         with self.output:
             self.init_ax()
+            self._setup_auto_update()  # Connect axis callbacks for auto-update
             
             self.images_background, self.extents_background = [],[]
             self.high_res_images, self.high_res_extents = [],[]
@@ -231,6 +252,86 @@ class EchogramViewer:
     def clear_output(self,event=0):
         with self.output:
             self.output.clear_output()
+
+    # =========================================================================
+    # Auto-update on zoom/pan
+    # =========================================================================
+
+    def _setup_auto_update(self) -> None:
+        """Set up canvas events for auto-update on zoom/pan."""
+        # Use button_release_event which fires after zoom/pan toolbar operations
+        self.fig.canvas.mpl_connect('button_release_event', self._on_mouse_release)
+        # Also connect to draw_event as a fallback
+        self.fig.canvas.mpl_connect('draw_event', self._on_draw_event)
+        # Store initial view range
+        if self.axes:
+            self._last_view_range = (
+                tuple(self.axes[0].get_xlim()),
+                tuple(self.axes[0].get_ylim())
+            )
+
+    def _on_auto_update_toggle(self, change) -> None:
+        """Handle auto-update checkbox toggle."""
+        self._auto_update_enabled = change["new"]
+        if not self._auto_update_enabled and self._debounce_task is not None:
+            self._debounce_task.cancel()
+            self._debounce_task = None
+
+    def _on_mouse_release(self, event) -> None:
+        """Called on mouse button release - check if view changed."""
+        self._check_view_changed()
+
+    def _on_draw_event(self, event) -> None:
+        """Called after canvas draw - check if view changed."""
+        self._check_view_changed()
+
+    def _check_view_changed(self) -> None:
+        """Check if view range changed and schedule update if needed."""
+        if not self._auto_update_enabled:
+            return
+        if self._ignore_range_changes:
+            return
+        if not self.axes:
+            return
+        
+        # Get current view range from first axis
+        current_range = (
+            tuple(self.axes[0].get_xlim()),
+            tuple(self.axes[0].get_ylim())
+        )
+        
+        # Only trigger if view range actually changed
+        if current_range != self._last_view_range:
+            print(f"DEBUG: View range changed, scheduling update")
+            self._last_view_range = current_range
+            self._last_range_change_time = time()
+            self._schedule_debounced_update()
+
+    def _schedule_debounced_update(self) -> None:
+        """Schedule a debounced auto-update using asyncio."""
+        # Cancel any existing debounce task
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+        
+        async def debounced_update():
+            """Wait for debounce delay, then trigger update if no new changes."""
+            try:
+                await asyncio.sleep(self._auto_update_delay_ms / 1000.0)
+                # Check if more changes happened during the wait
+                elapsed = time() - self._last_range_change_time
+                if elapsed >= (self._auto_update_delay_ms / 1000.0) - 0.01:
+                    # No new changes, call the same function as the update button
+                    self.show_background_zoom()
+            except asyncio.CancelledError:
+                pass  # Task was cancelled by a new range change
+        
+        # Get the running event loop (Jupyter provides one)
+        try:
+            loop = asyncio.get_running_loop()
+            self._debounce_task = loop.create_task(debounced_update())
+        except RuntimeError:
+            # No running event loop - fall back to immediate update
+            self.show_background_zoom()
             
     def show_background_zoom(self, event = 0):
         with self.output:
@@ -331,71 +432,76 @@ class EchogramViewer:
 
 
     def update_view(self, w=None, reset=False):
-        with self.output:
-                
-            try:
-                self.xlim = self.axes[-1].get_xlim()
-                self.ylim = self.axes[-1].get_ylim()
+        # Temporarily ignore range changes to prevent recursive updates
+        self._ignore_range_changes = True
+        try:
+            with self.output:
+                    
+                try:
+                    self.xlim = self.axes[-1].get_xlim()
+                    self.ylim = self.axes[-1].get_ylim()
 
-                self.init_ax(reset)
-                minx,maxx,miny,maxy = np.nan,np.nan,np.nan,np.nan
-                
-                for i,ax in enumerate(self.axes):
-                    #zorder=1
-                    self.mapables.append(ax.imshow(
-                        self.images_background[i].transpose(), 
-                        extent=self.extents_background[i], 
-                        #zorder=zorder,  
-                        **self.get_args_plot(i)))
+                    self.init_ax(reset)
+                    minx,maxx,miny,maxy = np.nan,np.nan,np.nan,np.nan
+                    
+                    for i,ax in enumerate(self.axes):
+                        #zorder=1
+                        self.mapables.append(ax.imshow(
+                            self.images_background[i].transpose(), 
+                            extent=self.extents_background[i], 
+                            #zorder=zorder,  
+                            **self.get_args_plot(i)))
+
+                        if reset:
+                            xlim = ax.get_xlim()
+                            ylim = ax.get_ylim()
+                            minx = np.nanmin([xlim[0],minx])
+                            maxx = np.nanmax([xlim[1],maxx])
+                            miny = np.nanmin([ylim[1],miny])
+                            maxy = np.nanmax([ylim[0],maxy])
+                        
+                        if len(self.high_res_images) > i:
+                            #zorder+=1
+                            self.mapables.append(
+                                ax.imshow(self.high_res_images[i].transpose(), 
+                                            extent=self.high_res_extents[i], 
+                                            #zorder=zorder, 
+                                            **self.get_args_plot(i)))
+
+                        if len(self.layer_images) > i:
+                            #zorder+=1
+                            self.mapables.append(
+                                ax.imshow(self.layer_images[i].transpose(), 
+                                            extent=self.layer_extents[i], 
+                                            #zorder=zorder, 
+                                            **self.get_args_plot(i,layer=True)))
+                        
+
+                        if self.colorbar[i] is None:
+                            self.colorbar[i] = self.fig.colorbar(self.mapables[-1],ax=ax, label="(dB)")
+                        else:
+                            self.colorbar[i].update_normal(self.mapables[-1])
+
+                    self.callback_view()
 
                     if reset:
-                        xlim = ax.get_xlim()
-                        ylim = ax.get_ylim()
-                        minx = np.nanmin([xlim[0],minx])
-                        maxx = np.nanmax([xlim[1],maxx])
-                        miny = np.nanmin([ylim[1],miny])
-                        maxy = np.nanmax([ylim[0],maxy])
-                    
-                    if len(self.high_res_images) > i:
-                        #zorder+=1
-                        self.mapables.append(
-                            ax.imshow(self.high_res_images[i].transpose(), 
-                                        extent=self.high_res_extents[i], 
-                                        #zorder=zorder, 
-                                        **self.get_args_plot(i)))
-
-                    if len(self.layer_images) > i:
-                        #zorder+=1
-                        self.mapables.append(
-                            ax.imshow(self.layer_images[i].transpose(), 
-                                        extent=self.layer_extents[i], 
-                                        #zorder=zorder, 
-                                        **self.get_args_plot(i,layer=True)))
-                    
-
-                    if self.colorbar[i] is None:
-                        self.colorbar[i] = self.fig.colorbar(self.mapables[-1],ax=ax, label="(dB)")
+                        ax.set_xlim(minx,maxx)
+                        ax.set_ylim(maxy,miny)
                     else:
-                        self.colorbar[i].update_normal(self.mapables[-1])
+                        ax.set_xlim(self.xlim)
+                        ax.set_ylim(self.ylim)
+                        
+                    if len(self.mapables) > len(self.echogramdata)*3:
+                        for m in self.mapables[len(self.echogramdata)*3-1:]:
+                            m.remove()
+                        self.mapables = self.mapables[:len(self.echogramdata)*3]
 
-                self.callback_view()
+                    self.fig.canvas.draw_idle()
 
-                if reset:
-                    ax.set_xlim(minx,maxx)
-                    ax.set_ylim(maxy,miny)
-                else:
-                    ax.set_xlim(self.xlim)
-                    ax.set_ylim(self.ylim)
-                    
-                if len(self.mapables) > len(self.echogramdata)*3:
-                    for m in self.mapables[len(self.echogramdata)*3-1:]:
-                        m.remove()
-                    self.mapables = self.mapables[:len(self.echogramdata)*3]
-
-                self.fig.canvas.draw_idle()
-
-            except Exception as e:
-                raise (e)
+                except Exception as e:
+                    raise (e)
+        finally:
+            self._ignore_range_changes = False
 
     def callback_view(self):
         pass
