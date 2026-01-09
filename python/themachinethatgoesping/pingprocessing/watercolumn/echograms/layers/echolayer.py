@@ -89,13 +89,16 @@ class EchoLayer:
         # Get n_pings from backend or pings list
         n_pings = self._get_n_pings()
         
-        # Create layer indices (i1 = last element + 1)
-        i0 = np.empty(n_pings, dtype=int)
-        i1 = np.empty(n_pings, dtype=int)
-        for nr, interpolator in enumerate(cs.y_coordinate_indice_interpolator):
-            if interpolator is not None:
-                i0[nr] = int(interpolator(vec_min_y[nr]) + 0.5)
-                i1[nr] = int(interpolator(vec_max_y[nr]) + 1.5)
+        # Create layer indices using affine transforms (vectorized)
+        # sample_index = a_inv + b_inv * y_coord (inverse of y = a + b * sample)
+        if cs._affine_y_to_sample is not None:
+            a_inv, b_inv = cs._affine_y_to_sample
+            i0 = np.round(a_inv + b_inv * vec_min_y).astype(int)
+            i1 = np.round(a_inv + b_inv * vec_max_y).astype(int) + 1
+        else:
+            # Fallback if affine not set
+            i0 = np.zeros(n_pings, dtype=int)
+            i1 = np.zeros(n_pings, dtype=int)
 
         self.set_indices(i0, i1, vec_min_y, vec_max_y)
 
@@ -223,6 +226,8 @@ class EchoLayer:
     def get_y_indices(self, wci_nr: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Get Y indices constrained to layer bounds.
         
+        Uses precomputed affine coefficients for speed.
+        
         Args:
             wci_nr: Ping/column number.
         
@@ -232,12 +237,18 @@ class EchoLayer:
         cs = self._cs
         n_samples = self._get_max_samples(wci_nr)
         
-        interpolator = cs.y_coordinate_indice_interpolator[wci_nr]
-        if interpolator is None:
+        # Use affine transform: sample_index = a + b * y_coord
+        if cs._affine_y_to_sample is None:
+            return None, None
+        
+        a_inv, b_inv = cs._affine_y_to_sample
+        a, b = a_inv[wci_nr], b_inv[wci_nr]
+        
+        if not np.isfinite(a) or not np.isfinite(b):
             return None, None
             
         y_indices_image = np.arange(len(cs.y_coordinates))
-        y_indices_wci = np.round(interpolator(cs.y_coordinates)).astype(int)
+        y_indices_wci = np.round(a + b * cs.y_coordinates).astype(int)
 
         start_y = max(0, self.i0[wci_nr])
         end_y = min(n_samples, self.i1[wci_nr])

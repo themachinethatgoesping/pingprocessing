@@ -267,7 +267,7 @@ class EchogramViewerPyQtGraph:
             self.layer_images, self.layer_extents = [], []
             for idx, echogram in enumerate(self.echogramdata):
                 self.progress.set_description(f"Updating echogram [{idx},{self.nechograms}]")
-                if not echogram.layers and echogram.main_layer is None:
+                if len(echogram.layers) == 0 and echogram.main_layer is None:
                     image, extent = echogram.build_image(progress=self.progress)
                     self.images_background.append(image)
                     self.extents_background.append(extent)
@@ -303,7 +303,7 @@ class EchogramViewerPyQtGraph:
                 xmin, xmax = view.viewRange()[0]
                 ymin, ymax = view.viewRange()[1]
                 self._apply_axis_limits(echogram, xmin, xmax, ymin, ymax)
-                if not echogram.layers and echogram.main_layer is None:
+                if len(echogram.layers) == 0 and echogram.main_layer is None:
                     image, extent = echogram.build_image(progress=self.progress)
                     self.high_res_images[idx] = image
                     self.high_res_extents[idx] = extent
@@ -419,7 +419,8 @@ class EchogramViewerPyQtGraph:
             y0, y1 = y1, y0
         rect = QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)
         image_item.setRect(rect)
-        colormap = self._colormap_layer if key != "background" else self._colormap
+        # "background" and "high" use main colormap, "layer" uses layer colormap
+        colormap = self._colormap_layer if key == "layer" else self._colormap
         if hasattr(image_item, "setColorMap"):
             image_item.setColorMap(colormap)
         else:  # pragma: no cover - compatibility with older pyqtgraph

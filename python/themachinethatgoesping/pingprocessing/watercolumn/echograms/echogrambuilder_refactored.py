@@ -407,6 +407,9 @@ class EchogramBuilder:
     def build_image_and_layer_image(self, progress=None):
         """Build echogram image and combined layer image.
         
+        Uses fast vectorized get_image() for the main echogram when no main_layer
+        is set. Falls back to per-column iteration only for layer processing.
+        
         Returns:
             Tuple of (image, layer_image, extent).
         """
@@ -415,29 +418,34 @@ class EchogramBuilder:
         ny = len(cs.y_coordinates)
         nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
 
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
-        layer_image = image.copy()
-
-        image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
-
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_column(wci_index)
-            if len(wci) > 1:
-                if self.main_layer is None:
-                    y1, y2 = self.get_y_indices(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-                else:
+        # Fast path: use vectorized get_image for main echogram if no main_layer
+        if self.main_layer is None:
+            request = cs.make_image_request()
+            image = self._backend.get_image(request)
+        else:
+            # Slow path: need per-column iteration for main_layer
+            image = np.full((nx, ny), np.nan, dtype=np.float32)
+            image_indices, wci_indices = self.get_x_indices()
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                wci = self.get_column(wci_index)
+                if len(wci) > 1:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
 
-                for k, layer in self.layers.items():
-                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
-                    if y1_layer is not None and len(y1_layer) > 0:
-                        layer_image[image_index, y1_layer] = wci[y2_layer]
+        # Build layer image (requires per-column iteration)
+        layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
+        if len(self.layers) > 0:
+            image_indices, wci_indices = self.get_x_indices()
+            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer image")
+            
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                wci = self.get_column(wci_index)
+                if len(wci) > 1:
+                    for k, layer in self.layers.items():
+                        y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                        if y1_layer is not None and len(y1_layer) > 0:
+                            layer_image[image_index, y1_layer] = wci[y2_layer]
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -447,6 +455,9 @@ class EchogramBuilder:
     def build_image_and_layer_images(self, progress=None):
         """Build echogram image and individual layer images.
         
+        Uses fast vectorized get_image() for the main echogram when no main_layer
+        is set. Falls back to per-column iteration only for layer processing.
+        
         Returns:
             Tuple of (image, layer_images_dict, extent).
         """
@@ -455,32 +466,37 @@ class EchogramBuilder:
         ny = len(cs.y_coordinates)
         nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
 
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
-
-        layer_images = {}
-        for key in self.layers.keys():
-            layer_images[key] = image.copy()
-
-        image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
-
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            wci = self.get_column(wci_index)
-            if len(wci) > 1:
-                if self.main_layer is None:
-                    y1, y2 = self.get_y_indices(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-                else:
+        # Fast path: use vectorized get_image for main echogram if no main_layer
+        if self.main_layer is None:
+            request = cs.make_image_request()
+            image = self._backend.get_image(request)
+        else:
+            # Slow path: need per-column iteration for main_layer
+            image = np.full((nx, ny), np.nan, dtype=np.float32)
+            image_indices, wci_indices = self.get_x_indices()
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                wci = self.get_column(wci_index)
+                if len(wci) > 1:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
 
-                for key, layer in self.layers.items():
-                    y1_layer, y2_layer = layer.get_y_indices(wci_index)
-                    if y1_layer is not None and len(y1_layer) > 0:
-                        layer_images[key][image_index, y1_layer] = wci[y2_layer]
+        # Build layer images (requires per-column iteration)
+        layer_images = {}
+        for key in self.layers.keys():
+            layer_images[key] = np.full((nx, ny), np.nan, dtype=np.float32)
+
+        if len(self.layers) > 0:
+            image_indices, wci_indices = self.get_x_indices()
+            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer images")
+
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                wci = self.get_column(wci_index)
+                if len(wci) > 1:
+                    for key, layer in self.layers.items():
+                        y1_layer, y2_layer = layer.get_y_indices(wci_index)
+                        if y1_layer is not None and len(y1_layer) > 0:
+                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -679,13 +695,18 @@ class EchogramBuilder:
             
         ping_idx = ping_indices[0]
         
-        # Convert y coordinates to sample indices
-        interpolator = cs.y_coordinate_indice_interpolator[ping_idx]
-        if interpolator is None:
+        # Convert y coordinates to sample indices using affine transform
+        if cs._affine_y_to_sample is None:
+            return None
+        
+        a_inv, b_inv = cs._affine_y_to_sample
+        a, b = a_inv[ping_idx], b_inv[ping_idx]
+        
+        if not np.isfinite(a) or not np.isfinite(b):
             return None
             
-        sample_start = int(interpolator(y_start) + 0.5)
-        sample_end = int(interpolator(y_end) + 0.5)
+        sample_start = int(a + b * y_start + 0.5)
+        sample_end = int(a + b * y_end + 0.5)
         
         # Get raw data
         raw_column = self._backend.get_raw_column(ping_idx)
