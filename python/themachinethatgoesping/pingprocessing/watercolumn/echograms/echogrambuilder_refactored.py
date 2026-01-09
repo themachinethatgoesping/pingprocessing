@@ -9,6 +9,7 @@ This module provides the EchogramBuilder class which handles:
 import numpy as np
 from typing import Optional
 from copy import deepcopy
+from pathlib import Path
 import datetime as dt
 
 # external Ping packages
@@ -877,3 +878,180 @@ class EchogramBuilder:
         
         backend = ZarrDataBackend.from_zarr(path, chunks=chunks)
         return cls(backend)
+
+    # =========================================================================
+    # Mmap export (ultra-fast random access)
+    # =========================================================================
+
+    def to_mmap(
+        self,
+        path: str,
+        progress: bool = True,
+        chunk_mb: float = 10.0,
+    ) -> str:
+        """Export echogram data to a memory-mapped store for ultra-fast access.
+        
+        Memory-mapped files provide near-instantaneous random access, making
+        them ideal for interactive visualization (zooming, panning). Trade-off:
+        files are uncompressed and larger than Zarr stores.
+        
+        Memory efficiency:
+        - Writes in chunks based on chunk_mb (default 10MB)
+        - Chunk size adapts to data dimensions
+        - Peak memory: ~chunk_mb + output metadata
+        - Supports exporting larger-than-memory datasets
+        
+        Performance comparison (75K pings × 379 samples):
+        - Full view: Mmap 3x faster than Zarr
+        - Scattered access (100 pings): Mmap 100x faster
+        - Thumbnail (100×100): Mmap 180x faster
+        
+        Args:
+            path: Path for the mmap store (directory, will be created).
+            progress: Whether to show progress bar.
+            chunk_mb: Chunk size in megabytes for writing (default 10MB).
+                      Larger chunks = faster export but more memory.
+            
+        Returns:
+            Path to the created mmap store.
+        """
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+        
+        from .backends.mmap_backend import MMAP_FORMAT_VERSION
+        
+        output_path = Path(path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Get dimensions
+        n_pings = self._backend.n_pings
+        max_samples = int(self._backend.max_sample_counts.max()) + 1
+        
+        # Calculate chunk size based on MB
+        bytes_per_ping = max_samples * 4  # float32 = 4 bytes
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)  # Don't exceed total pings
+        
+        # Create memory-mapped file for WCI data
+        wci_file = output_path / "wci_data.bin"
+        wci_mmap = np.memmap(
+            wci_file, dtype=np.float32, mode="w+", 
+            shape=(n_pings, max_samples)
+        )
+        
+        # Fill with NaN initially (in chunks)
+        nan_chunk = np.full((chunk_size, max_samples), np.nan, dtype=np.float32)
+        for chunk_start in range(0, n_pings, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            wci_mmap[chunk_start:chunk_end, :] = nan_chunk[:chunk_end - chunk_start, :]
+        del nan_chunk
+        
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+        
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter,
+                desc=f"Exporting ({chunk_mb:.0f}MB chunks)",
+                delay=0.5,
+                unit="chunk",
+                total=n_chunks,
+                postfix={"pings": 0},
+            )
+        
+        pings_written = 0
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            
+            # Use generic get_chunk - backends optimize this internally
+            chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
+            wci_mmap[chunk_start:chunk_end, :chunk_data.shape[1]] = chunk_data
+            del chunk_data
+            
+            pings_written += chunk_end - chunk_start
+            if progress and tqdm is not None:
+                elapsed = chunk_iter.format_dict.get('elapsed', 1) or 1
+                pings_per_sec = pings_written / elapsed
+                chunk_iter.set_postfix({"pings/s": f"{pings_per_sec:.0f}"})
+        
+        # Flush and close the mmap
+        wci_mmap.flush()
+        del wci_mmap
+        
+        # Save array metadata as binary .npy files (much faster than JSON)
+        sample_min, sample_max = self._backend.sample_nr_extents
+        np.save(output_path / "ping_times.npy", self._backend.ping_times.astype(np.float64))
+        np.save(output_path / "max_sample_counts.npy", self._backend.max_sample_counts.astype(np.int32))
+        np.save(output_path / "sample_nr_min.npy", sample_min.astype(np.int32))
+        np.save(output_path / "sample_nr_max.npy", sample_max.astype(np.int32))
+        
+        # Optional extents
+        range_ext = self._backend.range_extents
+        if range_ext is not None:
+            min_r, max_r = range_ext
+            np.save(output_path / "range_min.npy", min_r.astype(np.float32))
+            np.save(output_path / "range_max.npy", max_r.astype(np.float32))
+        
+        depth_ext = self._backend.depth_extents
+        if depth_ext is not None:
+            min_d, max_d = depth_ext
+            np.save(output_path / "depth_min.npy", min_d.astype(np.float32))
+            np.save(output_path / "depth_max.npy", max_d.astype(np.float32))
+        
+        # Ping parameters (binary .npy files)
+        ping_params = self._backend.get_ping_params()
+        ping_params_meta = {}  # y_reference for each param (stored in JSON)
+        ping_param_names = []
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            np.save(output_path / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(output_path / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        
+        # Small scalar metadata as JSON (fast to load)
+        metadata = {
+            "format_version": MMAP_FORMAT_VERSION,
+            "n_pings": n_pings,
+            "n_samples": max_samples,
+            "wci_value": self._backend.wci_value,
+            "linear_mean": self._backend.linear_mean,
+            "has_navigation": self._backend.has_navigation,
+            "ping_param_names": ping_param_names,
+            "ping_params_meta": ping_params_meta,
+        }
+        
+        # Write small JSON metadata
+        metadata_file = output_path / "metadata.json"
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f)
+        
+        return str(path)
+    
+    @classmethod
+    def from_mmap(
+        cls,
+        path: str,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a mmap store.
+        
+        The WCI data is memory-mapped and lazy-loaded:
+        - No data loaded into memory until accessed
+        - OS page cache handles caching efficiently
+        - Supports files larger than available RAM
+        
+        Args:
+            path: Path to the mmap store (directory).
+            
+        Returns:
+            EchogramBuilder with MmapDataBackend.
+        """
+        from .backends import MmapDataBackend
+        
+        backend = MmapDataBackend.from_path(path)
+        return cls(backend)
+

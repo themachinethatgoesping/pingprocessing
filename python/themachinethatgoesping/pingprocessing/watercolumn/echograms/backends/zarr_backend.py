@@ -72,11 +72,27 @@ class ZarrDataBackend(EchogramDataBackend):
         # Direct zarr array reference for fast get_image (bypasses dask overhead)
         self._zarr_wci: Optional["zarr.Array"] = None
         
-        # Cache frequently accessed metadata
+        # Chunk cache for fast consecutive get_column calls
+        # Stores (chunk_start, chunk_end, chunk_data) for the last loaded chunk
+        self._column_cache: Optional[Tuple[int, int, np.ndarray]] = None
+        
+        # Cache frequently accessed metadata (loaded eagerly to avoid Dask overhead)
         self._n_pings = ds.sizes["ping"]
         self._wci_value = ds.attrs.get("wci_value", "sv")
         self._linear_mean = ds.attrs.get("linear_mean", True)
         self._has_navigation = ds.attrs.get("has_navigation", False)
+        
+        # Eagerly load small 1D metadata arrays (avoid repeated Dask computation)
+        self._ping_times = ds["ping_times"].values
+        self._max_sample_counts = ds["max_sample_counts"].values
+        self._sample_nr_min = ds["sample_nr_min"].values
+        self._sample_nr_max = ds["sample_nr_max"].values
+        
+        # Optional extents
+        self._range_min = ds["range_min"].values if "range_min" in ds else None
+        self._range_max = ds["range_max"].values if "range_max" in ds else None
+        self._depth_min = ds["depth_min"].values if "depth_min" in ds else None
+        self._depth_max = ds["depth_max"].values if "depth_max" in ds else None
         
         # Load ping params structure
         self._ping_params = self._load_ping_params()
@@ -174,36 +190,27 @@ class ZarrDataBackend(EchogramDataBackend):
 
     @property
     def ping_times(self) -> np.ndarray:
-        return self._ds["ping_times"].values
+        return self._ping_times
 
     @property
     def max_sample_counts(self) -> np.ndarray:
-        return self._ds["max_sample_counts"].values
+        return self._max_sample_counts
 
     @property
     def sample_nr_extents(self) -> Tuple[np.ndarray, np.ndarray]:
-        return (
-            self._ds["sample_nr_min"].values,
-            self._ds["sample_nr_max"].values,
-        )
+        return (self._sample_nr_min, self._sample_nr_max)
 
     @property
     def range_extents(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        if "range_min" not in self._ds:
+        if self._range_min is None:
             return None
-        return (
-            self._ds["range_min"].values,
-            self._ds["range_max"].values,
-        )
+        return (self._range_min, self._range_max)
 
     @property
     def depth_extents(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        if "depth_min" not in self._ds or not self._has_navigation:
+        if self._depth_min is None:
             return None
-        return (
-            self._ds["depth_min"].values,
-            self._ds["depth_max"].values,
-        )
+        return (self._depth_min, self._depth_max)
 
     @property
     def has_navigation(self) -> bool:
@@ -227,7 +234,9 @@ class ZarrDataBackend(EchogramDataBackend):
     def get_column(self, ping_index: int) -> np.ndarray:
         """Get column data for a ping.
         
-        Loads the data from Zarr lazily and computes only what's needed.
+        Uses chunk caching for fast consecutive reads. When a column is 
+        requested, the entire zarr chunk containing it is loaded and cached.
+        Subsequent requests for columns in the same chunk are instant.
         
         Args:
             ping_index: Index of the ping to retrieve.
@@ -238,9 +247,31 @@ class ZarrDataBackend(EchogramDataBackend):
         # Get the number of valid samples for this ping
         n_samples = int(self.max_sample_counts[ping_index]) + 1
         
-        # Slice and compute - Dask will only load the needed chunk
-        column = self._ds["wci_data"].isel(ping=ping_index, sample=slice(0, n_samples))
-        return column.values
+        # Check if ping is in cached chunk
+        if self._column_cache is not None:
+            cache_start, cache_end, cache_data = self._column_cache
+            if cache_start <= ping_index < cache_end:
+                # Cache hit - return from cache
+                return cache_data[ping_index - cache_start, :n_samples].copy()
+        
+        # Cache miss - load the chunk containing this ping
+        if self._zarr_wci is not None:
+            # Use direct zarr access (faster)
+            # Determine chunk boundaries from zarr chunks
+            chunk_size = self._zarr_wci.chunks[0]
+            chunk_idx = ping_index // chunk_size
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, self._n_pings)
+            
+            # Load entire chunk
+            chunk_data = self._zarr_wci[chunk_start:chunk_end, :]
+            self._column_cache = (chunk_start, chunk_end, chunk_data)
+            
+            return chunk_data[ping_index - chunk_start, :n_samples].copy()
+        else:
+            # Fallback to xarray/dask (slower, no caching)
+            column = self._ds["wci_data"].isel(ping=ping_index, sample=slice(0, n_samples))
+            return column.values
 
     def get_raw_column(self, ping_index: int) -> np.ndarray:
         """Get full-resolution column data for a ping.
@@ -249,6 +280,25 @@ class ZarrDataBackend(EchogramDataBackend):
         we store beam-averaged data.
         """
         return self.get_column(ping_index)
+
+    def get_chunk(self, start_ping: int, end_ping: int) -> np.ndarray:
+        """Get a chunk of WCI data for multiple consecutive pings.
+        
+        Optimized for ZarrDataBackend using direct zarr array access.
+        
+        Args:
+            start_ping: First ping index (inclusive).
+            end_ping: Last ping index (exclusive).
+            
+        Returns:
+            2D array of shape (end_ping - start_ping, n_samples).
+        """
+        if self._zarr_wci is not None:
+            # Fast path: direct zarr array access
+            return self._zarr_wci[start_ping:end_ping, :]
+        else:
+            # Fallback to base class implementation
+            return super().get_chunk(start_ping, end_ping)
 
     # =========================================================================
     # Image generation (direct zarr for speed)

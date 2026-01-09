@@ -148,6 +148,32 @@ class EchogramDataBackend(ABC):
         for idx in ping_indices:
             yield idx, self.get_raw_column(idx)
 
+    def get_chunk(self, start_ping: int, end_ping: int) -> np.ndarray:
+        """Get a chunk of WCI data for multiple consecutive pings.
+        
+        Returns a 2D array of shape (n_pings, max_samples) where n_pings
+        is end_ping - start_ping. Backends can override this for faster
+        bulk access.
+        
+        Default implementation uses get_column for each ping.
+        
+        Args:
+            start_ping: First ping index (inclusive).
+            end_ping: Last ping index (exclusive).
+            
+        Returns:
+            2D array of shape (end_ping - start_ping, max_samples).
+        """
+        n_pings = end_ping - start_ping
+        max_samples = int(self.max_sample_counts[start_ping:end_ping].max()) + 1
+        
+        chunk = np.full((n_pings, max_samples), np.nan, dtype=np.float32)
+        for i, ping_idx in enumerate(range(start_ping, end_ping)):
+            col = self.get_column(ping_idx)
+            chunk[i, :len(col)] = col
+        
+        return chunk
+
     # =========================================================================
     # Optional: beam sample selection access (for advanced use cases)
     # =========================================================================
