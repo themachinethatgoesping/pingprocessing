@@ -54,7 +54,7 @@ class EchogramCoordinateSystem:
             raise RuntimeError("ERROR[EchogramCoordinateSystem]: n_pings must be > 0")
 
         self._n_pings = n_pings
-        self.max_number_of_samples = np.asarray(max_number_of_samples)
+        self.max_number_of_samples = np.asarray(max_number_of_samples, dtype=np.float32)
         self.time_zone = time_zone
         self.mp_cores = 1
 
@@ -74,6 +74,12 @@ class EchogramCoordinateSystem:
         self.has_ranges = False
         self.has_depths = False
         self.has_sample_nrs = False
+        
+        # Precomputed affine coefficients: value = a + b * sample_index
+        # These are computed once when extents are set
+        self._affine_sample_to_depth = None  # (a, b) arrays
+        self._affine_sample_to_range = None
+        self._affine_sample_to_sample_nr = None
 
         # Initialize axis state
         self.x_axis_name = None
@@ -83,9 +89,10 @@ class EchogramCoordinateSystem:
         self._x_axis_function = None
         self._y_axis_function = None
         self._initialized = False
-
-        # Interpolator lists (per-ping)
-        self._init_interpolators()
+        
+        # Current y-axis affine: y_coord = a + b * sample_index (set by set_y_axis_*)
+        self._affine_sample_to_y = None  # (a, b) arrays for current y-axis
+        self._affine_y_to_sample = None  # (a, b) arrays for inverse
 
     @property
     def n_pings(self) -> int:
@@ -97,17 +104,35 @@ class EchogramCoordinateSystem:
         """Whether coordinate system is fully initialized."""
         return self._initialized
 
-    def _init_interpolators(self):
-        """Initialize interpolator lists."""
-        n = self._n_pings
-        self.y_coordinate_indice_interpolator = [None] * n
-        self.y_indice_to_y_coordinate_interpolator = [None] * n
-        self.depth_to_y_coordinate_interpolator = [None] * n
-        self.range_to_y_coordinate_interpolator = [None] * n
-        self.sample_nr_to_y_coordinate_interpolator = [None] * n
-        self.y_indice_to_depth_interpolator = [None] * n
-        self.y_indice_to_range_interpolator = [None] * n
-        self.y_indice_to_sample_nr_interpolator = [None] * n
+    def _compute_affine_coefficients(self, min_vals: np.ndarray, max_vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute affine coefficients for: value = a + b * sample_index.
+        
+        Args:
+            min_vals: Per-ping minimum values (at sample_index=0).
+            max_vals: Per-ping maximum values (at sample_index=n_samples-1).
+            
+        Returns:
+            Tuple of (a, b) arrays where value = a + b * sample_index.
+            NaN where invalid (zero samples or min >= max).
+        """
+        n_samples = self.max_number_of_samples  # Already float32
+        
+        # Avoid division by zero
+        denom = n_samples.copy()
+        denom[denom == 0] = 1.0
+        
+        # value = min_val + (max_val - min_val) * sample_index / n_samples
+        # value = a + b * sample_index
+        # where a = min_val, b = (max_val - min_val) / n_samples
+        a = min_vals.astype(np.float32)
+        b = ((max_vals - min_vals) / denom).astype(np.float32)
+        
+        # Mark invalid pings
+        invalid = ~(np.isfinite(min_vals) & np.isfinite(max_vals) & (max_vals > min_vals) & (n_samples > 0))
+        a[invalid] = np.nan
+        b[invalid] = np.nan
+        
+        return a, b
 
     # =========================================================================
     # Ping numbers and times
@@ -145,6 +170,8 @@ class EchogramCoordinateSystem:
         self.res_ranges = ((self.max_ranges - self.min_ranges) / self.max_number_of_samples).astype(np.float32)
         self.has_ranges = True
         self._initialized = False
+        # Precompute affine: range = a + b * sample_index
+        self._affine_sample_to_range = self._compute_affine_coefficients(self.min_ranges, self.max_ranges)
 
     def set_depth_extent(self, min_depths: np.ndarray, max_depths: np.ndarray):
         """Set depth extents (per-ping min/max depth in meters)."""
@@ -155,6 +182,8 @@ class EchogramCoordinateSystem:
         self.res_depths = ((self.max_depths - self.min_depths) / self.max_number_of_samples).astype(np.float32)
         self.has_depths = True
         self._initialized = False
+        # Precompute affine: depth = a + b * sample_index
+        self._affine_sample_to_depth = self._compute_affine_coefficients(self.min_depths, self.max_depths)
 
     def set_sample_nr_extent(self, min_sample_nrs: np.ndarray, max_sample_nrs: np.ndarray):
         """Set sample number extents (per-ping min/max sample numbers)."""
@@ -165,6 +194,8 @@ class EchogramCoordinateSystem:
         self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(np.float32)
         self.has_sample_nrs = True
         self._initialized = False
+        # Precompute affine: sample_nr = a + b * sample_index
+        self._affine_sample_to_sample_nr = self._compute_affine_coefficients(self.min_sample_nrs, self.max_sample_nrs)
 
     # =========================================================================
     # Ping parameters
@@ -229,6 +260,8 @@ class EchogramCoordinateSystem:
     def get_ping_param(self, name: str, use_x_coordinates: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """Get a ping parameter's values in current coordinate system.
         
+        Uses vectorized affine transforms for speed.
+        
         Args:
             name: Parameter name.
             use_x_coordinates: If True, use current x coordinates instead of all pings.
@@ -248,46 +281,46 @@ class EchogramCoordinateSystem:
             x_indices = np.arange(self._n_pings)
             x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
 
-        reference, param = self.param[name]
-        param = np.array(param)[x_indices]
-
-        return_param = np.empty(len(param))
-        return_param.fill(np.nan)
-
+        reference, param_all = self.param[name]
+        param = np.array(param_all)[x_indices]
+        
+        # Convert param values to sample indices first, then to y coordinates
+        # param_value → sample_index: sample = (param - a_param) / b_param (inverse of a + b*sample)
+        # sample_index → y_coord: y = a_y + b_y * sample
+        
+        # Get affine for param_type → sample_index (inverse of sample → param_type)
         match reference:
             case "Y indice":
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.y_indice_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
+                # Already sample indices
+                sample_indices = param
             case "Sample number":
                 assert self.has_sample_nrs, "ERROR: Sample nr values not initialized"
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.sample_nr_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
+                a, b = self._affine_sample_to_sample_nr
+                # sample_nr = a + b * sample_idx, so sample_idx = (sample_nr - a) / b
+                a_sel, b_sel = a[x_indices], b[x_indices]
+                sample_indices = np.where(b_sel != 0, (param - a_sel) / b_sel, np.nan)
             case "Depth (m)":
                 assert self.has_depths, "ERROR: Depths values not initialized"
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.depth_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
+                a, b = self._affine_sample_to_depth
+                a_sel, b_sel = a[x_indices], b[x_indices]
+                sample_indices = np.where(b_sel != 0, (param - a_sel) / b_sel, np.nan)
             case "Range (m)":
                 assert self.has_ranges, "ERROR: Ranges values not initialized"
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.range_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
+                a, b = self._affine_sample_to_range
+                a_sel, b_sel = a[x_indices], b[x_indices]
+                sample_indices = np.where(b_sel != 0, (param - a_sel) / b_sel, np.nan)
             case _:
                 raise RuntimeError(f"Invalid reference '{reference}'")
+        
+        # Now convert sample_indices to y coordinates
+        if self._affine_sample_to_y is None:
+            return_param = np.full(len(param), np.nan)
+        else:
+            a_y, b_y = self._affine_sample_to_y
+            a_sel, b_sel = a_y[x_indices], b_y[x_indices]
+            return_param = a_sel + b_sel * sample_indices
+            # Mask invalid
+            return_param[~np.isfinite(param)] = np.nan
 
         if self.x_axis_name == "Date time":
             x_coordinates = [dt.datetime.fromtimestamp(t, self.time_zone) for t in x_coordinates]
@@ -324,6 +357,9 @@ class EchogramCoordinateSystem:
                            layer_update_callback: Optional[Callable] = None):
         """Set Y coordinates for the display grid.
         
+        This is now a fast operation - it only stores the view bounds and
+        computes affine coefficients vectorized over all pings.
+        
         Args:
             name: Axis name ('Y indice', 'Sample number', 'Depth (m)', 'Range (m)').
             y_coordinates: Array of Y coordinate values.
@@ -336,72 +372,36 @@ class EchogramCoordinateSystem:
             f"min/max y vectors must have length {n_pings}"
             
         self.y_axis_name = name
-        self.y_coordinates = y_coordinates
-        self.y_resolution = y_coordinates[1] - y_coordinates[0]
+        self.y_coordinates = np.asarray(y_coordinates, dtype=np.float32)
+        self.y_resolution = float(y_coordinates[1] - y_coordinates[0])
         self.y_extent = [
-            self.y_coordinates[-1] + self.y_resolution / 2,
-            self.y_coordinates[0] - self.y_resolution / 2,
+            float(self.y_coordinates[-1]) + self.y_resolution / 2,
+            float(self.y_coordinates[0]) - self.y_resolution / 2,
         ]
-        self.vec_min_y = vec_min_y
-        self.vec_max_y = vec_max_y
+        self.vec_min_y = np.asarray(vec_min_y, dtype=np.float32)
+        self.vec_max_y = np.asarray(vec_max_y, dtype=np.float32)
 
         self.y_gridder = ForwardGridder1D.from_res(
-            self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1]
+            self.y_resolution, float(self.y_coordinates[0]), float(self.y_coordinates[-1])
         )
+        
+        # Compute affine coefficients vectorized (no per-ping loop!)
+        # y_coord = a + b * sample_index where sample_index goes 0 to n_samples-1
+        # This maps sample 0 → vec_min_y and sample (n_samples-1) → vec_max_y
+        self._affine_sample_to_y = self._compute_affine_coefficients(self.vec_min_y, self.vec_max_y)
+        
+        # Also compute inverse: sample_index = (y_coord - a) / b
+        # Store as (a, b) for: sample = a_inv + b_inv * y
+        # sample = -a/b + (1/b) * y = a_inv + b_inv * y
+        a, b = self._affine_sample_to_y
+        with np.errstate(divide='ignore', invalid='ignore'):
+            b_inv = np.where(b != 0, 1.0 / b, np.nan).astype(np.float32)
+            a_inv = np.where(b != 0, -a / b, np.nan).astype(np.float32)
+        self._affine_y_to_sample = (a_inv, b_inv)
         
         # Call layer update callback if provided
         if layer_update_callback is not None:
             layer_update_callback()
-
-        # Initialize interpolators
-        self._init_interpolators()
-
-        for nr in range(n_pings):
-            y1, y2 = vec_min_y[nr], vec_max_y[nr]
-            n_samples = self.max_number_of_samples[nr] + 1
-            
-            try:
-                # Skip pings with invalid y values or no samples
-                if not (np.isfinite(y1) and np.isfinite(y2)):
-                    continue
-                if y1 >= y2:
-                    continue
-                if n_samples <= 1:
-                    continue
-                    
-                I = tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
-                self.y_coordinate_indice_interpolator[nr] = I
-
-                I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
-                self.y_indice_to_y_coordinate_interpolator[nr] = I
-
-                if self.has_depths:
-                    d1, d2 = self.min_depths[nr], self.max_depths[nr]
-                    if np.isfinite(d1) and np.isfinite(d2) and d1 < d2:
-                        I = tools.vectorinterpolators.LinearInterpolatorF([d1, d2], [y1, y2])
-                        self.depth_to_y_coordinate_interpolator[nr] = I
-                        I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [d1, d2])
-                        self.y_indice_to_depth_interpolator[nr] = I
-
-                if self.has_ranges:
-                    r1, r2 = self.min_ranges[nr], self.max_ranges[nr]
-                    if np.isfinite(r1) and np.isfinite(r2) and r1 < r2:
-                        I = tools.vectorinterpolators.LinearInterpolatorF([r1, r2], [y1, y2])
-                        self.range_to_y_coordinate_interpolator[nr] = I
-                        I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [r1, r2])
-                        self.y_indice_to_range_interpolator[nr] = I
-
-                if self.has_sample_nrs:
-                    s1, s2 = self.min_sample_nrs[nr], self.max_sample_nrs[nr]
-                    if np.isfinite(s1) and np.isfinite(s2) and s1 < s2:
-                        I = tools.vectorinterpolators.LinearInterpolatorF([s1, s2], [y1, y2])
-                        self.sample_nr_to_y_coordinate_interpolator[nr] = I
-                        I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [s1, s2])
-                        self.y_indice_to_sample_nr_interpolator[nr] = I
-
-            except Exception as e:
-                message = f"{e}\n- nr {nr}\n- y1 {y1}\n- y2 {y2}\n- n_samples {n_samples}"
-                raise RuntimeError(message)
 
     def _set_x_coordinates(self, name: str, x_coordinates: np.ndarray, x_interpolation_limit: float):
         """Set X coordinates for the display grid.
@@ -757,21 +757,29 @@ class EchogramCoordinateSystem:
     def get_y_indices(self, wci_nr: int) -> Tuple[np.ndarray, np.ndarray]:
         """Get Y indices mapping image coordinates to data indices.
         
+        Uses precomputed affine coefficients for speed.
+        
         Args:
             wci_nr: Ping/column number.
             
         Returns:
             Tuple of (image_indices, data_indices) arrays.
         """
-        interpolator = self.y_coordinate_indice_interpolator[wci_nr]
-        if interpolator is None:
+        if self._affine_y_to_sample is None:
+            return np.array([], dtype=int), np.array([], dtype=int)
+        
+        a_inv, b_inv = self._affine_y_to_sample
+        a, b = a_inv[wci_nr], b_inv[wci_nr]
+        
+        if not np.isfinite(a) or not np.isfinite(b):
             return np.array([], dtype=int), np.array([], dtype=int)
             
         n_samples = int(self.max_number_of_samples[wci_nr]) + 1
         y_indices_image = np.arange(len(self.y_coordinates))
-        y_indices_wci = np.round(interpolator(self.y_coordinates)).astype(int)
+        # sample_index = a + b * y_coord
+        y_indices_wci = np.round(a + b * self.y_coordinates).astype(int)
 
-        valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < n_samples))[0]
+        valid_coordinates = np.where((y_indices_wci >= 0) & (y_indices_wci < n_samples))[0]
 
         return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
 
@@ -831,45 +839,19 @@ class EchogramCoordinateSystem:
     # =========================================================================
 
     def _estimate_affine_y_to_sample(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Estimate affine parameters for y→sample index mapping per ping.
+        """Get affine parameters for y→sample index mapping per ping.
         
-        The y_coordinate_indice_interpolator is a LinearInterpolator, so
-        it's exactly: sample_idx = a + b * y
+        Now just returns the precomputed affine coefficients.
+        sample_idx = a + b * y
         
         Returns:
             Tuple of (a, b) arrays, each shape (n_pings,).
-            Values are NaN where interpolator is not defined.
+            Values are NaN where mapping is not defined.
         """
-        n_pings = self._n_pings
-        a = np.full(n_pings, np.nan, dtype=np.float32)
-        b = np.full(n_pings, np.nan, dtype=np.float32)
-        
-        y = np.asarray(self.y_coordinates, dtype=np.float32)
-        if y.size < 2:
-            return a, b
-        
-        # Pick two well-separated points for numerical stability
-        y0 = float(y[0])
-        y1 = float(y[-1])
-        if y1 == y0:
-            y1 = y0 + 1.0
-        
-        for p in range(n_pings):
-            interpolator = self.y_coordinate_indice_interpolator[p]
-            if interpolator is None:
-                continue
-            
-            # Evaluate at two points to extract slope and intercept
-            i0 = float(interpolator(y0))
-            i1 = float(interpolator(y1))
-            
-            bp = (i1 - i0) / (y1 - y0)
-            ap = i0 - bp * y0
-            
-            a[p] = ap
-            b[p] = bp
-        
-        return a, b
+        if self._affine_y_to_sample is None:
+            n_pings = self._n_pings
+            return np.full(n_pings, np.nan, dtype=np.float32), np.full(n_pings, np.nan, dtype=np.float32)
+        return self._affine_y_to_sample
 
     def make_image_request(self) -> EchogramImageRequest:
         """Create a backend-ready request for building the current image.
