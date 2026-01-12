@@ -200,11 +200,11 @@ class EchogramViewerPyQtGraph:
             background = pg.ImageItem(axisOrder="row-major")
             plot.addItem(background)
             high_res = pg.ImageItem(axisOrder="row-major")
-            high_res.setOpacity(0.85)
+            # No opacity - high_res should fully cover background
             high_res.hide()
             plot.addItem(high_res)
             layer = pg.ImageItem(axisOrder="row-major")
-            layer.setOpacity(0.65)
+            #layer.setOpacity(0.65)  # Layer keeps transparency to blend with main image
             layer.hide()
             plot.addItem(layer)
             self.plot_items.append(plot)
@@ -320,9 +320,10 @@ class EchogramViewerPyQtGraph:
         
         This works in Jupyter because Jupyter has an asyncio event loop running.
         """
-        # If already loading, cancel it and schedule a new update
+        # If already loading, mark dirty and let it complete
         if self._is_loading:
-            self._cancel_pending_load()  # Cancel immediately
+            self._view_changed_during_load = True
+            return
         
         # Cancel any existing debounce task
         if self._debounce_task is not None and not self._debounce_task.done():
