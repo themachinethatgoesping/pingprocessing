@@ -991,7 +991,9 @@ class EchogramBuilder:
             
             # Use generic get_chunk - backends optimize this internally
             chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
-            wci_mmap[chunk_start:chunk_end, :chunk_data.shape[1]] = chunk_data
+            # Truncate to mmap size if chunk is larger (can happen due to rounding in sample counts)
+            n_cols = min(chunk_data.shape[1], max_samples)
+            wci_mmap[chunk_start:chunk_end, :n_cols] = chunk_data[:, :n_cols]
             del chunk_data
             
             pings_written += chunk_end - chunk_start

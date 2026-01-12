@@ -165,12 +165,15 @@ class EchogramDataBackend(ABC):
             2D array of shape (end_ping - start_ping, max_samples).
         """
         n_pings = end_ping - start_ping
-        max_samples = int(self.max_sample_counts[start_ping:end_ping].max()) + 1
+        # First pass: get all columns and find actual max length
+        columns = [self.get_column(ping_idx) for ping_idx in range(start_ping, end_ping)]
+        max_samples = max(len(col) for col in columns) if columns else 0
         
         chunk = np.full((n_pings, max_samples), np.nan, dtype=np.float32)
-        for i, ping_idx in enumerate(range(start_ping, end_ping)):
-            col = self.get_column(ping_idx)
+        for i, col in enumerate(columns):
             chunk[i, :len(col)] = col
+        
+        return chunk
         
         return chunk
 

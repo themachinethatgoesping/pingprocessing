@@ -264,7 +264,7 @@ class EchogramViewer:
         # Also connect to draw_event as a fallback
         self.fig.canvas.mpl_connect('draw_event', self._on_draw_event)
         # Store initial view range
-        if self.axes:
+        if len(self.axes) > 0:
             self._last_view_range = (
                 tuple(self.axes[0].get_xlim()),
                 tuple(self.axes[0].get_ylim())
