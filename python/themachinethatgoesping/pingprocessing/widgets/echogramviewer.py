@@ -1,13 +1,15 @@
 from time import time
 import types
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, Future
+import threading
 
 import ipywidgets
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from IPython.display import display
 import asyncio
-from typing import Optional, Any
+from typing import Optional, Any, List, Tuple, Dict
 
 import themachinethatgoesping as theping
 import themachinethatgoesping.pingprocessing.watercolumn.echograms as echograms
@@ -159,6 +161,14 @@ class EchogramViewer:
         self._last_view_range: Optional[tuple] = None
         self._ignore_range_changes = False
         
+        # Background loading state
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="echogram_loader")
+        self._cancel_flag = threading.Event()
+        self._loading_future: Optional[Future] = None
+        self._is_loading = False
+        self._is_shutting_down = False  # Flag to prevent new tasks during shutdown
+        self._view_changed_during_load = False  # Track if view changed during loading
+        
         # Auto-update checkbox
         self.w_auto_update = ipywidgets.Checkbox(
             value=auto_update,
@@ -166,6 +176,18 @@ class EchogramViewer:
             indent=False,
         )
         self.w_auto_update.observe(self._on_auto_update_toggle, names="value")
+        
+        # Navigation buttons (pan by 25%)
+        self._nav_fraction = 0.25
+        self.btn_nav_left = ipywidgets.Button(description='\u25c0', layout=ipywidgets.Layout(width='40px'), tooltip='Pan left')
+        self.btn_nav_right = ipywidgets.Button(description='\u25b6', layout=ipywidgets.Layout(width='40px'), tooltip='Pan right')
+        self.btn_nav_up = ipywidgets.Button(description='\u25b2', layout=ipywidgets.Layout(width='40px'), tooltip='Pan up')
+        self.btn_nav_down = ipywidgets.Button(description='\u25bc', layout=ipywidgets.Layout(width='40px'), tooltip='Pan down')
+        
+        self.btn_nav_left.on_click(lambda _: self.pan_view('left', self._nav_fraction))
+        self.btn_nav_right.on_click(lambda _: self.pan_view('right', self._nav_fraction))
+        self.btn_nav_up.on_click(lambda _: self.pan_view('up', self._nav_fraction))
+        self.btn_nav_down.on_click(lambda _: self.pan_view('down', self._nav_fraction))
         
         # observers for view changers
         for w in [self.w_vmin, self.w_vmax, self.w_interpolation]:
@@ -175,6 +197,11 @@ class EchogramViewer:
                 self.update_button, 
                 self.clear_button,
                 self.w_auto_update,
+                ipywidgets.Label('  Nav:'),
+                self.btn_nav_left,
+                self.btn_nav_up,
+                self.btn_nav_down,
+                self.btn_nav_right,
         ])
         self.box_sliders = ipywidgets.HBox([
                 self.w_vmin, 
@@ -259,9 +286,9 @@ class EchogramViewer:
 
     def _setup_auto_update(self) -> None:
         """Set up canvas events for auto-update on zoom/pan."""
-        # Use button_release_event which fires after zoom/pan toolbar operations
+        # Use button_release_event - fires after zoom/pan toolbar operations
         self.fig.canvas.mpl_connect('button_release_event', self._on_mouse_release)
-        # Also connect to draw_event as a fallback
+        # Use draw_event as backup - fires after any canvas redraw
         self.fig.canvas.mpl_connect('draw_event', self._on_draw_event)
         # Store initial view range
         if len(self.axes) > 0:
@@ -270,6 +297,15 @@ class EchogramViewer:
                 tuple(self.axes[0].get_ylim())
             )
 
+    def _on_mouse_release(self, event) -> None:
+        """Called on mouse button release - check if view changed."""
+        self._check_view_changed()
+
+    def _on_draw_event(self, event) -> None:
+        """Called after canvas draw - check if view changed."""
+        # This catches zoom/pan that don't trigger button_release
+        self._check_view_changed()
+
     def _on_auto_update_toggle(self, change) -> None:
         """Handle auto-update checkbox toggle."""
         self._auto_update_enabled = change["new"]
@@ -277,38 +313,40 @@ class EchogramViewer:
             self._debounce_task.cancel()
             self._debounce_task = None
 
-    def _on_mouse_release(self, event) -> None:
-        """Called on mouse button release - check if view changed."""
-        self._check_view_changed()
-
-    def _on_draw_event(self, event) -> None:
-        """Called after canvas draw - check if view changed."""
-        self._check_view_changed()
-
     def _check_view_changed(self) -> None:
-        """Check if view range changed and schedule update if needed."""
+        """Check if view range changed significantly and schedule update if needed."""
         if not self._auto_update_enabled:
             return
         if self._ignore_range_changes:
             return
-        if not self.axes:
+        if len(self.axes) == 0:
             return
         
         # Get current view range from first axis
-        current_range = (
-            tuple(self.axes[0].get_xlim()),
-            tuple(self.axes[0].get_ylim())
-        )
+        current_xlim = self.axes[0].get_xlim()
+        current_ylim = self.axes[0].get_ylim()
+        current_range = (current_xlim, current_ylim)
         
-        # Only trigger if view range actually changed
-        if current_range != self._last_view_range:
-            print(f"DEBUG: View range changed, scheduling update")
-            self._last_view_range = current_range
-            self._last_range_change_time = time()
-            self._schedule_debounced_update()
+        # Check if view range actually changed significantly
+        if self._last_view_range is not None:
+            old_xlim, old_ylim = self._last_view_range
+            # Use relative tolerance to ignore tiny floating point differences
+            x_changed = not np.allclose(current_xlim, old_xlim, rtol=1e-6)
+            y_changed = not np.allclose(current_ylim, old_ylim, rtol=1e-6)
+            if not (x_changed or y_changed):
+                return
+        
+        self._last_view_range = current_range
+        self._last_range_change_time = time()
+        self._schedule_debounced_update()
 
     def _schedule_debounced_update(self) -> None:
         """Schedule a debounced auto-update using asyncio."""
+        # If already loading, mark dirty and let it complete (don't cancel - matplotlib is slower)
+        if self._is_loading:
+            self._view_changed_during_load = True
+            return
+        
         # Cancel any existing debounce task
         if self._debounce_task is not None and not self._debounce_task.done():
             self._debounce_task.cancel()
@@ -320,8 +358,9 @@ class EchogramViewer:
                 # Check if more changes happened during the wait
                 elapsed = time() - self._last_range_change_time
                 if elapsed >= (self._auto_update_delay_ms / 1000.0) - 0.01:
-                    # No new changes, call the same function as the update button
-                    self.show_background_zoom()
+                    # Only trigger if not already loading
+                    if not self._is_loading:
+                        self.show_background_zoom()
             except asyncio.CancelledError:
                 pass  # Task was cancelled by a new range change
         
@@ -333,78 +372,267 @@ class EchogramViewer:
             # No running event loop - fall back to immediate update
             self.show_background_zoom()
             
-    def show_background_zoom(self, event = 0):
-        with self.output:
-            self.high_res_images, self.high_res_extents = [],[]
-            self.layer_images, self.layer_extents = [],[]
-
-            #check x/y axis
-            for i,echogram in enumerate(self.echogramdata):
-                self.progress.set_description('Updating echogram')
-                x_name, y_name = _get_axis_names(echogram)
-                if x_name != self.x_axis_name or y_name != self.y_axis_name:
-                    self.show_background_echogram()
-                    break
-                    
-            for i,echogram in enumerate(self.echogramdata):
-                self.progress.set_description(f'Updating echogram [{i},{len(self.echogramdata)}]')
-                
-                xmin,xmax = self.axes[i].get_xlim()
-                ymin,ymax = sorted(self.axes[i].get_ylim())
-                x_kwargs = echogram.get_x_kwargs()
-                y_kwargs = echogram.get_y_kwargs()
+    def show_background_zoom(self, event=0) -> None:
+        """Trigger a background load for the current zoom level.
         
-                match self.x_axis_name:
-                    case 'Date time':
-                        tmin,tmax = mdates.num2date([xmin, xmax])
-                        x_kwargs['min_ping_time'] = tmin
-                        x_kwargs['max_ping_time'] = tmax
-                        echogram.set_x_axis_date_time(**x_kwargs)
-                    case 'Ping number':
-                        x_kwargs['min_ping_nr'] = xmin
-                        x_kwargs['max_ping_nr'] = xmax
-                        echogram.set_x_axis_ping_nr(**x_kwargs)
-                    case 'Ping time':
-                        x_kwargs['min_timestamp'] = xmin
-                        x_kwargs['max_timestamp'] = xmax
-                        echogram.set_x_axis_ping_time(**x_kwargs)
-                    case _:
-                        raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+        This method is non-blocking: it starts loading in a background thread
+        and updates the view when complete.
+        """
+        # Don't start new tasks if shutting down
+        if self._is_shutting_down:
+            return
+        
+        # Cancel any pending load
+        self._cancel_pending_load()
+        
+        # Check if axis names changed (needs full reload)
+        for echogram in self.echogramdata:
+            x_name, y_name = _get_axis_names(echogram)
+            if x_name != self.x_axis_name or y_name != self.y_axis_name:
+                self.show_background_echogram()
+                return
+        
+        # Capture current view limits for background thread
+        view_params = self._capture_view_params()
+        
+        # Start background loading
+        self._is_loading = True
+        self._view_changed_during_load = False  # Reset flag
+        self._cancel_flag.clear()
+        self.progress.set_description('Loading...')
+        
+        # Store reference to self for use in nested functions
+        viewer = self
+        
+        def load_images():
+            """Background thread: load images for all echograms."""
+            high_res_images = []
+            high_res_extents = []
+            layer_images = []
+            layer_extents = []
+            
+            for i, (echogram, params) in enumerate(zip(viewer.echogramdata, view_params)):
+                # Check for cancellation
+                if viewer._cancel_flag.is_set():
+                    return None  # Cancelled
                 
-                match self.y_axis_name:
-                    case 'Depth (m)':
-                        y_kwargs['min_depth'] = ymin
-                        y_kwargs['max_depth'] = ymax
-                        echogram.set_y_axis_depth(**y_kwargs)
-                    case 'Range (m)':
-                        y_kwargs['min_range'] = ymin
-                        y_kwargs['max_range'] = ymax
-                        echogram.set_y_axis_range(**y_kwargs)
-                    case 'Sample number':
-                        y_kwargs['min_sample_nr'] = ymin
-                        y_kwargs['max_sample_nr'] = ymax
-                        echogram.set_y_axis_sample_nr(**y_kwargs)
-                    case 'Y indice':
-                        y_kwargs['min_sample_nr'] = ymin
-                        y_kwargs['max_sample_nr'] = ymax
-                        echogram.set_y_axis_y_indice(**y_kwargs)
-                    case _:
-                        raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
+                # Apply axis limits
+                viewer._apply_axis_limits_to_echogram(echogram, params)
                 
+                # Build image (progress=None to avoid thread-unsafe widget updates)
                 if len(echogram.layers.keys()) == 0 and echogram.main_layer is None:
-                    im,ex = echogram.build_image(progress=self.progress)
-                    self.high_res_images.append(im)
-                    self.high_res_extents.append(ex)
+                    im, ex = echogram.build_image(progress=None)
+                    high_res_images.append(im)
+                    high_res_extents.append(ex)
+                    layer_images.append(None)
+                    layer_extents.append(None)
                 else:
-                    im,im_layer,ex = echogram.build_image_and_layer_image(progress=self.progress)
-
-                    self.high_res_images.append(im)
-                    self.high_res_extents.append(ex)
-                    self.layer_images.append(im_layer)
-                    self.layer_extents.append(ex)
-        self.update_view()
+                    im, im_layer, ex = echogram.build_image_and_layer_image(progress=None)
+                    high_res_images.append(im)
+                    high_res_extents.append(ex)
+                    layer_images.append(im_layer)
+                    layer_extents.append(ex)
+            
+            return (high_res_images, high_res_extents, layer_images, layer_extents)
         
-        self.progress.description = 'Idle'
+        def apply_results(result):
+            """Apply loaded results to the viewer (must run on main thread)."""
+            viewer._is_loading = False
+            if result is None:
+                # Cancelled
+                viewer.progress.set_description('Cancelled')
+                # Check if view changed during loading
+                if viewer._view_changed_during_load:
+                    viewer._view_changed_during_load = False
+                    viewer._schedule_debounced_update()
+                return
+            
+            high_res_images, high_res_extents, layer_images, layer_extents = result
+            viewer.high_res_images = high_res_images
+            viewer.high_res_extents = high_res_extents
+            viewer.layer_images = layer_images
+            viewer.layer_extents = layer_extents
+            
+            viewer.update_view()
+            viewer.progress.set_description('Idle')
+            
+            # Check if view changed during loading - need another update
+            if viewer._view_changed_during_load:
+                viewer._view_changed_during_load = False
+                viewer._schedule_debounced_update()
+        
+        async def run_in_background():
+            """Async wrapper to run loading in thread pool and update on main thread."""
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(viewer._executor, load_images)
+                # This runs on the main thread (asyncio event loop thread)
+                apply_results(result)
+            except Exception as e:
+                viewer._is_loading = False
+                with viewer.output:
+                    print(f"Error loading echogram: {e}")
+                viewer.progress.set_description('Error')
+        
+        # Schedule the async task
+        try:
+            loop = asyncio.get_running_loop()
+            self._loading_future = loop.create_task(run_in_background())
+        except RuntimeError:
+            # No event loop - fall back to synchronous
+            result = load_images()
+            apply_results(result)
+    
+    def _cancel_pending_load(self) -> None:
+        """Cancel any pending background load."""
+        self._cancel_flag.set()
+        if self._loading_future is not None:
+            try:
+                self._loading_future.cancel()
+            except Exception:
+                pass
+            self._loading_future = None
+        self._is_loading = False
+    
+    def _capture_view_params(self) -> List[Dict]:
+        """Capture current view parameters for all axes."""
+        params = []
+        for i, ax in enumerate(self.axes):
+            xmin, xmax = ax.get_xlim()
+            ymin, ymax = sorted(ax.get_ylim())
+            params.append({
+                'xmin': xmin, 'xmax': xmax,
+                'ymin': ymin, 'ymax': ymax,
+            })
+        return params
+    
+    # =========================================================================
+    # Arrow key navigation
+    # =========================================================================
+    
+    def pan_view(self, direction: str, fraction: float = 0.25) -> None:
+        """Pan the view in the specified direction.
+        
+        Args:
+            direction: One of 'left', 'right', 'up', 'down'
+            fraction: Fraction of the current view width/height to pan (default 25%)
+        """
+        if len(self.axes) == 0:
+            return
+        
+        ax = self.axes[0]  # Use first axis as reference
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        
+        x_span = x_max - x_min
+        y_span = abs(y_max - y_min)
+        
+        dx, dy = 0.0, 0.0
+        if direction == 'left':
+            dx = -x_span * fraction
+        elif direction == 'right':
+            dx = x_span * fraction
+        elif direction == 'up':
+            # Up means shallower depth (smaller y values visible)
+            dy = y_span * fraction
+        elif direction == 'down':
+            # Down means deeper (larger y values visible)
+            dy = -y_span * fraction
+        
+        # Apply pan to all axes
+        self._ignore_range_changes = True
+        try:
+            for ax in self.axes:
+                ax.set_xlim(x_min + dx, x_max + dx)
+                if y_min < y_max:  # Normal orientation
+                    ax.set_ylim(y_min - dy, y_max - dy)
+                else:  # Inverted Y axis (depth increases downward)
+                    ax.set_ylim(y_min + dy, y_max + dy)
+        finally:
+            self._ignore_range_changes = False
+        
+        self.fig.canvas.draw_idle()
+        
+        # Trigger debounced update for high-res data
+        self._last_range_change_time = time()
+        self._schedule_debounced_update()
+    
+    def set_nav_fraction(self, fraction: float = 0.25) -> None:
+        """Set the fraction of view to pan per button click.
+        
+        Args:
+            fraction: Fraction of view to pan (default 25%)
+        """
+        self._nav_fraction = fraction
+    
+    def _apply_axis_limits_to_echogram(self, echogram, params: Dict) -> None:
+        """Apply captured axis limits to an echogram."""
+        xmin, xmax = params['xmin'], params['xmax']
+        ymin, ymax = params['ymin'], params['ymax']
+        
+        x_kwargs = echogram.get_x_kwargs()
+        y_kwargs = echogram.get_y_kwargs()
+        
+        match self.x_axis_name:
+            case 'Date time':
+                tmin, tmax = mdates.num2date([xmin, xmax])
+                x_kwargs['min_ping_time'] = tmin
+                x_kwargs['max_ping_time'] = tmax
+                echogram.set_x_axis_date_time(**x_kwargs)
+            case 'Ping number':
+                x_kwargs['min_ping_nr'] = xmin
+                x_kwargs['max_ping_nr'] = xmax
+                echogram.set_x_axis_ping_nr(**x_kwargs)
+            case 'Ping time':
+                x_kwargs['min_timestamp'] = xmin
+                x_kwargs['max_timestamp'] = xmax
+                echogram.set_x_axis_ping_time(**x_kwargs)
+            case _:
+                raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
+        
+        match self.y_axis_name:
+            case 'Depth (m)':
+                y_kwargs['min_depth'] = ymin
+                y_kwargs['max_depth'] = ymax
+                echogram.set_y_axis_depth(**y_kwargs)
+            case 'Range (m)':
+                y_kwargs['min_range'] = ymin
+                y_kwargs['max_range'] = ymax
+                echogram.set_y_axis_range(**y_kwargs)
+            case 'Sample number':
+                y_kwargs['min_sample_nr'] = ymin
+                y_kwargs['max_sample_nr'] = ymax
+                echogram.set_y_axis_sample_nr(**y_kwargs)
+            case 'Y indice':
+                y_kwargs['min_sample_nr'] = ymin
+                y_kwargs['max_sample_nr'] = ymax
+                echogram.set_y_axis_y_indice(**y_kwargs)
+            case _:
+                raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
+    
+    def cleanup(self) -> None:
+        """Clean up resources (call when done with the viewer)."""
+        self._is_shutting_down = True
+        self._cancel_pending_load()
+        
+        # Cancel debounce task
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+            self._debounce_task = None
+        
+        # Shutdown executor (don't wait to avoid blocking)
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 doesn't have cancel_futures
+            self._executor.shutdown(wait=False)
+    
+    def __del__(self) -> None:
+        """Destructor to ensure cleanup when viewer is garbage collected."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass  # Ignore errors during destruction
 
     def invert_y_axis(self):
         with self.output:
@@ -460,7 +688,7 @@ class EchogramViewer:
                             miny = np.nanmin([ylim[1],miny])
                             maxy = np.nanmax([ylim[0],maxy])
                         
-                        if len(self.high_res_images) > i:
+                        if len(self.high_res_images) > i and self.high_res_images[i] is not None:
                             #zorder+=1
                             self.mapables.append(
                                 ax.imshow(self.high_res_images[i].transpose(), 
@@ -468,7 +696,7 @@ class EchogramViewer:
                                             #zorder=zorder, 
                                             **self.get_args_plot(i)))
 
-                        if len(self.layer_images) > i:
+                        if len(self.layer_images) > i and self.layer_images[i] is not None:
                             #zorder+=1
                             self.mapables.append(
                                 ax.imshow(self.layer_images[i].transpose(), 

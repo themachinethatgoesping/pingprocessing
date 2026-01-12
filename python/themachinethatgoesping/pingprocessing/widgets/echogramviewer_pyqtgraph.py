@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -121,7 +123,24 @@ class EchogramViewerPyQtGraph:
             indent=False,
         )
         self.w_auto_update.observe(self._on_auto_update_toggle, names="value")
-        self.box_buttons = ipywidgets.HBox([self.update_button, self.clear_button, self.w_auto_update])
+        
+        # Navigation buttons (pan by 25%)
+        self._nav_fraction = 0.25
+        self.btn_nav_left = ipywidgets.Button(description='\u25c0', layout=ipywidgets.Layout(width='40px'), tooltip='Pan left')
+        self.btn_nav_right = ipywidgets.Button(description='\u25b6', layout=ipywidgets.Layout(width='40px'), tooltip='Pan right')
+        self.btn_nav_up = ipywidgets.Button(description='\u25b2', layout=ipywidgets.Layout(width='40px'), tooltip='Pan up')
+        self.btn_nav_down = ipywidgets.Button(description='\u25bc', layout=ipywidgets.Layout(width='40px'), tooltip='Pan down')
+        
+        self.btn_nav_left.on_click(lambda _: self.pan_view('left', self._nav_fraction))
+        self.btn_nav_right.on_click(lambda _: self.pan_view('right', self._nav_fraction))
+        self.btn_nav_up.on_click(lambda _: self.pan_view('up', self._nav_fraction))
+        self.btn_nav_down.on_click(lambda _: self.pan_view('down', self._nav_fraction))
+        
+        self.box_buttons = ipywidgets.HBox([
+            self.update_button, self.clear_button, self.w_auto_update,
+            ipywidgets.Label('  Nav:'),
+            self.btn_nav_left, self.btn_nav_up, self.btn_nav_down, self.btn_nav_right,
+        ])
 
         self.plot_items: List[pg.PlotItem] = []
         self.image_layers: List[Dict[str, pg.ImageItem]] = []
@@ -146,6 +165,14 @@ class EchogramViewerPyQtGraph:
         self._debounce_task: Optional[asyncio.Task] = None
         self._startup_complete = False  # Flag to ignore initial draws
         self._original_request_draw = None  # Will be set in _setup_auto_update
+        
+        # Background loading state
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="echogram_loader")
+        self._cancel_flag = threading.Event()
+        self._loading_future: Optional[asyncio.Task] = None  # Can be asyncio.Task or None
+        self._is_loading = False
+        self._is_shutting_down = False  # Flag to prevent new tasks during shutdown
+        self._view_changed_during_load = False  # Track if view changed during loading
 
         self._make_plot_items()
         self._connect_scene_events()
@@ -256,16 +283,28 @@ class EchogramViewerPyQtGraph:
             if not viewer._auto_update_enabled or viewer._ignore_range_changes:
                 return
             
+            # Skip if currently loading
+            if viewer._is_loading:
+                return
+            
             # Get current view range
             if viewer.plot_items:
                 vb = viewer.plot_items[0].getViewBox()
-                current_range = tuple(tuple(r) for r in vb.viewRange())
+                current_range = vb.viewRange()
                 
-                # Only trigger if view range actually changed
-                if current_range != viewer._last_view_range:
-                    viewer._last_view_range = current_range
-                    viewer._last_range_change_time = time.time()
-                    viewer._schedule_debounced_update()
+                # Check if view range actually changed significantly
+                if viewer._last_view_range is not None:
+                    old_x, old_y = viewer._last_view_range
+                    new_x, new_y = current_range
+                    # Use relative tolerance to ignore tiny floating point differences
+                    x_changed = not np.allclose(old_x, new_x, rtol=1e-6)
+                    y_changed = not np.allclose(old_y, new_y, rtol=1e-6)
+                    if not (x_changed or y_changed):
+                        return
+                
+                viewer._last_view_range = current_range
+                viewer._last_range_change_time = time.time()
+                viewer._schedule_debounced_update()
         
         self.graphics.request_draw = patched_request_draw
 
@@ -281,6 +320,10 @@ class EchogramViewerPyQtGraph:
         
         This works in Jupyter because Jupyter has an asyncio event loop running.
         """
+        # If already loading, cancel it and schedule a new update
+        if self._is_loading:
+            self._cancel_pending_load()  # Cancel immediately
+        
         # Cancel any existing debounce task
         if self._debounce_task is not None and not self._debounce_task.done():
             self._debounce_task.cancel()
@@ -292,8 +335,9 @@ class EchogramViewerPyQtGraph:
                 # Check if more changes happened during the wait
                 elapsed = time.time() - self._last_range_change_time
                 if elapsed >= (self._auto_update_delay_ms / 1000.0) - 0.01:
-                    # No new changes, call the same function as the update button
-                    self.show_background_zoom()
+                    # Only trigger if not already loading
+                    if not self._is_loading:
+                        self.show_background_zoom()
             except asyncio.CancelledError:
                 pass  # Task was cancelled by a new range change
         
@@ -307,8 +351,27 @@ class EchogramViewerPyQtGraph:
 
     def cleanup(self) -> None:
         """Clean up resources (call when done with the viewer)."""
+        self._is_shutting_down = True
+        self._cancel_pending_load()
+        
+        # Cancel debounce task
         if self._debounce_task is not None and not self._debounce_task.done():
             self._debounce_task.cancel()
+            self._debounce_task = None
+        
+        # Shutdown executor (don't wait to avoid blocking)
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 doesn't have cancel_futures
+            self._executor.shutdown(wait=False)
+    
+    def __del__(self) -> None:
+        """Destructor to ensure cleanup when viewer is garbage collected."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass  # Ignore errors during destruction
 
     def _refresh_axis_items(self) -> None:
         if not self.plot_items:
@@ -403,30 +466,190 @@ class EchogramViewerPyQtGraph:
             self.output.clear_output()
 
     def show_background_zoom(self, _event: Any = None) -> None:
-        with self.output:
-            self.high_res_images = [None] * self.nechograms
-            self.high_res_extents = [None] * self.nechograms
-            self.layer_images = [None] * self.nechograms
-            self.layer_extents = [None] * self.nechograms
-            for idx, echogram in enumerate(self.echogramdata):
-                self.progress.set_description(f"Updating echogram [{idx},{self.nechograms}]")
-                view = self.plot_items[idx].getViewBox()
-                xmin, xmax = view.viewRange()[0]
-                ymin, ymax = view.viewRange()[1]
-                self._apply_axis_limits(echogram, xmin, xmax, ymin, ymax)
+        """Trigger a background load for the current zoom level.
+        
+        This method is non-blocking: it starts loading in a background thread
+        and updates the view when complete.
+        """
+        # Don't start new tasks if shutting down
+        if self._is_shutting_down:
+            return
+        
+        # Cancel any pending load
+        self._cancel_pending_load()
+        
+        # Capture current view limits for background thread
+        view_params = self._capture_view_params()
+        
+        # Start background loading
+        self._is_loading = True
+        self._view_changed_during_load = False  # Reset flag
+        self._cancel_flag.clear()
+        self.progress.set_description('Loading...')
+        
+        # Store reference to self for use in nested functions
+        viewer = self
+        
+        def load_images():
+            """Background thread: load images for all echograms."""
+            high_res_images: List[Optional[np.ndarray]] = [None] * viewer.nechograms
+            high_res_extents: List[Optional[Tuple]] = [None] * viewer.nechograms
+            layer_images: List[Optional[np.ndarray]] = [None] * viewer.nechograms
+            layer_extents: List[Optional[Tuple]] = [None] * viewer.nechograms
+            
+            for idx, (echogram, params) in enumerate(zip(viewer.echogramdata, view_params)):
+                # Check for cancellation
+                if viewer._cancel_flag.is_set():
+                    return None  # Cancelled
+                
+                # Apply axis limits
+                xmin, xmax, ymin, ymax = params['xmin'], params['xmax'], params['ymin'], params['ymax']
+                viewer._apply_axis_limits(echogram, xmin, xmax, ymin, ymax)
+                
+                # Build image (progress=None to avoid thread-unsafe widget updates)
                 if len(echogram.layers) == 0 and echogram.main_layer is None:
-                    image, extent = echogram.build_image(progress=self.progress)
-                    self.high_res_images[idx] = image
-                    self.high_res_extents[idx] = extent
+                    image, extent = echogram.build_image(progress=None)
+                    high_res_images[idx] = image
+                    high_res_extents[idx] = extent
                 else:
-                    image, layer_img, extent = echogram.build_image_and_layer_image(progress=self.progress)
-                    self.high_res_images[idx] = image
-                    self.high_res_extents[idx] = extent
-                    self.layer_images[idx] = layer_img
-                    self.layer_extents[idx] = extent
-            self.update_view()
-            self._process_qt_events()
-            self.progress.set_description("Idle")
+                    image, layer_img, extent = echogram.build_image_and_layer_image(progress=None)
+                    high_res_images[idx] = image
+                    high_res_extents[idx] = extent
+                    layer_images[idx] = layer_img
+                    layer_extents[idx] = extent
+            
+            return (high_res_images, high_res_extents, layer_images, layer_extents)
+        
+        def apply_results(result):
+            """Apply loaded results to the viewer (must run on main thread)."""
+            viewer._is_loading = False
+            if result is None:
+                # Cancelled
+                viewer.progress.set_description('Cancelled')
+                # Check if view changed during loading
+                if viewer._view_changed_during_load:
+                    viewer._view_changed_during_load = False
+                    viewer._schedule_debounced_update()
+                return
+            
+            high_res_images, high_res_extents, layer_images, layer_extents = result
+            viewer.high_res_images = high_res_images
+            viewer.high_res_extents = high_res_extents
+            viewer.layer_images = layer_images
+            viewer.layer_extents = layer_extents
+            
+            viewer.update_view()
+            viewer._process_qt_events()
+            viewer.progress.set_description('Idle')
+            
+            # Check if view changed during loading - need another update
+            if viewer._view_changed_during_load:
+                viewer._view_changed_during_load = False
+                viewer._schedule_debounced_update()
+        
+        async def run_in_background():
+            """Async wrapper to run loading in thread pool and update on main thread."""
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(viewer._executor, load_images)
+                # This runs on the main thread (asyncio event loop thread)
+                apply_results(result)
+            except Exception as e:
+                viewer._is_loading = False
+                with viewer.output:
+                    print(f"Error loading echogram: {e}")
+                viewer.progress.set_description('Error')
+        
+        # Schedule the async task
+        try:
+            loop = asyncio.get_running_loop()
+            self._loading_future = loop.create_task(run_in_background())
+        except RuntimeError:
+            # No event loop - fall back to synchronous
+            result = load_images()
+            apply_results(result)
+    
+    def _cancel_pending_load(self) -> None:
+        """Cancel any pending background load."""
+        self._cancel_flag.set()
+        if self._loading_future is not None:
+            try:
+                self._loading_future.cancel()
+            except Exception:
+                pass
+            self._loading_future = None
+        self._is_loading = False
+    
+    def _capture_view_params(self) -> List[Dict[str, float]]:
+        """Capture current view parameters for all plot items."""
+        params = []
+        for idx, plot in enumerate(self.plot_items):
+            view = plot.getViewBox()
+            xmin, xmax = view.viewRange()[0]
+            ymin, ymax = view.viewRange()[1]
+            params.append({
+                'xmin': xmin, 'xmax': xmax,
+                'ymin': ymin, 'ymax': ymax,
+            })
+        return params
+    
+    # =========================================================================
+    # Arrow key navigation
+    # =========================================================================
+    
+    def pan_view(self, direction: str, fraction: float = 0.25) -> None:
+        """Pan the view in the specified direction.
+        
+        Args:
+            direction: One of 'left', 'right', 'up', 'down'
+            fraction: Fraction of the current view width/height to pan (default 25%)
+        """
+        if not self.plot_items:
+            return
+        
+        vb = self.plot_items[0].getViewBox()
+        x_range = vb.viewRange()[0]
+        y_range = vb.viewRange()[1]
+        
+        x_span = x_range[1] - x_range[0]
+        y_span = y_range[1] - y_range[0]
+        
+        dx, dy = 0.0, 0.0
+        if direction == 'left':
+            dx = -x_span * fraction
+        elif direction == 'right':
+            dx = x_span * fraction
+        elif direction == 'up':
+            # Up means shallower (smaller y values) - Y is inverted so use positive
+            dy = y_span * fraction
+        elif direction == 'down':
+            # Down means deeper (larger y values) - Y is inverted so use negative  
+            dy = -y_span * fraction
+        
+        # Apply pan to master view (linked views will follow)
+        new_x = (x_range[0] + dx, x_range[1] + dx)
+        new_y = (y_range[0] + dy, y_range[1] + dy)
+        
+        self._ignore_range_changes = True
+        try:
+            vb.setXRange(new_x[0], new_x[1], padding=0)
+            vb.setYRange(new_y[0], new_y[1], padding=0)
+        finally:
+            self._ignore_range_changes = False
+        
+        self._request_remote_draw()
+        
+        # Trigger debounced update for high-res data
+        self._last_range_change_time = time.time()
+        self._schedule_debounced_update()
+    
+    def set_nav_fraction(self, fraction: float = 0.25) -> None:
+        """Set the fraction of view to pan per button click.
+        
+        Args:
+            fraction: Fraction of view to pan (default 25%)
+        """
+        self._nav_fraction = fraction
 
     def _apply_axis_limits(self, echogram: Any, xmin: float, xmax: float, ymin: float, ymax: float) -> None:
         x_kwargs = echogram.get_x_kwargs()
