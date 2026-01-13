@@ -10,11 +10,10 @@ from .echogrambuilder import EchogramBuilder
 
 # backends (convenience exports)
 from .backends import EchogramDataBackend, PingDataBackend, ZarrDataBackend
-from .echogrambuilder_new import EchogramBuilder as EchogramBuilderNew
 
 # New refactored classes
 from .coordinate_system import EchogramCoordinateSystem
-from .echogrambuilder_refactored import EchogramBuilder as EchogramBuilderNew2
+from .echogrambuilder_new import EchogramBuilder as EchogramBuilderNew
 from .indexers import EchogramImageRequest
 
 

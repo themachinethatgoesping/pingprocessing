@@ -8,4 +8,6 @@ from .wciviewer import *
 from .echogramviewer import *
 from .wciviewer_pyqtgraph import *
 from .echogramviewer_pyqtgraph import *
+from .echogramviewer_pyqtgraph2 import MultiEchogramViewer
+from . import echogramviewer_qtapp
 from . import tools
