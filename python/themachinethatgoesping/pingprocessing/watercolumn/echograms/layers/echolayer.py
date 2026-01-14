@@ -63,8 +63,10 @@ class EchoLayer:
         assert_length("EchoLayer.__init__", vec_x_val, [vec_min_y, vec_max_y])
         
         # convert datetimes to timestamps
-        if len(vec_x_val) > 0 and isinstance(vec_x_val[0], dt.datetime):
-            vec_x_val = [x.timestamp() for x in vec_x_val]
+        if len(vec_x_val) > 0:
+            first_val = vec_x_val.iloc[0] if hasattr(vec_x_val, 'iloc') else vec_x_val[0]
+            if isinstance(first_val, dt.datetime):
+                vec_x_val = [x.timestamp() for x in vec_x_val]
         
         # convert to numpy arrays
         vec_x_val = np.array(vec_x_val).astype(float)

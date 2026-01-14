@@ -660,8 +660,8 @@ class EchogramBuilder:
         
         for ping_idx in ping_indices:
             raw_column = self._backend.get_raw_column(ping_idx)
-            sample_start = layer.i0[ping_idx]
-            sample_end = layer.i1[ping_idx]
+            sample_start = int(layer.i0[ping_idx])
+            sample_end = int(layer.i1[ping_idx])
             
             if sample_start < len(raw_column) and sample_end > sample_start:
                 layer_data = raw_column[sample_start:sample_end]
