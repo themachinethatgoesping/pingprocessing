@@ -109,7 +109,9 @@ class EchogramSlot:
                 self.high_res_image = cached.get('high_res_image')
                 self.high_res_extent = cached.get('high_res_extent')
             # Then check parent's global cache
-            elif echogram_key is not None and hasattr(self.parent, '_global_image_cache') and echogram_key in self.parent._global_image_cache:
+            elif (echogram_key is not None
+                  and hasattr(self.parent, '_global_image_cache')
+                  and echogram_key in self.parent._global_image_cache):
                 cached = self.parent._global_image_cache[echogram_key]
                 self.background_image = cached.get('background_image')
                 self.background_extent = cached.get('background_extent')
@@ -188,13 +190,30 @@ class EchogramViewerMultiChannel:
         if isinstance(echogramdata, dict):
             self.echograms: Dict[str, Any] = dict(echogramdata)
             self.echogram_names = list(echogramdata.keys())
-        else:
-            echogramdata = list(echogramdata)
-            if names is not None:
-                self.echogram_names = [n if n else f"Echogram {i}" for i, n in enumerate(names)]
+        elif hasattr(echogramdata, '__iter__') and not isinstance(echogramdata, (str, bytes)):
+            echogramdata_list = list(echogramdata)
+            # Check if this is a single echogram or a list of echograms
+            if len(echogramdata_list) > 0:
+                first_item = echogramdata_list[0]
+                # If first item looks like an echogram (has layers, build_image), treat as single
+                if hasattr(first_item, 'layers') or hasattr(first_item, 'build_image'):
+                    # Single echogram - wrap in dict with "default" key
+                    self.echogram_names = ["default"]
+                    self.echograms = {"default": first_item}
+                else:
+                    # List of echograms
+                    if names is not None:
+                        self.echogram_names = [n if n else f"Echogram {i}" for i, n in enumerate(names)]
+                    else:
+                        self.echogram_names = [f"Echogram {i}" for i in range(len(echogramdata_list))]
+                    self.echograms = {name: eg for name, eg in zip(self.echogram_names, echogramdata_list)}
             else:
-                self.echogram_names = [f"Echogram {i}" for i in range(len(echogramdata))]
-            self.echograms = {name: eg for name, eg in zip(self.echogram_names, echogramdata)}
+                self.echogram_names = []
+                self.echograms = {}
+        else:
+            # Single echogram object - wrap in dict with "default" key
+            self.echogram_names = ["default"]
+            self.echograms = {"default": echogramdata}
         
         # Vertical offsets per echogram
         self.voffsets: Dict[str, float] = {}
@@ -379,6 +398,20 @@ class EchogramViewerMultiChannel:
         self.btn_reset = ipywidgets.Button(description="Reset View", tooltip="Reset to full extent")
         self.btn_reset.on_click(self._on_reset_click)
         
+        self.btn_update_pingline = ipywidgets.Button(
+            description="↻ Ping",
+            tooltip="Update ping line from connected WCI viewer",
+            layout=ipywidgets.Layout(width='70px'),
+        )
+        self.btn_update_pingline.on_click(lambda _: self._update_ping_lines())
+        
+        self.btn_goto_pingline = ipywidgets.Button(
+            description="→ Ping",
+            tooltip="Zoom to current ping line position (center view on pingline)",
+            layout=ipywidgets.Layout(width='70px'),
+        )
+        self.btn_goto_pingline.on_click(lambda _: self._goto_pingline())
+        
         # Navigation buttons
         self._nav_fraction = 0.25
         self.btn_nav_left = ipywidgets.Button(description='◀', layout=ipywidgets.Layout(width='35px'))
@@ -511,6 +544,9 @@ class EchogramViewerMultiChannel:
             slot.crosshair_h.hide()
             plot.addItem(slot.crosshair_v)
             plot.addItem(slot.crosshair_h)
+            
+            # Reset pingline (will be recreated when _update_ping_lines is called)
+            slot.pingline = None
             
             # Link axes to master
             if master_plot is None:
@@ -728,6 +764,10 @@ class EchogramViewerMultiChannel:
         # Update UI to show correct number of slot selectors
         self._update_selector_visibility()
         self._request_remote_draw()
+        
+        # Update ping lines if connected to a pingviewer
+        if self.pingviewer is not None:
+            self._update_ping_lines()
         
         # Trigger high-res update for visible slots
         if self._auto_update_enabled:
@@ -1274,43 +1314,98 @@ class EchogramViewerMultiChannel:
             if slot.pingline:
                 slot.pingline.hide()
     
+    def update_ping_lines(self) -> None:
+        """Public method to update ping lines from connected pingviewer."""
+        self._update_ping_lines()
+    
+    def _get_pingviewer_pings(self) -> Optional[Sequence[Any]]:
+        """Get pings from pingviewer (supports both single and multi-channel viewers)."""
+        if self.pingviewer is None:
+            return None
+        # Multi-channel viewer: get pings from first visible slot
+        if hasattr(self.pingviewer, 'slots'):
+            for slot in self.pingviewer.slots:
+                if slot.is_visible and slot.get_pings() is not None:
+                    return slot.get_pings()
+            return None
+        # Single-channel viewer
+        if hasattr(self.pingviewer, 'imagebuilder'):
+            return self.pingviewer.imagebuilder.pings
+        return None
+    
+    def _get_pingviewer_current_index(self) -> int:
+        """Get current ping index from pingviewer."""
+        if self.pingviewer is None:
+            return 0
+        # Multi-channel viewer
+        if hasattr(self.pingviewer, 'slots'):
+            for slot in self.pingviewer.slots:
+                if slot.is_visible:
+                    return slot.ping_index
+            return 0
+        # Single-channel viewer
+        return self.pingviewer.w_index.value
+    
     def _update_pingviewer_from_coordinate(self, coord: float) -> None:
         """Update pingviewer from x coordinate."""
         if self.pingviewer is None:
             return
+        
+        pings = self._get_pingviewer_pings()
+        if pings is None:
+            return
+        
         match self.x_axis_name:
             case "Ping number" | "Ping index":
-                self.pingviewer.w_index.value = int(max(0, coord))
+                new_idx = int(max(0, min(coord, len(pings) - 1)))
+                self._set_pingviewer_index(new_idx)
             case "Date time":
                 target = self._mpl_num_to_datetime(coord).timestamp()
-                for idx, ping in enumerate(self.pingviewer.imagebuilder.pings):
+                for idx, ping in enumerate(pings):
                     ping_obj = ping if not isinstance(ping, dict) else next(iter(ping.values()))
                     if ping_obj.get_datetime().timestamp() > target:
-                        self.pingviewer.w_index.value = max(0, idx - 1)
+                        self._set_pingviewer_index(max(0, idx - 1))
                         return
-                self.pingviewer.w_index.value = len(self.pingviewer.imagebuilder.pings) - 1
+                self._set_pingviewer_index(len(pings) - 1)
             case "Ping time":
                 target = coord
-                for idx, ping in enumerate(self.pingviewer.imagebuilder.pings):
+                for idx, ping in enumerate(pings):
                     ping_obj = ping if not isinstance(ping, dict) else next(iter(ping.values()))
                     if ping_obj.get_timestamp() > target:
-                        self.pingviewer.w_index.value = max(0, idx - 1)
+                        self._set_pingviewer_index(max(0, idx - 1))
                         return
-                self.pingviewer.w_index.value = len(self.pingviewer.imagebuilder.pings) - 1
+                self._set_pingviewer_index(len(pings) - 1)
+    
+    def _set_pingviewer_index(self, idx: int) -> None:
+        """Set ping index on pingviewer."""
+        if self.pingviewer is None:
+            return
+        # Multi-channel viewer
+        if hasattr(self.pingviewer, 'ping_sliders'):
+            # Set on first visible slot (will trigger sync)
+            for i, slot in enumerate(self.pingviewer.slots):
+                if slot.is_visible:
+                    self.pingviewer.ping_sliders[i].value = idx
+                    break
+        # Single-channel viewer
+        elif hasattr(self.pingviewer, 'w_index'):
+            self.pingviewer.w_index.value = idx
     
     def _update_ping_lines(self) -> None:
         """Update ping lines on all visible plots."""
         if self.pingviewer is None:
             return
         
+        ping = self._get_current_ping()
+        if ping is None:
+            return
+        
         match self.x_axis_name:
             case "Ping number" | "Ping index":
-                value = float(self.pingviewer.w_index.value)
+                value = float(self._get_pingviewer_current_index())
             case "Date time":
-                ping = self._get_current_ping()
                 value = self._datetime_to_mpl_num(ping.get_datetime())
             case "Ping time":
-                ping = self._get_current_ping()
                 value = ping.get_timestamp()
             case _:
                 return
@@ -1327,12 +1422,70 @@ class EchogramViewerMultiChannel:
         
         self._request_remote_draw()
     
-    def _get_current_ping(self) -> Any:
+    def _goto_pingline(self) -> None:
+        """Center the view on the current pingline position.
+        
+        Updates pingline first, then centers view on its x coordinate
+        while keeping current x and y extent.
+        """
+        # First update pinglines to get latest position
+        self._update_ping_lines()
+        
+        # Get pingline x coordinate
+        ping = self._get_current_ping()
+        if ping is None:
+            return
+        
+        match self.x_axis_name:
+            case "Ping number" | "Ping index":
+                pingline_x = float(self._get_pingviewer_current_index())
+            case "Date time":
+                pingline_x = self._datetime_to_mpl_num(ping.get_datetime())
+            case "Ping time":
+                pingline_x = ping.get_timestamp()
+            case _:
+                return
+        
+        # Get current view range
+        master = self._get_master_plot()
+        if master is None:
+            return
+        
+        vb = master.getViewBox()
+        (xmin, xmax), (ymin, ymax) = vb.viewRange()
+        
+        # Calculate current extent
+        x_extent = xmax - xmin
+        
+        # Center on pingline x coordinate, keep y extent
+        new_xmin = pingline_x - x_extent / 2
+        new_xmax = pingline_x + x_extent / 2
+        
+        # Apply new range
+        self._ignore_range_changes = True
+        try:
+            master.setXRange(new_xmin, new_xmax, padding=0)
+        finally:
+            self._ignore_range_changes = False
+        
+        self._request_remote_draw()
+        
+        # Trigger high-res update if auto-update is enabled
+        if self._auto_update_enabled:
+            self._schedule_debounced_update()
+    
+    def _get_current_ping(self) -> Optional[Any]:
         """Get current ping from pingviewer."""
-        ping = self.pingviewer.imagebuilder.pings[self.pingviewer.w_index.value]
-        if isinstance(ping, dict):
-            return next(iter(ping.values()))
-        return ping
+        pings = self._get_pingviewer_pings()
+        if pings is None:
+            return None
+        idx = self._get_pingviewer_current_index()
+        if 0 <= idx < len(pings):
+            ping = pings[idx]
+            if isinstance(ping, dict):
+                return next(iter(ping.values()))
+            return ping
+        return None
     
     # =========================================================================
     # Axis Limits
@@ -1402,7 +1555,7 @@ class EchogramViewerMultiChannel:
         ])
         
         buttons_row = ipywidgets.HBox([
-            self.btn_update, self.btn_reset,
+            self.btn_update, self.btn_reset, self.btn_update_pingline, self.btn_goto_pingline,
             ipywidgets.Label('  Nav:'),
             self.btn_nav_left, self.btn_nav_up, self.btn_nav_down, self.btn_nav_right,
         ])
