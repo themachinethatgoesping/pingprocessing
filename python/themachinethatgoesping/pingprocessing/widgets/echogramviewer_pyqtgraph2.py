@@ -37,14 +37,24 @@ def _get_axis_names(echogram):
 class EchogramSlot:
     """Manages a single echogram display slot with lazy loading."""
     
-    def __init__(self, slot_idx: int, parent: 'MultiEchogramViewer'):
+    def __init__(self, slot_idx: int, parent: 'EchogramViewerMultiChannel'):
         self.slot_idx = slot_idx
         self.parent = parent
         self.echogram_key: Optional[str] = None  # Key into parent.echograms dict
         self.is_visible = False
         self.needs_update = False  # Dirty flag
         
-        # Image data
+        # Per-layer color scales (stored when switching between layers)
+        self.background_levels: Optional[Tuple[float, float]] = None
+        self.layer_levels: Optional[Tuple[float, float]] = None
+        
+        # Active colorbar layer: 'background' or 'layer'
+        self.active_colorbar_layer: str = 'background'
+        
+        # Image data cache - keyed by echogram_key to support re-assignment
+        self._image_cache: Dict[str, Dict[str, Any]] = {}
+        
+        # Image data (current)
         self.background_image: Optional[np.ndarray] = None
         self.background_extent: Optional[Tuple[float, float, float, float]] = None
         self.high_res_image: Optional[np.ndarray] = None
@@ -76,13 +86,45 @@ class EchogramSlot:
     def assign_echogram(self, echogram_key: Optional[str]):
         """Assign an echogram to this slot."""
         if echogram_key != self.echogram_key:
+            # Cache current images if we have them (including high-res)
+            if self.echogram_key is not None and self.background_image is not None:
+                self._image_cache[self.echogram_key] = {
+                    'background_image': self.background_image,
+                    'background_extent': self.background_extent,
+                    'layer_image': self.layer_image,
+                    'layer_extent': self.layer_extent,
+                    'high_res_image': self.high_res_image,
+                    'high_res_extent': self.high_res_extent,
+                }
+            
             self.echogram_key = echogram_key
-            self.background_image = None
-            self.background_extent = None
-            self.high_res_image = None
-            self.high_res_extent = None
-            self.layer_image = None
-            self.layer_extent = None
+            
+            # Check slot's local cache first
+            if echogram_key is not None and echogram_key in self._image_cache:
+                cached = self._image_cache[echogram_key]
+                self.background_image = cached.get('background_image')
+                self.background_extent = cached.get('background_extent')
+                self.layer_image = cached.get('layer_image')
+                self.layer_extent = cached.get('layer_extent')
+                self.high_res_image = cached.get('high_res_image')
+                self.high_res_extent = cached.get('high_res_extent')
+            # Then check parent's global cache
+            elif echogram_key is not None and hasattr(self.parent, '_global_image_cache') and echogram_key in self.parent._global_image_cache:
+                cached = self.parent._global_image_cache[echogram_key]
+                self.background_image = cached.get('background_image')
+                self.background_extent = cached.get('background_extent')
+                self.layer_image = cached.get('layer_image')
+                self.layer_extent = cached.get('layer_extent')
+                self.high_res_image = cached.get('high_res_image')
+                self.high_res_extent = cached.get('high_res_extent')
+            else:
+                self.background_image = None
+                self.background_extent = None
+                self.layer_image = None
+                self.layer_extent = None
+                self.high_res_image = None
+                self.high_res_extent = None
+            
             self.needs_update = True
     
     def get_echogram(self) -> Optional[Any]:
@@ -97,7 +139,7 @@ class EchogramSlot:
         self.high_res_extent = None
 
 
-class MultiEchogramViewer:
+class EchogramViewerMultiChannel:
     """Enhanced multi-echogram viewer with grid layout and lazy updates."""
     
     # Available grid layouts: (rows, cols, label)
@@ -175,9 +217,26 @@ class MultiEchogramViewer:
         self.progress = progress or theping.pingprocessing.widgets.TqdmWidget()
         self.display_progress = progress is None
         
-        # Grid layout state
-        self.grid_rows, self.grid_cols = initial_grid
+        # Grid layout state - adapt to number of echograms if not specified
+        n_echograms = len(self.echogram_names)
+        if initial_grid == (2, 2):  # Default value, auto-adapt
+            if n_echograms == 1:
+                self.grid_rows, self.grid_cols = (1, 1)
+            elif n_echograms == 2:
+                self.grid_rows, self.grid_cols = (1, 2)
+            elif n_echograms <= 4:
+                self.grid_rows, self.grid_cols = (2, 2)
+            elif n_echograms <= 6:
+                self.grid_rows, self.grid_cols = (3, 2)
+            else:
+                self.grid_rows, self.grid_cols = (4, 2)
+        else:
+            self.grid_rows, self.grid_cols = initial_grid
         self.max_slots = 8  # Maximum number of slots
+        
+        # Global image cache for loaded echograms (shared across all slots)
+        # Must be created BEFORE slots so assign_echogram can check it
+        self._global_image_cache: Dict[Any, Dict[str, Any]] = {}
         
         # Create slots
         self.slots: List[EchogramSlot] = []
@@ -262,27 +321,40 @@ class MultiEchogramViewer:
         # Tab buttons for quick single-view access
         self.tab_buttons: List[ipywidgets.Button] = []
         for name in self.echogram_names:
+            name_str = str(name)
             btn = ipywidgets.Button(
-                description=name[:15],  # Truncate long names
-                tooltip=f"Show {name} full-size",
+                description=name_str[:15],  # Truncate long names
+                tooltip=f"Show {name_str} full-size",
                 layout=ipywidgets.Layout(width='auto', min_width='60px'),
             )
             btn.on_click(lambda _, n=name: self._show_single(n))
             self.tab_buttons.append(btn)
         
-        # Color scale sliders
+        # Global color scale sliders (sets all colorbars when changed)
         self.w_vmin = ipywidgets.FloatSlider(
-            description="vmin", min=-150, max=100, step=5,
+            description="vmin (all)", min=-150, max=100, step=5,
             value=self.args_plot["vmin"],
             layout=ipywidgets.Layout(width='250px'),
         )
         self.w_vmax = ipywidgets.FloatSlider(
-            description="vmax", min=-150, max=100, step=5,
+            description="vmax (all)", min=-150, max=100, step=5,
             value=self.args_plot["vmax"],
             layout=ipywidgets.Layout(width='250px'),
         )
-        self.w_vmin.observe(self._on_color_change, names='value')
-        self.w_vmax.observe(self._on_color_change, names='value')
+        self.w_vmin.observe(self._on_global_color_change, names='value')
+        self.w_vmax.observe(self._on_global_color_change, names='value')
+        
+        # Layer selector for colorbar display (applies to all slots)
+        self.w_colorbar_layer = ipywidgets.Dropdown(
+            description="Colorbar:",
+            options=[
+                ("Background", "background"),
+                ("Layer", "layer"),
+            ],
+            value="background",
+            layout=ipywidgets.Layout(width='180px'),
+        )
+        self.w_colorbar_layer.observe(self._on_colorbar_layer_change, names='value')
         
         # Auto-update checkbox
         self.w_auto_update = ipywidgets.Checkbox(
@@ -384,7 +456,7 @@ class MultiEchogramViewer:
             slot.plot_item = plot
             
             # Configure plot
-            title = slot.echogram_key or f"Slot {i+1}"
+            title = str(slot.echogram_key) if slot.echogram_key is not None else f"Slot {i+1}"
             plot.setTitle(title)
             plot.setLabel("left", self.y_axis_name if col == 0 else "")
             plot.setLabel("bottom", self.x_axis_name if row == self.grid_rows - 1 else "")
@@ -403,18 +475,33 @@ class MultiEchogramViewer:
             
             slot.image_layers = {"background": background, "high": high_res, "layer": layer}
             
-            # Create colorbar
+            # Create single colorbar (switches between background and layer)
             try:
                 colorbar = pg.ColorBarItem(
                     label="(dB)",
-                    values=(self.args_plot["vmin"], self.args_plot["vmax"])
+                    values=(self.args_plot["vmin"], self.args_plot["vmax"]),
+                    interactive=True,  # Allow user to drag colorbar
                 )
+                # Initially attach to background image
                 colorbar.setImageItem(background, insert_in=plot)
                 if hasattr(colorbar, "setColorMap"):
                     colorbar.setColorMap(self._colormap)
                 slot.colorbar = colorbar
+                
+                # Initialize per-layer levels
+                slot.background_levels = (self.args_plot["vmin"], self.args_plot["vmax"])
+                slot.layer_levels = (self.args_plot["vmin"], self.args_plot["vmax"])
+                
+                # Connect colorbar level changes to sync images
+                if hasattr(colorbar, 'sigLevelsChanged'):
+                    colorbar.sigLevelsChanged.connect(
+                        lambda cb=colorbar, s=slot: self._on_colorbar_levels_changed(s, cb)
+                    )
             except AttributeError:
                 slot.colorbar = None
+            
+            # No separate layer_colorbar - we use a single colorbar
+            slot.layer_colorbar = None
             
             # Create crosshairs
             pen_cross = pg.mkPen(color='r', width=1, style=QtCore.Qt.PenStyle.DashLine)
@@ -445,14 +532,21 @@ class MultiEchogramViewer:
         if scene is None:
             return
         
-        try:
-            scene.sigMouseClicked.disconnect()
-            scene.sigMouseMoved.disconnect()
-        except (TypeError, RuntimeError):
-            pass
+        # Disconnect existing connections if we have them tracked
+        if hasattr(self, '_scene_click_connection') and self._scene_click_connection is not None:
+            try:
+                scene.sigMouseClicked.disconnect(self._handle_scene_click)
+            except (TypeError, RuntimeError):
+                pass
+        if hasattr(self, '_scene_move_connection') and self._scene_move_connection is not None:
+            try:
+                scene.sigMouseMoved.disconnect(self._handle_scene_move)
+            except (TypeError, RuntimeError):
+                pass
         
-        scene.sigMouseClicked.connect(self._handle_scene_click)
-        scene.sigMouseMoved.connect(self._handle_scene_move)
+        # Connect and track
+        self._scene_click_connection = scene.sigMouseClicked.connect(self._handle_scene_click)
+        self._scene_move_connection = scene.sigMouseMoved.connect(self._handle_scene_move)
     
     def _get_master_plot(self) -> Optional[pg.PlotItem]:
         """Get the first visible plot item (master for axis linking)."""
@@ -480,24 +574,34 @@ class MultiEchogramViewer:
         if echogram is None:
             return
         
-        # Update title
-        slot.plot_item.setTitle(slot.echogram_key)
+        # Disable auto-range during update to prevent view changes
+        vb = slot.plot_item.getViewBox()
+        old_auto_range = vb.autoRangeEnabled()
+        vb.disableAutoRange()
         
-        # Show background image
-        if slot.background_image is not None and slot.background_extent is not None:
-            self._update_slot_image(slot, "background", slot.background_image, slot.background_extent)
-        
-        # Show high-res image if available
-        if slot.high_res_image is not None and slot.high_res_extent is not None:
-            self._update_slot_image(slot, "high", slot.high_res_image, slot.high_res_extent)
-        else:
-            slot.image_layers.get("high", pg.ImageItem()).hide()
-        
-        # Show layer image if available
-        if slot.layer_image is not None and slot.layer_extent is not None:
-            self._update_slot_image(slot, "layer", slot.layer_image, slot.layer_extent)
-        else:
-            slot.image_layers.get("layer", pg.ImageItem()).hide()
+        try:
+            # Update title
+            slot.plot_item.setTitle(str(slot.echogram_key) if slot.echogram_key is not None else "")
+            
+            # Show background image
+            if slot.background_image is not None and slot.background_extent is not None:
+                self._update_slot_image(slot, "background", slot.background_image, slot.background_extent)
+            
+            # Show high-res image if available
+            if slot.high_res_image is not None and slot.high_res_extent is not None:
+                self._update_slot_image(slot, "high", slot.high_res_image, slot.high_res_extent)
+            else:
+                slot.image_layers.get("high", pg.ImageItem()).hide()
+            
+            # Show layer image if available
+            if slot.layer_image is not None and slot.layer_extent is not None:
+                self._update_slot_image(slot, "layer", slot.layer_image, slot.layer_extent)
+            else:
+                slot.image_layers.get("layer", pg.ImageItem()).hide()
+        finally:
+            # Restore auto-range state
+            if old_auto_range[0] or old_auto_range[1]:
+                vb.enableAutoRange(x=old_auto_range[0], y=old_auto_range[1])
         
         slot.needs_update = False
     
@@ -525,26 +629,30 @@ class MultiEchogramViewer:
         rect = QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)
         image_item.setRect(rect)
         
-        colormap = self._colormap_layer if key == "layer" else self._colormap
+        # Set colormap
+        is_layer = (key == "layer")
+        colormap = self._colormap_layer if is_layer else self._colormap
         if hasattr(image_item, "setColorMap"):
             image_item.setColorMap(colormap)
         else:
             lut = colormap.getLookupTable(256)
             image_item.setLookupTable(lut)
         
-        vmin, vmax = self._current_levels(slot.echogram_key)
+        # Use stored per-layer levels (preserve user's colorbar adjustments)
+        if is_layer and slot.layer_levels is not None:
+            vmin, vmax = slot.layer_levels
+        elif not is_layer and slot.background_levels is not None:
+            vmin, vmax = slot.background_levels
+        elif slot.colorbar is not None:
+            vmin, vmax = slot.colorbar.levels()
+        else:
+            # Fallback to global sliders
+            offset = self.voffsets.get(slot.echogram_key, 0.0) if slot.echogram_key else 0.0
+            vmin = float(self.w_vmin.value + offset)
+            vmax = float(self.w_vmax.value + offset)
+        
         image_item.setLevels((vmin, vmax))
         image_item.show()
-        
-        if slot.colorbar is not None and key == "background":
-            if hasattr(slot.colorbar, "setColorMap"):
-                slot.colorbar.setColorMap(colormap)
-            slot.colorbar.setLevels((vmin, vmax))
-    
-    def _current_levels(self, echogram_key: Optional[str]) -> Tuple[float, float]:
-        """Get current color levels for an echogram."""
-        offset = self.voffsets.get(echogram_key, 0.0) if echogram_key else 0.0
-        return float(self.w_vmin.value + offset), float(self.w_vmax.value + offset)
     
     def _load_all_backgrounds(self) -> None:
         """Load background images for all echograms."""
@@ -559,12 +667,22 @@ class MultiEchogramViewer:
                 image, extent = echogram.build_image(progress=self.progress)
                 slot.background_image = image
                 slot.background_extent = extent
+                slot.layer_image = None
+                slot.layer_extent = None
             else:
                 image, layer_img, extent = echogram.build_image_and_layer_image(progress=self.progress)
                 slot.background_image = image
                 slot.background_extent = extent
                 slot.layer_image = layer_img
                 slot.layer_extent = extent
+            
+            # Add to global cache
+            self._global_image_cache[name] = {
+                'background_image': slot.background_image,
+                'background_extent': slot.background_extent,
+                'layer_image': slot.layer_image,
+                'layer_extent': slot.layer_extent,
+            }
             
             slot.needs_update = True
         
@@ -585,48 +703,196 @@ class MultiEchogramViewer:
     
     def _on_layout_change(self, change: Dict[str, Any]) -> None:
         """Handle grid layout change."""
-        self.grid_rows, self.grid_cols = change['new']
-        self._update_grid_layout()
+        new_rows, new_cols = change['new']
+        
+        # Skip if no actual change
+        if (self.grid_rows, self.grid_cols) == (new_rows, new_cols):
+            return
+        
+        # Capture current view range before changing layout
+        current_range = self._capture_current_view_range()
+        
+        # Block range changes during layout update
+        self._ignore_range_changes = True
+        
+        try:
+            self.grid_rows, self.grid_cols = new_rows, new_cols
+            self._update_grid_layout()
+        finally:
+            self._ignore_range_changes = False
+        
+        # Restore view range after layout change
+        if current_range is not None:
+            self._restore_view_range(current_range)
+        
+        # Update UI to show correct number of slot selectors
+        self._update_selector_visibility()
         self._request_remote_draw()
+        
+        # Trigger high-res update for visible slots
+        if self._auto_update_enabled:
+            self._schedule_debounced_update()
+    
+    def _capture_current_view_range(self) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """Capture the current view range from master plot."""
+        master = self._get_master_plot()
+        if master is not None:
+            vb = master.getViewBox()
+            return tuple(vb.viewRange())
+        return None
+    
+    def _restore_view_range(self, view_range: Tuple[Tuple[float, float], Tuple[float, float]]) -> None:
+        """Restore view range to master plot."""
+        master = self._get_master_plot()
+        if master is not None:
+            self._ignore_range_changes = True
+            try:
+                x_range, y_range = view_range
+                master.setXRange(x_range[0], x_range[1], padding=0)
+                master.setYRange(y_range[0], y_range[1], padding=0)
+            finally:
+                self._ignore_range_changes = False
+    
+    def _update_selector_visibility(self) -> None:
+        """Update the selector row to show correct number of slots."""
+        if hasattr(self, 'selector_row'):
+            n_visible = self.grid_rows * self.grid_cols
+            visible_selectors = [self.slot_selectors[i] for i in range(n_visible)]
+            self.selector_row.children = visible_selectors
     
     def _on_slot_change(self, slot_idx: int, change: Dict[str, Any]) -> None:
         """Handle slot echogram assignment change."""
         new_key = change['new']
         slot = self.slots[slot_idx]
         
-        # Find if this echogram was assigned elsewhere and swap
-        for other_slot in self.slots:
-            if other_slot != slot and other_slot.echogram_key == new_key:
-                other_slot.assign_echogram(slot.echogram_key)
-                # Update selector
-                self.slot_selectors[other_slot.slot_idx].value = other_slot.echogram_key
-                break
+        # Capture current view range before change
+        current_range = self._capture_current_view_range()
         
-        slot.assign_echogram(new_key)
+        # Block view range changes during update
+        self._ignore_range_changes = True
         
-        # Load background if needed
-        if new_key and slot.background_image is None:
-            echogram = self.echograms.get(new_key)
-            if echogram:
-                self.progress.set_description(f"Loading {new_key}...")
-                if len(echogram.layers) == 0 and echogram.main_layer is None:
-                    slot.background_image, slot.background_extent = echogram.build_image(progress=self.progress)
-                else:
-                    slot.background_image, slot.layer_image, slot.background_extent = \
-                        echogram.build_image_and_layer_image(progress=self.progress)
-                    slot.layer_extent = slot.background_extent
-                self.progress.set_description("Idle")
+        try:
+            # Allow same echogram in multiple slots - no swap logic
+            # (assign_echogram now checks both local and global cache)
+            slot.assign_echogram(new_key)
+            
+            # If still not loaded after cache checks, load from echogram
+            if new_key and slot.background_image is None:
+                echogram = self.echograms.get(new_key)
+                if echogram:
+                    self.progress.set_description(f"Loading {new_key}...")
+                    if len(echogram.layers) == 0 and echogram.main_layer is None:
+                        slot.background_image, slot.background_extent = echogram.build_image(progress=self.progress)
+                    else:
+                        slot.background_image, slot.layer_image, slot.background_extent = \
+                            echogram.build_image_and_layer_image(progress=self.progress)
+                        slot.layer_extent = slot.background_extent
+                    self.progress.set_description("Idle")
+                    # Add to global cache
+                    self._global_image_cache[new_key] = {
+                        'background_image': slot.background_image,
+                        'background_extent': slot.background_extent,
+                        'layer_image': slot.layer_image,
+                        'layer_extent': slot.layer_extent,
+                    }
+            
+            if slot.is_visible:
+                self._update_slot(slot)
+                self._process_qt_events()
+        finally:
+            self._ignore_range_changes = False
         
-        if slot.is_visible:
-            self._update_slot(slot)
-            self._process_qt_events()
-            self._request_remote_draw()
-    
-    def _on_color_change(self, change: Dict[str, Any]) -> None:
-        """Handle color scale change."""
-        for slot in self._get_visible_slots():
-            self._update_slot(slot)
+        # Restore view range after slot change
+        if current_range is not None:
+            self._restore_view_range(current_range)
+        
         self._request_remote_draw()
+        
+        # Trigger high-res update for the new echogram (it may not have high-res for current view)
+        if self._auto_update_enabled and slot.is_visible:
+            self._schedule_debounced_update()
+    
+    def _on_global_color_change(self, change: Dict[str, Any]) -> None:
+        """Handle global color scale change - applies to ALL colorbars."""
+        new_vmin = self.w_vmin.value
+        new_vmax = self.w_vmax.value
+        
+        # Update all slot colorbars and stored levels
+        for slot in self.slots:
+            slot.background_levels = (new_vmin, new_vmax)
+            slot.layer_levels = (new_vmin, new_vmax)
+            if slot.colorbar is not None:
+                slot.colorbar.setLevels((new_vmin, new_vmax))
+        
+        self._request_remote_draw()
+    
+    def _on_colorbar_layer_change(self, change: Dict[str, Any]) -> None:
+        """Handle colorbar layer selection change - applies to ALL slots."""
+        new_layer = change['new']
+        for slot in self._get_visible_slots():
+            self._switch_colorbar_layer(slot, new_layer)
+        self._request_remote_draw()
+    
+    def _switch_colorbar_layer(self, slot: EchogramSlot, new_layer: str) -> None:
+        """Switch a slot's colorbar to display a different layer."""
+        if slot.colorbar is None:
+            slot.active_colorbar_layer = new_layer
+            return
+        
+        old_layer = slot.active_colorbar_layer
+        if old_layer == new_layer:
+            return
+        
+        # Save current levels for the old layer
+        current_levels = slot.colorbar.levels()
+        if old_layer == 'background':
+            slot.background_levels = current_levels
+        else:
+            slot.layer_levels = current_levels
+        
+        slot.active_colorbar_layer = new_layer
+        
+        # Switch to new layer
+        if new_layer == 'layer' and slot.layer_image is not None:
+            # Switch to layer image
+            layer_img = slot.image_layers.get('layer')
+            if layer_img is not None:
+                slot.colorbar.setImageItem(layer_img)
+                if hasattr(slot.colorbar, "setColorMap"):
+                    slot.colorbar.setColorMap(slot.parent._colormap_layer)
+                # Restore layer levels
+                if slot.layer_levels is not None:
+                    slot.colorbar.setLevels(slot.layer_levels)
+        else:
+            # Switch to background image
+            bg_img = slot.image_layers.get('background')
+            if bg_img is not None:
+                slot.colorbar.setImageItem(bg_img)
+                if hasattr(slot.colorbar, "setColorMap"):
+                    slot.colorbar.setColorMap(slot.parent._colormap)
+                # Restore background levels
+                if slot.background_levels is not None:
+                    slot.colorbar.setLevels(slot.background_levels)
+    
+    def _on_colorbar_levels_changed(self, slot: EchogramSlot, colorbar: pg.ColorBarItem) -> None:
+        """Handle colorbar level change from user interaction."""
+        # Get levels from the colorbar
+        vmin, vmax = colorbar.levels()
+        
+        # Store levels for current layer
+        if slot.active_colorbar_layer == 'layer':
+            slot.layer_levels = (vmin, vmax)
+            # Apply to layer image
+            layer_img = slot.image_layers.get('layer')
+            if layer_img is not None:
+                layer_img.setLevels((vmin, vmax))
+        else:
+            slot.background_levels = (vmin, vmax)
+            # Apply to background and high-res images
+            for key in ['background', 'high']:
+                img = slot.image_layers.get(key)
+                if img is not None:
+                    img.setLevels((vmin, vmax))
     
     def _on_auto_update_toggle(self, change: Dict[str, Any]) -> None:
         """Handle auto-update checkbox toggle."""
@@ -645,14 +911,41 @@ class MultiEchogramViewer:
     
     def _show_single(self, echogram_name: str) -> None:
         """Show a single echogram full-size."""
-        # Set grid to 1x1
-        self.w_layout.value = (1, 1)
-        # Assign the echogram to slot 0
-        self.slots[0].assign_echogram(echogram_name)
-        self.slot_selectors[0].value = echogram_name
-        self._update_grid_layout()
-        self._update_slot(self.slots[0])
-        self._reset_view()
+        # Capture current view range
+        current_range = self._capture_current_view_range()
+        
+        # Block view range changes during update
+        self._ignore_range_changes = True
+        
+        try:
+            # Check if we need to change grid layout
+            need_grid_change = (self.grid_rows, self.grid_cols) != (1, 1)
+            
+            if need_grid_change:
+                # Set grid to 1x1 (this will trigger _on_layout_change)
+                self.w_layout.value = (1, 1)
+            
+            # Assign the echogram to slot 0 if different
+            # (assign_echogram now checks both local and global cache)
+            if self.slots[0].echogram_key != echogram_name:
+                self.slots[0].assign_echogram(echogram_name)
+                self.slot_selectors[0].value = echogram_name
+            
+            # Update slot display without rebuilding grid
+            if not need_grid_change:
+                self._update_slot(self.slots[0])
+        finally:
+            self._ignore_range_changes = False
+        
+        # Restore view range (don't reset to full extent)
+        if current_range is not None:
+            self._restore_view_range(current_range)
+        
+        self._request_remote_draw()
+        
+        # Trigger high-res update for new echogram
+        if self._auto_update_enabled:
+            self._schedule_debounced_update()
     
     def _reset_view(self) -> None:
         """Reset view to show full extent of all visible echograms."""
@@ -869,6 +1162,11 @@ class MultiEchogramViewer:
                     slot.layer_image = data['layer']
                     slot.layer_extent = data['layer_extent']
                 viewer._update_slot(slot)
+                
+                # Update global cache with high-res data
+                if slot.echogram_key and slot.echogram_key in viewer._global_image_cache:
+                    viewer._global_image_cache[slot.echogram_key]['high_res_image'] = slot.high_res_image
+                    viewer._global_image_cache[slot.echogram_key]['high_res_extent'] = slot.high_res_extent
             
             viewer._process_qt_events()
             viewer._request_remote_draw()
@@ -1091,12 +1389,14 @@ class MultiEchogramViewer:
         # Build layout
         tab_row = ipywidgets.HBox(self.tab_buttons)
         
+        # Create selector row (just slot selectors)
         n_visible = self.grid_rows * self.grid_cols
-        visible_selectors = self.slot_selectors[:n_visible]
-        selector_row = ipywidgets.HBox(visible_selectors)
+        visible_selectors = [self.slot_selectors[i] for i in range(n_visible)]
+        self.selector_row = ipywidgets.HBox(visible_selectors)
         
         controls_row = ipywidgets.HBox([
             self.w_layout,
+            self.w_colorbar_layer,
             self.w_vmin, self.w_vmax,
             self.w_auto_update, self.w_crosshair,
         ])
@@ -1109,7 +1409,7 @@ class MultiEchogramViewer:
         
         widgets = [
             tab_row,
-            selector_row,
+            self.selector_row,
             ipywidgets.HBox([self.graphics]),
             controls_row,
             buttons_row,
