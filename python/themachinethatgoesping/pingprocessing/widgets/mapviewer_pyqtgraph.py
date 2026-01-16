@@ -4,12 +4,13 @@ Provides interactive visualization of map layers with pan/zoom,
 track overlays, and integration with echogram/WCI viewers.
 
 The viewer handles:
-- Colorscale, opacity, blending per layer
+- Colorscale, opacity, blending per data layer
+- Background tiles from web sources (OSM, ESRI, CartoDB, etc.)
 - Auto-update with debouncing on pan/zoom
 - Track overlays with direct lat/lon coordinates
 - Ping position markers from connected viewers
 
-Example:
+Example with data layers:
     from themachinethatgoesping.pingprocessing.widgets import MapViewerPyQtGraph
     from themachinethatgoesping.pingprocessing.overview.map_builder import MapBuilder
     
@@ -18,12 +19,34 @@ Example:
     
     # Auto-displays in Jupyter (like EchogramViewer)
     viewer = MapViewerPyQtGraph(builder)
+
+Example with background tiles:
+    from themachinethatgoesping.pingprocessing.widgets import MapViewerPyQtGraph
+    from themachinethatgoesping.pingprocessing.overview.map_builder import MapBuilder, TileBuilder
     
-    # Connect to echogram viewer - tracks are loaded automatically
-    viewer.connect_echogram_viewer(echogram_viewer)
+    # Data layer
+    builder = MapBuilder()
+    builder.add_geotiff('map/BPNS_latlon.tiff')
     
-    # Or connect to WCI viewer
-    viewer.connect_wci_viewer(wci_viewer)
+    # Background tiles
+    tiles = TileBuilder()
+    tiles.add_osm()  # or add_esri_worldimagery(), add_cartodb_positron(), etc.
+    
+    viewer = MapViewerPyQtGraph(builder, tile_builder=tiles)
+    
+    # Or change tile source programmatically
+    viewer.set_tile_source('esri_worldimagery')  # Switch to satellite
+    viewer.set_tile_visible(False)  # Hide tiles
+
+Example tiles-only (no data layers):
+    from themachinethatgoesping.pingprocessing.widgets import MapViewerPyQtGraph
+    from themachinethatgoesping.pingprocessing.overview.map_builder import TileBuilder
+    
+    tiles = TileBuilder()
+    tiles.add_osm()
+    
+    viewer = MapViewerPyQtGraph(tile_builder=tiles)
+    viewer.connect_echogram_viewer(echogram_viewer)  # Just show tracks on tiles
 """
 
 from __future__ import annotations
@@ -43,6 +66,7 @@ from IPython.display import display
 import pyqtgraph as pg
 from pyqtgraph.jupyter import GraphicsLayoutWidget
 from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt.QtGui import QTransform
 
 from . import pyqtgraph_helpers as pgh
 
@@ -145,7 +169,8 @@ class MapViewerPyQtGraph:
     
     def __init__(
         self,
-        builder: Any,  # MapBuilder
+        builder: Any = None,  # MapBuilder (optional)
+        tile_builder: Any = None,  # TileBuilder (optional)
         width: int = 800,
         height: int = 600,
         show_controls: bool = True,
@@ -157,7 +182,8 @@ class MapViewerPyQtGraph:
         """Initialize the map viewer.
         
         Args:
-            builder: MapBuilder with layers to display.
+            builder: MapBuilder with data layers to display (optional).
+            tile_builder: TileBuilder for background tiles (optional).
             width: Widget width in pixels.
             height: Widget height in pixels.
             show_controls: Whether to show layer control widgets.
@@ -170,6 +196,7 @@ class MapViewerPyQtGraph:
         pgh.ensure_qapp()
         
         self._builder = builder
+        self._tile_builder = tile_builder
         self._width = width
         self._height = height
         self._show_controls = show_controls
@@ -189,6 +216,14 @@ class MapViewerPyQtGraph:
         self._loading_future: Optional[asyncio.Task] = None
         self._executor = ThreadPoolExecutor(max_workers=1)
         
+        # Tile loading state (separate from data layer loading)
+        self._is_loading_tiles = False
+        self._tile_cancel_flag = threading.Event()
+        self._tile_loading_future: Optional[asyncio.Task] = None
+        self._tile_executor = ThreadPoolExecutor(max_workers=2)  # More workers for parallel tile fetching
+        self._tile_view_changed_during_load = False
+        self._pending_tile_bounds: Optional[Any] = None  # BoundingBox for pending tile load
+        
         # State
         self._current_bounds = None
         self._layer_images: Dict[str, pg.ImageItem] = {}
@@ -196,6 +231,10 @@ class MapViewerPyQtGraph:
         
         # Viewer-controlled rendering settings per layer
         self._layer_render_settings: Dict[str, LayerRenderSettings] = {}
+        
+        # Tile background layer
+        self._tile_image: Optional[pg.ImageItem] = None
+        self._tile_visible: bool = True if tile_builder else False
         
         # Track overlays
         self._tracks: Dict[str, TrackInfo] = {}
@@ -235,6 +274,8 @@ class MapViewerPyQtGraph:
     
     def _init_layer_render_settings(self):
         """Initialize default render settings for all layers from builder."""
+        if self._builder is None:
+            return
         for layer in self._builder.layers:
             if layer.name not in self._layer_render_settings:
                 self._layer_render_settings[layer.name] = LayerRenderSettings()
@@ -322,53 +363,89 @@ class MapViewerPyQtGraph:
         
         layer_widgets = []
         layer_names = []
-        for layer in self._builder.layers:
-            settings = self._layer_render_settings.get(layer.name, LayerRenderSettings())
-            layer_names.append(layer.name)
+        
+        # Build layer controls only if builder exists
+        if self._builder is not None:
+            for layer in self._builder.layers:
+                settings = self._layer_render_settings.get(layer.name, LayerRenderSettings())
+                layer_names.append(layer.name)
+                
+                # Visibility checkbox
+                cb = ipywidgets.Checkbox(
+                    value=layer.visible,
+                    description=layer.name,
+                    indent=False,
+                    layout=ipywidgets.Layout(width='auto'),
+                )
+                cb.observe(
+                    lambda change, name=layer.name: self._on_visibility_change(name, change['new']),
+                    names='value',
+                )
+                self._layer_checkboxes[layer.name] = cb
+                
+                # Opacity slider (viewer-controlled)
+                slider = ipywidgets.FloatSlider(
+                    value=settings.opacity,
+                    min=0.0,
+                    max=1.0,
+                    step=0.1,
+                    description='',
+                    continuous_update=True,
+                    readout=False,
+                    layout=ipywidgets.Layout(width='100px'),
+                )
+                slider.observe(
+                    lambda change, name=layer.name: self._on_opacity_change(name, change['new']),
+                    names='value',
+                )
+                self._layer_sliders[layer.name] = slider
+                
+                # Colormap dropdown (viewer-controlled)
+                cmap_dropdown = ipywidgets.Dropdown(
+                    options=colormaps,
+                    value=settings.colormap,
+                    layout=ipywidgets.Layout(width='100px'),
+                )
+                cmap_dropdown.observe(
+                    lambda change, name=layer.name: self._on_colormap_change(name, change['new']),
+                    names='value',
+                )
+                self._layer_colormap_dropdowns[layer.name] = cmap_dropdown
+                
+                layer_widgets.append(ipywidgets.HBox([cb, slider, cmap_dropdown]))
+        
+        # Tile source controls (if TileBuilder is available)
+        self._tile_source_dropdown = None
+        self._tile_visibility_checkbox = None
+        if self._tile_builder is not None:
+            from ..overview.map_builder.tile_builder import TILE_SOURCES
             
-            # Visibility checkbox
-            cb = ipywidgets.Checkbox(
-                value=layer.visible,
-                description=layer.name,
+            # Tile visibility checkbox
+            self._tile_visibility_checkbox = ipywidgets.Checkbox(
+                value=self._tile_visible,
+                description="Show background tiles",
                 indent=False,
-                layout=ipywidgets.Layout(width='auto'),
             )
-            cb.observe(
-                lambda change, name=layer.name: self._on_visibility_change(name, change['new']),
+            self._tile_visibility_checkbox.observe(
+                lambda change: self._on_tile_visibility_change(change['new']),
                 names='value',
             )
-            self._layer_checkboxes[layer.name] = cb
             
-            # Opacity slider (viewer-controlled)
-            slider = ipywidgets.FloatSlider(
-                value=settings.opacity,
-                min=0.0,
-                max=1.0,
-                step=0.1,
-                description='',
-                continuous_update=True,
-                readout=False,
-                layout=ipywidgets.Layout(width='100px'),
+            # Tile source dropdown
+            tile_source_options = ['None'] + list(TILE_SOURCES.keys())
+            current_source = getattr(self._tile_builder, '_current_source_name', None)
+            default_source = current_source if current_source in tile_source_options else tile_source_options[1] if len(tile_source_options) > 1 else 'None'
+            
+            self._tile_source_dropdown = ipywidgets.Dropdown(
+                options=tile_source_options,
+                value=default_source,
+                description='Tiles:',
+                layout=ipywidgets.Layout(width='200px'),
             )
-            slider.observe(
-                lambda change, name=layer.name: self._on_opacity_change(name, change['new']),
+            self._tile_source_dropdown.observe(
+                lambda change: self._on_tile_source_change(change['new']),
                 names='value',
             )
-            self._layer_sliders[layer.name] = slider
-            
-            # Colormap dropdown (viewer-controlled)
-            cmap_dropdown = ipywidgets.Dropdown(
-                options=colormaps,
-                value=settings.colormap,
-                layout=ipywidgets.Layout(width='100px'),
-            )
-            cmap_dropdown.observe(
-                lambda change, name=layer.name: self._on_colormap_change(name, change['new']),
-                names='value',
-            )
-            self._layer_colormap_dropdowns[layer.name] = cmap_dropdown
-            
-            layer_widgets.append(ipywidgets.HBox([cb, slider, cmap_dropdown]))
         
         # Colorbar selection dropdown
         self._colorbar_layer_dropdown = ipywidgets.Dropdown(
@@ -435,15 +512,27 @@ class MapViewerPyQtGraph:
         layers_box = ipywidgets.VBox(layer_widgets) if layer_widgets else ipywidgets.VBox([])
         nav_box = ipywidgets.HBox([self._btn_zoom_fit, self._btn_zoom_track, self._btn_zoom_wci, self._btn_refresh_tracks])
         
-        self._controls = ipywidgets.VBox([
-            ipywidgets.HTML("<b>Layers</b>"),
-            layers_box,
-            self._colorbar_layer_dropdown,
-            ipywidgets.HTML("<b>Navigation</b>"),
-            nav_box,
-            ipywidgets.HBox([self.w_auto_update, self.w_auto_center_wci]),
-            self._lbl_coords,
-        ])
+        # Build controls list
+        controls_list = []
+        
+        # Tile controls (at top if available)
+        if self._tile_source_dropdown is not None:
+            controls_list.append(ipywidgets.HTML("<b>Background Tiles</b>"))
+            controls_list.append(ipywidgets.HBox([self._tile_visibility_checkbox, self._tile_source_dropdown]))
+        
+        # Layer controls
+        if layer_widgets:
+            controls_list.append(ipywidgets.HTML("<b>Data Layers</b>"))
+            controls_list.append(layers_box)
+            controls_list.append(self._colorbar_layer_dropdown)
+        
+        # Navigation controls
+        controls_list.append(ipywidgets.HTML("<b>Navigation</b>"))
+        controls_list.append(nav_box)
+        controls_list.append(ipywidgets.HBox([self.w_auto_update, self.w_auto_center_wci]))
+        controls_list.append(self._lbl_coords)
+        
+        self._controls = ipywidgets.VBox(controls_list)
         
         # Track legend container (will be populated with checkboxes when tracks are added)
         self._track_legend_label = ipywidgets.HTML("<b>Tracks:</b>")
@@ -543,13 +632,14 @@ class MapViewerPyQtGraph:
             vmin = settings.vmin
             vmax = settings.vmax
             if vmin is None or vmax is None:
-                result = self._builder.get_layer_data(layer_name, max_size=(100, 100))
-                if result is not None:
-                    data, _ = result
-                    if vmin is None:
-                        vmin = float(np.nanmin(data))
-                    if vmax is None:
-                        vmax = float(np.nanmax(data))
+                if self._builder is not None:
+                    result = self._builder.get_layer_data(layer_name, max_size=(100, 100))
+                    if result is not None:
+                        data, _ = result
+                        if vmin is None:
+                            vmin = float(np.nanmin(data))
+                        if vmax is None:
+                            vmax = float(np.nanmax(data))
             if vmin is not None and vmax is not None:
                 self._colorbar_item.setLevels((vmin, vmax))
                 self._layer_colorbar_levels[layer_name] = (vmin, vmax)
@@ -625,9 +715,10 @@ class MapViewerPyQtGraph:
             self._layer_colormap_dropdowns[layer_name].value = colormap
         
         # Re-render
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
         return self
     
     def set_layer_opacity(self, layer_name: str, opacity: float) -> "MapViewerPyQtGraph":
@@ -641,9 +732,10 @@ class MapViewerPyQtGraph:
             self._layer_sliders[layer_name].value = opacity
         
         # Re-render
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
         return self
     
     def set_layer_range(self, layer_name: str, vmin: float, vmax: float) -> "MapViewerPyQtGraph":
@@ -654,9 +746,10 @@ class MapViewerPyQtGraph:
         self._layer_render_settings[layer_name].vmax = vmax
         
         # Re-render
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
         return self
     
     def set_layer_blend_mode(self, layer_name: str, blend_mode: str) -> "MapViewerPyQtGraph":
@@ -671,10 +764,75 @@ class MapViewerPyQtGraph:
         self._layer_render_settings[layer_name].blend_mode = blend_mode
         
         # Re-render
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
         return self
+    
+    # =========================================================================
+    # Tile background control
+    # =========================================================================
+    
+    def set_tile_source(self, source_name: str) -> "MapViewerPyQtGraph":
+        """Set the background tile source.
+        
+        Args:
+            source_name: Name of tile source (e.g., 'osm', 'esri_worldimagery').
+                        Use 'None' to disable tiles.
+        
+        Available sources:
+            - osm: OpenStreetMap
+            - esri_worldimagery: ESRI World Imagery (satellite)
+            - esri_ocean: ESRI Ocean Basemap
+            - esri_natgeo: ESRI National Geographic
+            - cartodb_positron: CartoDB Positron (light theme)
+            - cartodb_darkmatter: CartoDB Dark Matter (dark theme)
+            - cartodb_voyager: CartoDB Voyager
+            - stadia_terrain: Stadia Terrain
+            - stadia_toner: Stadia Toner (B&W)
+            - stadia_watercolor: Stadia Watercolor
+            - opentopomap: OpenTopoMap (topographic)
+        """
+        self._on_tile_source_change(source_name)
+        
+        # Update dropdown if exists
+        if self._tile_source_dropdown is not None:
+            self._tile_source_dropdown.value = source_name
+        
+        return self
+    
+    def set_tile_visible(self, visible: bool) -> "MapViewerPyQtGraph":
+        """Set tile layer visibility.
+        
+        Args:
+            visible: Whether to show background tiles.
+        """
+        self._on_tile_visibility_change(visible)
+        
+        # Update checkbox if exists
+        if self._tile_visibility_checkbox is not None:
+            self._tile_visibility_checkbox.value = visible
+        
+        return self
+    
+    @property
+    def tile_builder(self):
+        """Access the TileBuilder instance."""
+        return self._tile_builder
+    
+    @tile_builder.setter
+    def tile_builder(self, builder):
+        """Set a new TileBuilder instance."""
+        self._tile_builder = builder
+        if builder is not None:
+            self._tile_visible = True
+            self._render_tiles()
+    
+    def list_tile_sources(self) -> List[str]:
+        """List available tile source names."""
+        from ..overview.map_builder.tile_builder import TILE_SOURCES
+        return list(TILE_SOURCES.keys())
     
     # =========================================================================
     # Rendering
@@ -683,15 +841,21 @@ class MapViewerPyQtGraph:
     def _update_view(self):
         """Update the displayed layers based on current view bounds."""
         if self._current_bounds is None:
-            # Use combined bounds of all layers
-            self._current_bounds = self._builder.combined_bounds
+            # Use combined bounds of all layers from builder
+            if self._builder is not None:
+                self._current_bounds = self._builder.combined_bounds
         
         if self._current_bounds is None:
             return
         
+        # Render background tiles first (bottom z-order)
+        if self._tile_builder is not None and self._tile_visible:
+            self._render_tiles()
+        
         # Get data for each visible layer
-        for layer in self._builder.visible_layers:
-            self._render_layer(layer)
+        if self._builder is not None:
+            for layer in self._builder.visible_layers:
+                self._render_layer(layer)
         
         # Update track overlays
         self._update_tracks()
@@ -699,6 +863,184 @@ class MapViewerPyQtGraph:
         # Update ping marker
         self._update_ping_marker()
     
+    def _render_tiles(self):
+        """Trigger background tile loading (non-blocking)."""
+        if self._tile_builder is None or self._current_bounds is None:
+            return
+        
+        bounds = self._current_bounds
+        
+        # bounds can be BoundingBox or tuple - handle both
+        if hasattr(bounds, 'xmin'):
+            bbox = bounds
+        else:
+            from ..overview.map_builder.coordinate_system import BoundingBox
+            bbox = BoundingBox(
+                xmin=bounds[0], ymin=bounds[1],
+                xmax=bounds[2], ymax=bounds[3],
+            )
+        
+        # Get view box for pixel size calculation
+        vb = self._plot.getViewBox()
+        try:
+            screen_rect = vb.screenGeometry()
+            pixel_width = screen_rect.width()
+            pixel_height = screen_rect.height()
+        except Exception:
+            pixel_width = 800
+            pixel_height = 600
+        
+        pixel_width = max(512, min(pixel_width, self._max_render_size[0]))
+        pixel_height = max(512, min(pixel_height, self._max_render_size[1]))
+        
+        # Check cache
+        cache_key = (
+            round(bbox.xmin, 6), round(bbox.ymin, 6),
+            round(bbox.xmax, 6), round(bbox.ymax, 6),
+            pixel_width // 32, pixel_height // 32,
+        )
+        if hasattr(self, '_tile_cache_key') and self._tile_cache_key == cache_key:
+            return
+        
+        # If already loading tiles, mark that view changed
+        if self._is_loading_tiles:
+            self._tile_view_changed_during_load = True
+            self._pending_tile_bounds = bbox
+            return
+        
+        # Start background tile loading
+        self._trigger_tile_load(bbox, (pixel_width, pixel_height), cache_key)
+    
+    def _trigger_tile_load(
+        self,
+        bbox,
+        target_size: Tuple[int, int],
+        cache_key: Tuple,
+    ):
+        """Trigger background tile loading (runs in thread pool)."""
+        self._cancel_tile_load()
+        
+        self._is_loading_tiles = True
+        self._tile_view_changed_during_load = False
+        self._tile_cancel_flag.clear()
+        
+        viewer = self
+        tile_builder = self._tile_builder
+        
+        def load_tiles():
+            """Load tiles in background thread."""
+            if viewer._tile_cancel_flag.is_set():
+                return None
+            
+            try:
+                # Use get_image_with_bounds for precise placement
+                tile_image, actual_bounds = tile_builder.get_image_with_bounds(
+                    bounds=bbox,
+                    target_size=target_size,
+                )
+                if viewer._tile_cancel_flag.is_set():
+                    return None
+                return {
+                    'image': tile_image,
+                    'bounds': actual_bounds,
+                    'requested_bounds': bbox,
+                    'cache_key': cache_key,
+                }
+            except AttributeError:
+                # Fallback if get_image_with_bounds not available
+                tile_image, _ = tile_builder.get_image(
+                    bounds=bbox,
+                    target_size=target_size,
+                )
+                if viewer._tile_cancel_flag.is_set():
+                    return None
+                return {
+                    'image': tile_image,
+                    'bounds': bbox,
+                    'requested_bounds': bbox,
+                    'cache_key': cache_key,
+                }
+            except Exception as e:
+                warnings.warn(f"Tile loading error: {e}")
+                return None
+        
+        def apply_tiles(result):
+            viewer._is_loading_tiles = False
+            
+            if result is None:
+                if viewer._tile_view_changed_during_load:
+                    viewer._tile_view_changed_during_load = False
+                    if viewer._pending_tile_bounds is not None:
+                        viewer._render_tiles()
+                return
+            
+            tile_image = result['image']
+            actual_bounds = result['bounds']
+            cache_key = result['cache_key']
+            
+            if tile_image is None:
+                return
+            
+            viewer._tile_cache_key = cache_key
+            
+            # Create tile image item if needed
+            if viewer._tile_image is None:
+                viewer._tile_image = pg.ImageItem(axisOrder="row-major")
+                viewer._plot.addItem(viewer._tile_image)
+                viewer._tile_image.setZValue(-100)
+            
+            # Image is reprojected to linear lat/lon by TileBuilder
+            # Row 0 = north (max lat), but setRect y=y0 is at bottom
+            # So we still need to flip vertically
+            flipped = tile_image[::-1]  # flip rows
+            viewer._tile_image.setImage(flipped, autoLevels=False)
+            
+            # Use setRect like EchogramViewer for precise positioning
+            x0 = actual_bounds.xmin  # west (lon)
+            x1 = actual_bounds.xmax  # east (lon)
+            y0 = actual_bounds.ymin  # south (lat)
+            y1 = actual_bounds.ymax  # north (lat)
+            
+            rect = QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)
+            viewer._tile_image.setRect(rect)
+            viewer._tile_image.setVisible(viewer._tile_visible)
+            
+            if hasattr(viewer.graphics, 'request_draw'):
+                viewer.graphics.request_draw()
+            
+            if viewer._tile_view_changed_during_load:
+                viewer._tile_view_changed_during_load = False
+                if viewer._pending_tile_bounds is not None:
+                    viewer._render_tiles()
+        
+        async def run_tile_async():
+            try:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(viewer._tile_executor, load_tiles)
+                apply_tiles(result)
+            except Exception as e:
+                viewer._is_loading_tiles = False
+                warnings.warn(f"Async tile load error: {e}")
+        
+        try:
+            loop = asyncio.get_running_loop()
+            self._tile_loading_future = loop.create_task(run_tile_async())
+        except RuntimeError:
+            # No event loop - run synchronously
+            result = load_tiles()
+            apply_tiles(result)
+    
+    def _cancel_tile_load(self):
+        """Cancel pending tile load."""
+        self._tile_cancel_flag.set()
+        if self._tile_loading_future is not None:
+            try:
+                self._tile_loading_future.cancel()
+            except Exception:
+                pass
+            self._tile_loading_future = None
+        self._is_loading_tiles = False
+
     def _render_layer(self, layer):
         """Render a single layer using viewer-controlled settings."""
         try:
@@ -1058,7 +1400,8 @@ class MapViewerPyQtGraph:
     
     def _on_visibility_change(self, layer_name: str, visible: bool):
         """Handle layer visibility toggle."""
-        self._builder.set_layer_visibility(layer_name, visible)
+        if self._builder is not None:
+            self._builder.set_layer_visibility(layer_name, visible)
         
         if layer_name in self._layer_images:
             self._layer_images[layer_name].setVisible(visible)
@@ -1070,9 +1413,10 @@ class MapViewerPyQtGraph:
         self._layer_render_settings[layer_name].opacity = opacity
         
         # Re-render the layer with new opacity
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
     
     def _on_colormap_change(self, layer_name: str, colormap: str):
         """Handle layer colormap change (viewer-controlled)."""
@@ -1085,15 +1429,63 @@ class MapViewerPyQtGraph:
             self._update_colorbar()
         
         # Re-render the layer with new colormap
-        layer = self._builder.get_layer(layer_name)
-        if layer:
-            self._render_layer(layer)
+        if self._builder is not None:
+            layer = self._builder.get_layer(layer_name)
+            if layer:
+                self._render_layer(layer)
     
     def _on_auto_update_toggle(self, change):
         """Handle auto-update checkbox toggle."""
         self._auto_update_enabled = change['new']
         if not self._auto_update_enabled and self._debounce_task is not None:
             self._debounce_task.cancel()
+    
+    def _on_tile_visibility_change(self, visible: bool):
+        """Handle tile visibility toggle."""
+        self._tile_visible = visible
+        if self._tile_image is not None:
+            self._tile_image.setVisible(visible)
+        if visible and self._tile_builder is not None:
+            self._render_tiles()
+            # Request redraw
+            if hasattr(self.graphics, 'request_draw'):
+                self.graphics.request_draw()
+    
+    def _on_tile_source_change(self, source_name: str):
+        """Handle tile source selection change."""
+        if self._tile_builder is None:
+            return
+        
+        if source_name == 'None':
+            self._tile_visible = False
+            if self._tile_image is not None:
+                self._tile_image.setVisible(False)
+            if self._tile_visibility_checkbox is not None:
+                self._tile_visibility_checkbox.value = False
+            return
+        
+        # Change the tile source - hide all, show only selected
+        try:
+            # First, add the preset if not already added
+            if source_name not in self._tile_builder.source_names:
+                self._tile_builder.add_preset(source_name)
+            
+            # Make only this source visible
+            for name in self._tile_builder.source_names:
+                self._tile_builder.set_source_visible(name, name == source_name)
+            
+            # Invalidate tile cache to force re-render with new source
+            self._tile_cache_key = None
+            
+            self._tile_visible = True
+            if self._tile_visibility_checkbox is not None:
+                self._tile_visibility_checkbox.value = True
+            self._render_tiles()
+            # Request redraw
+            if hasattr(self.graphics, 'request_draw'):
+                self.graphics.request_draw()
+        except Exception as e:
+            warnings.warn(f"Failed to change tile source to {source_name}: {e}")
     
     # =========================================================================
     # Auto-update (like EchogramViewer)
@@ -1141,8 +1533,17 @@ class MapViewerPyQtGraph:
         
         # Capture current view state
         if self._current_bounds is None:
-            self._current_bounds = self._builder.combined_bounds
+            if self._builder is not None:
+                self._current_bounds = self._builder.combined_bounds
         if self._current_bounds is None:
+            return
+        
+        # Trigger tile loading (runs in parallel via its own executor)
+        if self._tile_builder is not None and self._tile_visible:
+            self._render_tiles()
+        
+        # If no builder, we're done (tiles are loading in background)
+        if self._builder is None:
             return
         
         self._is_loading = True
@@ -1225,7 +1626,15 @@ class MapViewerPyQtGraph:
     
     def zoom_to_fit(self):
         """Zoom to fit all visible layers."""
-        bounds = self._builder.combined_bounds
+        bounds = None
+        if self._builder is not None:
+            bounds = self._builder.combined_bounds
+        
+        # If no data bounds, try to use track bounds
+        if bounds is None and self._tracks:
+            self.zoom_to_track()
+            return
+        
         if bounds:
             self._ignore_range_changes = True
             self._plot.setXRange(bounds.xmin, bounds.xmax, padding=0.05)

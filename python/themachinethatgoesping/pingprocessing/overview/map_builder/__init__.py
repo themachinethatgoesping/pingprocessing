@@ -10,13 +10,18 @@ Similar in design to the echograms module, it uses:
 
 Example:
     from themachinethatgoesping.pingprocessing.widgets import MapViewerPyQtGraph
-    from themachinethatgoesping.pingprocessing.overview.map_builder import MapBuilder
+    from themachinethatgoesping.pingprocessing.overview.map_builder import MapBuilder, TileBuilder
     
+    # Data layers (numerical, with colorbar)
     builder = MapBuilder()
     builder.add_geotiff('map/BPNS_latlon.tiff')
     
-    # Auto-displays in Jupyter (like EchogramViewer)
-    viewer = MapViewerPyQtGraph(builder)
+    # Tile layers (pre-rendered images, no colorbar)
+    tiles = TileBuilder()
+    tiles.add_osm()  # or add_esri_worldimagery(), add_cartodb_positron(), etc.
+    
+    # Auto-displays in Jupyter
+    viewer = MapViewerPyQtGraph(builder, tile_builder=tiles)
     
     # Connect to echogram viewer to show tracks
     viewer.connect_echogram_viewer(echogram_viewer)
@@ -25,6 +30,7 @@ Example:
 from .coordinate_system import MapCoordinateSystem, BoundingBox
 from .map_builder import MapBuilder, MapLayer
 from .backends import MapDataBackend, GeoTiffBackend
+from .tile_builder import TileBuilder, TileSource, TILE_SOURCES, list_available_sources
 
 __all__ = [
     "MapCoordinateSystem",
@@ -33,4 +39,8 @@ __all__ = [
     "MapLayer",
     "MapDataBackend",
     "GeoTiffBackend",
+    "TileBuilder",
+    "TileSource",
+    "TILE_SOURCES",
+    "list_available_sources",
 ]
