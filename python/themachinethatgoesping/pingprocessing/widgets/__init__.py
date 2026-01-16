@@ -10,4 +10,5 @@ from .wciviewer_pyqtgraph import *
 from .echogramviewer_pyqtgraph import *
 from .echogramviewer_pyqtgraph2 import EchogramViewerMultiChannel
 from .wciviewer_pyqtgraph2 import WCIViewerMultiChannel
+from .mapviewer_pyqtgraph import MapViewerPyQtGraph
 from . import tools

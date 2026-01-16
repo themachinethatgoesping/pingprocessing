@@ -398,16 +398,18 @@ class EchogramViewerMultiChannel:
         self.btn_reset = ipywidgets.Button(description="Reset View", tooltip="Reset to full extent")
         self.btn_reset.on_click(self._on_reset_click)
         
-        self.btn_update_pingline = ipywidgets.Button(
-            description="↻ Ping",
-            tooltip="Update ping line from connected WCI viewer",
-            layout=ipywidgets.Layout(width='70px'),
+        # Auto-follow pingline checkbox (visible when pingviewer connected)
+        self.w_auto_follow = ipywidgets.Checkbox(
+            value=False,
+            description="Follow ping",
+            tooltip="Automatically keep pingline in view (smooth scroll when near edge)",
+            indent=False,
+            layout=ipywidgets.Layout(width='110px'),
         )
-        self.btn_update_pingline.on_click(lambda _: self._update_ping_lines())
         
         self.btn_goto_pingline = ipywidgets.Button(
             description="→ Ping",
-            tooltip="Zoom to current ping line position (center view on pingline)",
+            tooltip="Jump to current ping line position (center view on pingline)",
             layout=ipywidgets.Layout(width='70px'),
         )
         self.btn_goto_pingline.on_click(lambda _: self._goto_pingline())
@@ -1303,12 +1305,28 @@ class EchogramViewerMultiChannel:
     # =========================================================================
     
     def connect_pingviewer(self, pingviewer: Any) -> None:
-        """Connect to a pingviewer for synchronized display."""
+        """Connect to a pingviewer for synchronized display.
+        
+        If the pingviewer supports ping change callbacks (e.g., WCIViewerMultiChannel),
+        automatically registers to update pinglines when the ping changes.
+        """
+        # Disconnect from any existing pingviewer first
+        if self.pingviewer is not None:
+            self.disconnect_pingviewer()
+        
         self.pingviewer = pingviewer
         self._update_ping_lines()
+        
+        # Auto-register for ping change callbacks if supported
+        if hasattr(pingviewer, 'register_ping_change_callback'):
+            pingviewer.register_ping_change_callback(self._update_ping_lines)
     
     def disconnect_pingviewer(self) -> None:
         """Disconnect from pingviewer."""
+        # Unregister callback if we were registered
+        if self.pingviewer is not None and hasattr(self.pingviewer, 'unregister_ping_change_callback'):
+            self.pingviewer.unregister_ping_change_callback(self._update_ping_lines)
+        
         self.pingviewer = None
         for slot in self.slots:
             if slot.pingline:
@@ -1392,7 +1410,12 @@ class EchogramViewerMultiChannel:
             self.pingviewer.w_index.value = idx
     
     def _update_ping_lines(self) -> None:
-        """Update ping lines on all visible plots."""
+        """Update ping lines on all visible plots.
+        
+        If auto-follow is enabled, also smoothly scrolls the view to keep
+        the pingline visible (triggers when pingline is out of view or 
+        within 10% of either edge).
+        """
         if self.pingviewer is None:
             return
         
@@ -1420,7 +1443,70 @@ class EchogramViewerMultiChannel:
             slot.pingline.setValue(value)
             slot.pingline.show()
         
+        # Auto-follow: smoothly scroll if pingline is near edge or out of view
+        if self.w_auto_follow.value:
+            self._auto_follow_pingline(value)
+        
         self._request_remote_draw()
+    
+    def _auto_follow_pingline(self, pingline_x: float) -> None:
+        """Smoothly scroll view to keep pingline visible.
+        
+        Triggers when pingline is:
+        - Out of view, OR
+        - Within 10% of either edge
+        
+        Re-centers to place pingline at 30% from left (shows more "future" data).
+        Uses smooth animated transition.
+        
+        Args:
+            pingline_x: The x coordinate of the pingline.
+        """
+        master = self._get_master_plot()
+        if master is None:
+            return
+        
+        vb = master.getViewBox()
+        (xmin, xmax), _ = vb.viewRange()
+        x_extent = xmax - xmin
+        
+        if x_extent <= 0:
+            return
+        
+        # Calculate pingline position as fraction of visible range
+        position_fraction = (pingline_x - xmin) / x_extent
+        
+        # Check if we need to scroll:
+        # - Out of view: position_fraction < 0 or > 1
+        # - Near left edge: position_fraction < 0.10
+        # - Near right edge: position_fraction > 0.90
+        edge_threshold = 0.10
+        needs_scroll = (
+            position_fraction < 0 or 
+            position_fraction > 1 or
+            position_fraction < edge_threshold or 
+            position_fraction > (1 - edge_threshold)
+        )
+        
+        if not needs_scroll:
+            return
+        
+        # Target position: pingline at 30% from left edge
+        target_position = 0.30
+        new_xmin = pingline_x - (target_position * x_extent)
+        new_xmax = new_xmin + x_extent
+        
+        # Smooth animated scroll
+        self._ignore_range_changes = True
+        try:
+            # PyQtGraph supports animated range changes
+            vb.setXRange(new_xmin, new_xmax, padding=0)
+        finally:
+            self._ignore_range_changes = False
+        
+        # Trigger high-res update if auto-update is enabled
+        if self._auto_update_enabled:
+            self._schedule_debounced_update()
     
     def _goto_pingline(self) -> None:
         """Center the view on the current pingline position.
@@ -1555,7 +1641,7 @@ class EchogramViewerMultiChannel:
         ])
         
         buttons_row = ipywidgets.HBox([
-            self.btn_update, self.btn_reset, self.btn_update_pingline, self.btn_goto_pingline,
+            self.btn_update, self.btn_reset, self.w_auto_follow, self.btn_goto_pingline,
             ipywidgets.Label('  Nav:'),
             self.btn_nav_left, self.btn_nav_up, self.btn_nav_down, self.btn_nav_right,
         ])

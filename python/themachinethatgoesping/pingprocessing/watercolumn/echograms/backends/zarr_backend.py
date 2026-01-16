@@ -94,6 +94,10 @@ class ZarrDataBackend(EchogramDataBackend):
         self._depth_min = ds["depth_min"].values if "depth_min" in ds else None
         self._depth_max = ds["depth_max"].values if "depth_max" in ds else None
         
+        # Optional lat/lon coordinates
+        self._latitudes = ds["latitudes"].values if "latitudes" in ds else None
+        self._longitudes = ds["longitudes"].values if "longitudes" in ds else None
+        
         # Load ping params structure
         self._ping_params = self._load_ping_params()
 
@@ -215,6 +219,16 @@ class ZarrDataBackend(EchogramDataBackend):
     @property
     def has_navigation(self) -> bool:
         return self._has_navigation
+
+    @property
+    def latitudes(self) -> Optional[np.ndarray]:
+        """Latitude for each ping in degrees, or None if not available."""
+        return self._latitudes
+
+    @property
+    def longitudes(self) -> Optional[np.ndarray]:
+        """Longitude for each ping in degrees, or None if not available."""
+        return self._longitudes
 
     @property
     def wci_value(self) -> str:

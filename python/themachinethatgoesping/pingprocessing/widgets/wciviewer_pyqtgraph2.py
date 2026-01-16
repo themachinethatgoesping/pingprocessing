@@ -318,6 +318,9 @@ class WCIViewerMultiChannel:
         self._crosshair_enabled = True
         self._crosshair_position: Optional[Tuple[float, float]] = None
         
+        # Ping change callbacks for connected viewers (e.g., echogram viewer)
+        self._ping_change_callbacks: List[Any] = []
+
         # Grid layout state
         n_channels = len(self.channel_names)
         if initial_grid == (2, 2):
@@ -941,6 +944,13 @@ class WCIViewerMultiChannel:
         # Time synchronization - sync other slots to this reference
         if self.time_sync_enabled:
             self._sync_other_slots(slot_idx)
+        
+        # Notify registered callbacks (for connected viewers)
+        for callback in self._ping_change_callbacks:
+            try:
+                callback()
+            except Exception:
+                pass  # Don't let callback errors block ping updates
         
         self._request_remote_draw()
     
@@ -1749,6 +1759,31 @@ class WCIViewerMultiChannel:
         """Set the widget height."""
         self.widget_height_px = height_px
         pgh.apply_widget_layout(self.graphics, self.widget_width_px, height_px)
+    
+    # =========================================================================
+    # Ping change callbacks (for connected viewers)
+    # =========================================================================
+    
+    def register_ping_change_callback(self, callback: Any) -> None:
+        """Register a callback to be called when ping changes.
+        
+        The callback should be a callable with no arguments.
+        Useful for connecting echogram viewers to update their pinglines.
+        
+        Args:
+            callback: A callable to be invoked on ping change.
+        """
+        if callback not in self._ping_change_callbacks:
+            self._ping_change_callbacks.append(callback)
+    
+    def unregister_ping_change_callback(self, callback: Any) -> None:
+        """Unregister a previously registered ping change callback.
+        
+        Args:
+            callback: The callback to remove.
+        """
+        if callback in self._ping_change_callbacks:
+            self._ping_change_callbacks.remove(callback)
     
     # =========================================================================
     # Compatibility properties for connect_pingviewer

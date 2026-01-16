@@ -117,6 +117,11 @@ class MmapDataBackend(EchogramDataBackend):
             metadata["depth_min"] = np.load(path / "depth_min.npy")
             metadata["depth_max"] = np.load(path / "depth_max.npy")
         
+        # Lat/lon coordinates (optional)
+        if (path / "latitudes.npy").exists():
+            metadata["latitudes"] = np.load(path / "latitudes.npy")
+            metadata["longitudes"] = np.load(path / "longitudes.npy")
+        
         # Ping parameters
         ping_params = {}
         for name in metadata.get("ping_param_names", []):
@@ -178,6 +183,16 @@ class MmapDataBackend(EchogramDataBackend):
     @property
     def has_navigation(self) -> bool:
         return self._metadata.get("has_navigation", False)
+
+    @property
+    def latitudes(self) -> Optional[np.ndarray]:
+        """Latitude for each ping in degrees, or None if not available."""
+        return self._metadata.get("latitudes", None)
+
+    @property
+    def longitudes(self) -> Optional[np.ndarray]:
+        """Longitude for each ping in degrees, or None if not available."""
+        return self._metadata.get("longitudes", None)
 
     @property
     def wci_value(self) -> str:

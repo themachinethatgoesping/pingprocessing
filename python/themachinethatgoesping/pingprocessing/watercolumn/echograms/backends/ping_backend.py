@@ -35,6 +35,8 @@ class PingDataBackend(EchogramDataBackend):
         range_extents: Optional[Tuple[np.ndarray, np.ndarray]],
         depth_extents: Optional[Tuple[np.ndarray, np.ndarray]],
         ping_params: Dict[str, Tuple[str, np.ndarray]],
+        latitudes: Optional[np.ndarray] = None,
+        longitudes: Optional[np.ndarray] = None,
         depth_stack: bool = False,
         mp_cores: int = 1,
     ):
@@ -53,6 +55,8 @@ class PingDataBackend(EchogramDataBackend):
             range_extents: Tuple of (min_ranges, max_ranges) arrays, or None.
             depth_extents: Tuple of (min_depths, max_depths) arrays, or None.
             ping_params: Dictionary of pre-computed ping parameters.
+            latitudes: Array of latitudes (degrees) per ping, or None.
+            longitudes: Array of longitudes (degrees) per ping, or None.
             depth_stack: If True, use depth stacking mode (requires navigation).
             mp_cores: Number of cores for parallel processing.
         """
@@ -66,6 +70,8 @@ class PingDataBackend(EchogramDataBackend):
         self._range_extents = range_extents
         self._depth_extents = depth_extents
         self._ping_params = ping_params
+        self._latitudes = latitudes
+        self._longitudes = longitudes
         self._depth_stack = depth_stack
         self._mp_cores = mp_cores
         
@@ -119,6 +125,8 @@ class PingDataBackend(EchogramDataBackend):
         min_d = np.empty(n_pings, dtype=np.float32)
         max_d = np.empty(n_pings, dtype=np.float32)
         times = np.empty(n_pings, dtype=np.float64)
+        latitudes = np.empty(n_pings, dtype=np.float64)
+        longitudes = np.empty(n_pings, dtype=np.float64)
 
         # Ping parameter accumulators
         bottom_d_times = []
@@ -127,7 +135,7 @@ class PingDataBackend(EchogramDataBackend):
         echosounder_d_times = []
         echosounder_d = []
 
-        for arr in [min_s, max_s, min_r, max_r, min_d, max_d, times]:
+        for arr in [min_s, max_s, min_r, max_r, min_d, max_d, times, latitudes, longitudes]:
             arr.fill(np.nan)
 
         beam_sample_selections = []
@@ -163,7 +171,10 @@ class PingDataBackend(EchogramDataBackend):
                         "geolocation feature or set no_navigation to True"
                     )
 
-                z = ping.get_geolocation().z
+                geoloc = ping.get_geolocation()
+                z = geoloc.z
+                latitudes[nr] = geoloc.latitude
+                longitudes[nr] = geoloc.longitude
                 min_d[nr] = z + min_r[nr] * angle_factor
                 max_d[nr] = z + max_r[nr] * angle_factor
                 echosounder_d.append(z)
@@ -207,6 +218,10 @@ class PingDataBackend(EchogramDataBackend):
         sample_nr_extents = (min_s, max_s)
         range_extents = (min_r, max_r) if np.any(np.isfinite(min_r)) else None
         depth_extents = (min_d, max_d) if not no_navigation and np.any(np.isfinite(min_d)) else None
+        
+        # Lat/lon: only include if we have navigation
+        lats = latitudes if not no_navigation and np.any(np.isfinite(latitudes)) else None
+        lons = longitudes if not no_navigation and np.any(np.isfinite(longitudes)) else None
 
         return cls(
             pings=pings,
@@ -219,6 +234,8 @@ class PingDataBackend(EchogramDataBackend):
             range_extents=range_extents,
             depth_extents=depth_extents,
             ping_params=ping_params,
+            latitudes=lats,
+            longitudes=lons,
             depth_stack=depth_stack,
             mp_cores=mp_cores,
         )
@@ -254,6 +271,16 @@ class PingDataBackend(EchogramDataBackend):
     @property
     def has_navigation(self) -> bool:
         return self._depth_extents is not None
+
+    @property
+    def latitudes(self) -> Optional[np.ndarray]:
+        """Latitude for each ping in degrees, or None if not available."""
+        return self._latitudes
+
+    @property
+    def longitudes(self) -> Optional[np.ndarray]:
+        """Longitude for each ping in degrees, or None if not available."""
+        return self._longitudes
 
     @property
     def wci_value(self) -> str:

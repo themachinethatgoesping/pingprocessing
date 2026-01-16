@@ -68,6 +68,27 @@ class EchogramDataBackend(ABC):
         ...
 
     @property
+    def latitudes(self) -> Optional[np.ndarray]:
+        """Latitude for each ping in degrees, or None if not available.
+        
+        Default implementation returns None. Override in backends that support it.
+        """
+        return None
+
+    @property
+    def longitudes(self) -> Optional[np.ndarray]:
+        """Longitude for each ping in degrees, or None if not available.
+        
+        Default implementation returns None. Override in backends that support it.
+        """
+        return None
+
+    @property
+    def has_latlon(self) -> bool:
+        """Whether latitude/longitude information is available."""
+        return self.latitudes is not None and self.longitudes is not None
+
+    @property
     @abstractmethod
     def wci_value(self) -> str:
         """The water column image value type (e.g., 'sv', 'av', 'pv')."""

@@ -169,6 +169,49 @@ class EchogramBuilder:
         """
         return cls(backend=backend)
 
+    @classmethod
+    def from_pings_dict(
+        cls,
+        pings_dict: dict,
+        progress: bool = True,
+        **kwargs,
+    ) -> dict:
+        """Create multiple EchogramBuilders from a dictionary of ping lists.
+        
+        Convenience method for creating multiple echograms at once, e.g., from
+        pings grouped by frequency or channel.
+        
+        Args:
+            pings_dict: Dictionary mapping keys (e.g., frequency) to ping lists.
+            progress: Show progress bar for each echogram. Default True.
+            **kwargs: Additional arguments passed to from_pings() for each echogram.
+                Common kwargs: pss, wci_value, linear_mean, depth_stack, mp_cores.
+            
+        Returns:
+            Dictionary mapping the same keys to EchogramBuilder instances.
+            
+        Examples:
+            >>> pings_by_freq = {18000: pings_18k, 38000: pings_38k, 120000: pings_120k}
+            >>> echograms = EchogramBuilder.from_pings_dict(
+            ...     pings_by_freq,
+            ...     pss=pss,
+            ...     depth_stack=True,
+            ...     progress=True
+            ... )
+            >>> # echograms = {18000: EchogramBuilder, 38000: EchogramBuilder, ...}
+            >>> 
+            >>> # Access individual echograms
+            >>> echogram_38k = echograms[38000]
+        """
+        result = {}
+        for key, pings in pings_dict.items():
+            result[key] = cls.from_pings(
+                pings,
+                verbose=progress,
+                **kwargs,
+            )
+        return result
+
     # =========================================================================
     # Coordinate system access
     # =========================================================================
@@ -228,6 +271,51 @@ class EchogramBuilder:
     def linear_mean(self) -> bool:
         """Whether linear mean is used for beam averaging."""
         return self._backend.linear_mean
+
+    # =========================================================================
+    # Navigation/track access
+    # =========================================================================
+
+    def get_track(
+        self,
+        start_ping: Optional[int] = None,
+        end_ping: Optional[int] = None,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Get the navigation track (latitudes, longitudes) for this echogram.
+        
+        Returns the lat/lon coordinates stored in the backend, which represent
+        the ship position for each ping.
+        
+        Args:
+            start_ping: Optional start ping index. Default: 0.
+            end_ping: Optional end ping index (exclusive). Default: n_pings.
+            
+        Returns:
+            Tuple of (latitudes, longitudes) arrays in degrees, or None if
+            navigation data is not available.
+            
+        Example:
+            >>> lats, lons = echogram.get_track()
+            >>> # Get track for visible range
+            >>> lats_visible, lons_visible = echogram.get_track(100, 500)
+        """
+        if not self._backend.has_latlon:
+            return None
+        
+        if start_ping is None:
+            start_ping = 0
+        if end_ping is None:
+            end_ping = self._backend.n_pings
+            
+        return (
+            self._backend.latitudes[start_ping:end_ping],
+            self._backend.longitudes[start_ping:end_ping],
+        )
+    
+    @property
+    def has_track(self) -> bool:
+        """Check if navigation track data is available."""
+        return self._backend.has_latlon
 
     # =========================================================================
     # Coordinate system methods (delegating to coord_system)
@@ -858,6 +946,11 @@ class EchogramBuilder:
             store.create_array("depth_min", data=min_d.astype(np.float32), dimension_names=["ping"])
             store.create_array("depth_max", data=max_d.astype(np.float32), dimension_names=["ping"])
         
+        # Lat/lon coordinates (optional)
+        if self._backend.has_latlon:
+            store.create_array("latitudes", data=self._backend.latitudes.astype(np.float64), dimension_names=["ping"])
+            store.create_array("longitudes", data=self._backend.longitudes.astype(np.float64), dimension_names=["ping"])
+        
         # Ping parameters (these are per-param, not per-ping, so use different dim name)
         ping_params = self._backend.get_ping_params()
         params_meta = {}
@@ -871,6 +964,7 @@ class EchogramBuilder:
         store.attrs["wci_value"] = self._backend.wci_value
         store.attrs["linear_mean"] = self._backend.linear_mean
         store.attrs["has_navigation"] = self._backend.has_navigation
+        store.attrs["has_latlon"] = self._backend.has_latlon
         store.attrs["ping_params_meta"] = json.dumps(params_meta)
         store.attrs["n_pings"] = n_pings
         store.attrs["max_samples"] = max_samples
@@ -1026,6 +1120,11 @@ class EchogramBuilder:
             np.save(output_path / "depth_min.npy", min_d.astype(np.float32))
             np.save(output_path / "depth_max.npy", max_d.astype(np.float32))
         
+        # Lat/lon coordinates (optional)
+        if self._backend.has_latlon:
+            np.save(output_path / "latitudes.npy", self._backend.latitudes.astype(np.float64))
+            np.save(output_path / "longitudes.npy", self._backend.longitudes.astype(np.float64))
+        
         # Ping parameters (binary .npy files)
         ping_params = self._backend.get_ping_params()
         ping_params_meta = {}  # y_reference for each param (stored in JSON)
@@ -1044,6 +1143,7 @@ class EchogramBuilder:
             "wci_value": self._backend.wci_value,
             "linear_mean": self._backend.linear_mean,
             "has_navigation": self._backend.has_navigation,
+            "has_latlon": self._backend.has_latlon,
             "ping_param_names": ping_param_names,
             "ping_params_meta": ping_params_meta,
         }
