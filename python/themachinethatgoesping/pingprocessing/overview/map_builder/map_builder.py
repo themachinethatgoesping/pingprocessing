@@ -1,11 +1,19 @@
 """MapBuilder class for managing multiple map layers.
 
 Provides a unified interface for loading, combining, and displaying
-multiple geospatial data layers with configurable overlay ordering.
+multiple geospatial data layers. Acts as a data provider with axis/resolution
+control, similar to EchogramBuilder.
+
+The MapBuilder controls:
+- Layer management (add, remove, visibility, ordering)
+- Axis/resolution settings for data retrieval
+- Coordinate system handling
+
+Rendering properties (colormap, opacity, blending) are handled by the viewer.
 """
 
 from typing import List, Dict, Optional, Tuple, Union, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -22,70 +30,179 @@ class MapLayer:
         backend: The data backend for this layer.
         name: Display name for the layer.
         visible: Whether the layer is currently visible.
-        opacity: Layer opacity (0.0 = transparent, 1.0 = opaque).
-        colormap: Colormap name for rendering.
-        vmin: Minimum value for colormap scaling (None = auto).
-        vmax: Maximum value for colormap scaling (None = auto).
         z_order: Rendering order (higher = on top).
     """
     backend: MapDataBackend
     name: str
     visible: bool = True
-    opacity: float = 1.0
-    colormap: Optional[str] = None
-    vmin: Optional[float] = None
-    vmax: Optional[float] = None
     z_order: int = 0
-    
-    def __post_init__(self):
-        """Set default colormap based on feature type."""
-        if self.colormap is None:
-            self.colormap = self._default_colormap()
-        if self.vmin is None:
-            self.vmin = self.backend.min_value
-        if self.vmax is None:
-            self.vmax = self.backend.max_value
-    
-    def _default_colormap(self) -> str:
-        """Get default colormap based on feature name."""
-        feature = self.backend.feature_name.lower()
-        
-        if 'bathymetry' in feature or 'depth' in feature:
-            return 'viridis_r'  # Reversed: deep = dark blue
-        elif 'backscatter' in feature:
-            return 'gray'
-        elif 'slope' in feature:
-            return 'RdYlGn_r'
-        elif 'aspect' in feature:
-            return 'hsv'  # Cyclic colormap for aspect
-        elif 'rugosity' in feature or 'roughness' in feature:
-            return 'YlOrRd'
-        
-        return 'viridis'
 
 
 class MapBuilder:
     """Builder for managing multiple map layers.
     
     MapBuilder provides:
-    - Layer management (add, remove, reorder)
-    - Unified coordinate system handling
-    - Data retrieval for rendering
+    - Layer management (add, remove, reorder, visibility)
+    - Axis/resolution control for data retrieval
+    - Coordinate system handling
+    
+    Similar to EchogramBuilder, it acts as a data provider.
+    Rendering properties are controlled by the viewer.
     
     Example usage:
+        from themachinethatgoesping.pingprocessing.overview.map_builder import MapBuilder
+        from themachinethatgoesping.pingprocessing.widgets import MapViewerPyQtGraph
+        
         # Create builder and add layers
         builder = MapBuilder()
-        builder.add_geotiff("bathymetry.tif", name="Bathymetry")
-        builder.add_geotiff("backscatter.tif", name="Backscatter", opacity=0.5)
+        builder.add_geotiff('map/BPNS_latlon.tiff', name="Bathymetry")
         
-        # Create viewer
+        # Set axis/resolution
+        builder.set_axis(max_pixels=(1000, 1000))
+        
+        # Create viewer (handles colorscale, opacity, blending)
         viewer = MapViewerPyQtGraph(builder)
     """
     
     def __init__(self):
         """Initialize an empty MapBuilder."""
         self._layers: List[MapLayer] = []
-        self._unified_crs: Optional[Any] = None
+        
+        # Axis/resolution settings (similar to EchogramBuilder)
+        self._max_pixels: Tuple[int, int] = (2000, 2000)  # (height, width)
+        self._current_bounds: Optional[BoundingBox] = None
+    
+    # =========================================================================
+    # Axis/resolution settings (like EchogramBuilder)
+    # =========================================================================
+    
+    def set_axis_latlon(
+        self,
+        min_lat: float = np.nan,
+        max_lat: float = np.nan,
+        min_lon: float = np.nan,
+        max_lon: float = np.nan,
+        max_pixels: Tuple[int, int] = (2000, 2000),
+    ) -> "MapBuilder":
+        """Set axis extent in lat/lon coordinates.
+        
+        Similar to EchogramBuilder's set_x_axis_date_time pattern.
+        Use np.nan for auto-detection from data bounds.
+        
+        Args:
+            min_lat: Minimum latitude (nan = auto from data).
+            max_lat: Maximum latitude (nan = auto from data).
+            min_lon: Minimum longitude (nan = auto from data).
+            max_lon: Maximum longitude (nan = auto from data).
+            max_pixels: Maximum output size (height, width).
+            
+        Returns:
+            Self for method chaining.
+        """
+        self._max_pixels = max_pixels
+        
+        # Get full bounds for auto values
+        full_bounds = self.combined_bounds
+        if full_bounds is None:
+            self._current_bounds = None
+            return self
+        
+        # Replace nan with full extent
+        # In lat/lon: x=longitude, y=latitude
+        xmin = min_lon if not np.isnan(min_lon) else full_bounds.xmin
+        xmax = max_lon if not np.isnan(max_lon) else full_bounds.xmax
+        ymin = min_lat if not np.isnan(min_lat) else full_bounds.ymin
+        ymax = max_lat if not np.isnan(max_lat) else full_bounds.ymax
+        
+        self._current_bounds = BoundingBox(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax)
+        return self
+    
+    def set_axis_utm(
+        self,
+        min_easting: float = np.nan,
+        max_easting: float = np.nan,
+        min_northing: float = np.nan,
+        max_northing: float = np.nan,
+        max_pixels: Tuple[int, int] = (2000, 2000),
+    ) -> "MapBuilder":
+        """Set axis extent in UTM/projected coordinates.
+        
+        Similar to EchogramBuilder's axis-setting pattern.
+        Use np.nan for auto-detection from data bounds.
+        
+        Args:
+            min_easting: Minimum easting (nan = auto from data).
+            max_easting: Maximum easting (nan = auto from data).
+            min_northing: Minimum northing (nan = auto from data).
+            max_northing: Maximum northing (nan = auto from data).
+            max_pixels: Maximum output size (height, width).
+            
+        Returns:
+            Self for method chaining.
+        """
+        self._max_pixels = max_pixels
+        
+        # Get full bounds for auto values
+        full_bounds = self.combined_bounds
+        if full_bounds is None:
+            self._current_bounds = None
+            return self
+        
+        # Replace nan with full extent
+        xmin = min_easting if not np.isnan(min_easting) else full_bounds.xmin
+        xmax = max_easting if not np.isnan(max_easting) else full_bounds.xmax
+        ymin = min_northing if not np.isnan(min_northing) else full_bounds.ymin
+        ymax = max_northing if not np.isnan(max_northing) else full_bounds.ymax
+        
+        self._current_bounds = BoundingBox(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax)
+        return self
+    
+    def set_axis(
+        self,
+        bounds: Optional[BoundingBox] = None,
+        max_pixels: Optional[Tuple[int, int]] = None,
+    ) -> "MapBuilder":
+        """Set axis extent and resolution for data retrieval (legacy method).
+        
+        For more explicit control, use set_axis_latlon() or set_axis_utm().
+        
+        Args:
+            bounds: Bounding box in world coordinates (None = full extent).
+            max_pixels: Maximum output size (height, width) for downsampling.
+            
+        Returns:
+            Self for method chaining.
+        """
+        if bounds is not None:
+            self._current_bounds = bounds
+        if max_pixels is not None:
+            self._max_pixels = max_pixels
+        return self
+    
+    def set_bounds(self, bounds: BoundingBox) -> "MapBuilder":
+        """Set the current view bounds."""
+        self._current_bounds = bounds
+        return self
+    
+    def set_max_pixels(self, max_pixels: Tuple[int, int]) -> "MapBuilder":
+        """Set maximum output resolution."""
+        self._max_pixels = max_pixels
+        return self
+    
+    def reset_bounds(self) -> "MapBuilder":
+        """Reset bounds to full extent."""
+        self._current_bounds = None
+        return self
+    
+    @property
+    def max_pixels(self) -> Tuple[int, int]:
+        """Current max pixels setting."""
+        return self._max_pixels
+    
+    @property
+    def current_bounds(self) -> Optional[BoundingBox]:
+        """Current view bounds (None = full extent)."""
+        return self._current_bounds
     
     # =========================================================================
     # Layer management
@@ -96,10 +213,6 @@ class MapBuilder:
         backend: MapDataBackend,
         name: Optional[str] = None,
         visible: bool = True,
-        opacity: float = 1.0,
-        colormap: Optional[str] = None,
-        vmin: Optional[float] = None,
-        vmax: Optional[float] = None,
         z_order: Optional[int] = None,
     ) -> "MapBuilder":
         """Add a data layer.
@@ -108,10 +221,6 @@ class MapBuilder:
             backend: The data backend for this layer.
             name: Display name (default: backend feature name).
             visible: Whether layer is initially visible.
-            opacity: Layer opacity (0.0-1.0).
-            colormap: Colormap name (default: auto from feature).
-            vmin: Min value for colormap (default: from backend).
-            vmax: Max value for colormap (default: from backend).
             z_order: Render order (default: next available).
             
         Returns:
@@ -127,10 +236,6 @@ class MapBuilder:
             backend=backend,
             name=name,
             visible=visible,
-            opacity=opacity,
-            colormap=colormap,
-            vmin=vmin,
-            vmax=vmax,
             z_order=z_order,
         )
         
@@ -167,71 +272,26 @@ class MapBuilder:
         return self.add_layer(backend, name=name, **kwargs)
     
     def remove_layer(self, name: str) -> "MapBuilder":
-        """Remove a layer by name.
-        
-        Args:
-            name: Name of the layer to remove.
-            
-        Returns:
-            Self for method chaining.
-        """
+        """Remove a layer by name."""
         self._layers = [l for l in self._layers if l.name != name]
         return self
     
     def get_layer(self, name: str) -> Optional[MapLayer]:
-        """Get a layer by name.
-        
-        Args:
-            name: Name of the layer.
-            
-        Returns:
-            MapLayer or None if not found.
-        """
+        """Get a layer by name."""
         for layer in self._layers:
             if layer.name == name:
                 return layer
         return None
     
     def set_layer_visibility(self, name: str, visible: bool) -> "MapBuilder":
-        """Set visibility of a layer.
-        
-        Args:
-            name: Layer name.
-            visible: Whether layer should be visible.
-            
-        Returns:
-            Self for method chaining.
-        """
+        """Set visibility of a layer."""
         layer = self.get_layer(name)
         if layer:
             layer.visible = visible
         return self
     
-    def set_layer_opacity(self, name: str, opacity: float) -> "MapBuilder":
-        """Set opacity of a layer.
-        
-        Args:
-            name: Layer name.
-            opacity: Opacity value (0.0-1.0).
-            
-        Returns:
-            Self for method chaining.
-        """
-        layer = self.get_layer(name)
-        if layer:
-            layer.opacity = max(0.0, min(1.0, opacity))
-        return self
-    
     def set_layer_order(self, name: str, z_order: int) -> "MapBuilder":
-        """Set rendering order of a layer.
-        
-        Args:
-            name: Layer name.
-            z_order: New z-order value.
-            
-        Returns:
-            Self for method chaining.
-        """
+        """Set rendering order of a layer."""
         layer = self.get_layer(name)
         if layer:
             layer.z_order = z_order
@@ -276,7 +336,7 @@ class MapBuilder:
         return self._layers[0].backend.coordinate_system
     
     # =========================================================================
-    # Data retrieval
+    # Data retrieval (like EchogramBuilder.get_echogram_image)
     # =========================================================================
     
     def get_layer_data(
@@ -289,8 +349,8 @@ class MapBuilder:
         
         Args:
             layer_name: Name of the layer.
-            bounds: Bounding box (None = full extent).
-            max_size: Maximum output size for downsampling.
+            bounds: Bounding box (None = use current_bounds or full extent).
+            max_size: Maximum output size (None = use max_pixels setting).
             
         Returns:
             Tuple of (data array, coordinate system) or None if layer not found.
@@ -298,6 +358,12 @@ class MapBuilder:
         layer = self.get_layer(layer_name)
         if layer is None:
             return None
+        
+        # Use current settings if not specified
+        if bounds is None:
+            bounds = self._current_bounds
+        if max_size is None:
+            max_size = self._max_pixels
         
         return layer.backend.get_data(bounds, max_size)
     
@@ -309,12 +375,18 @@ class MapBuilder:
         """Get data for all visible layers.
         
         Args:
-            bounds: Bounding box (None = full extent).
-            max_size: Maximum output size for downsampling.
+            bounds: Bounding box (None = use current_bounds or full extent).
+            max_size: Maximum output size (None = use max_pixels setting).
             
         Returns:
             List of (layer, data array, coordinate system) tuples.
         """
+        # Use current settings if not specified
+        if bounds is None:
+            bounds = self._current_bounds
+        if max_size is None:
+            max_size = self._max_pixels
+        
         results = []
         for layer in self.visible_layers:
             data, cs = layer.backend.get_data(bounds, max_size)
@@ -326,15 +398,7 @@ class MapBuilder:
         lat: float,
         lon: float,
     ) -> Dict[str, Optional[float]]:
-        """Get values from all layers at a lat/lon position.
-        
-        Args:
-            lat: Latitude in degrees.
-            lon: Longitude in degrees.
-            
-        Returns:
-            Dictionary mapping layer names to values (or None if nodata).
-        """
+        """Get values from all layers at a lat/lon position."""
         results = {}
         for layer in self._layers:
             value = layer.backend.get_data_at_latlon(lat, lon)
@@ -357,10 +421,6 @@ class MapBuilder:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
-    
-    # =========================================================================
-    # String representation
-    # =========================================================================
     
     def __repr__(self) -> str:
         return f"MapBuilder(layers={len(self._layers)})"

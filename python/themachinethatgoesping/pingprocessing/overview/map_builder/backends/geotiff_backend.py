@@ -289,12 +289,20 @@ class GeoTiffBackend(MapDataBackend):
             data = np.where(data == self._nodata, np.nan, data)
         
         # Create coordinate system for output
+        # IMPORTANT: The transform maps pixel (col, row) -> world (x, y)
+        # For GeoTiffs, transform.e is typically negative (y decreases as row increases)
         if window is not None or out_shape != (height, width):
-            # Modified transform for the subregion/downsampled data
-            dx = width / out_shape[1] * self._ds.transform.a
-            dy = height / out_shape[0] * self._ds.transform.e
+            # Calculate scale factor from actual output size
+            scale_x = width / out_shape[1]  # How many source pixels per output pixel
+            scale_y = height / out_shape[0]
             
-            # Origin for the window
+            # New pixel size in world coordinates
+            dx = self._ds.transform.a * scale_x
+            dy = self._ds.transform.e * scale_y  # Usually negative
+            
+            # Origin: world coordinate of top-left corner of the window
+            # The transform gives us (x, y) for pixel (0, 0)
+            # For a window starting at (col_off, row_off), we need the world coords there
             x_origin, y_origin = self._ds.transform * (col_off, row_off)
             
             new_transform = Affine(dx, 0, x_origin, 0, dy, y_origin)
