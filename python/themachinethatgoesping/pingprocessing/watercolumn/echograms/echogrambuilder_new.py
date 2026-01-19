@@ -7,7 +7,7 @@ This module provides the EchogramBuilder class which handles:
 """
 
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple
 from copy import deepcopy
 from pathlib import Path
 import datetime as dt
