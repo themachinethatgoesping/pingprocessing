@@ -70,6 +70,9 @@ class EchogramSlot:
         self.crosshair_v: Optional[pg.InfiniteLine] = None
         self.crosshair_h: Optional[pg.InfiniteLine] = None
         self.pingline: Optional[pg.InfiniteLine] = None
+        
+        # Station time markers (dict of station_name -> {'start_line', 'end_line', 'region', 'label'})
+        self.station_markers: Dict[str, Dict[str, Any]] = {}
     
     def mark_dirty(self):
         """Mark that data needs refresh when shown."""
@@ -294,6 +297,9 @@ class EchogramViewerMultiChannel:
         
         # Pingviewer connection
         self.pingviewer = None
+        
+        # Station time markers storage (for recreation after layout changes)
+        self._station_data: Optional[Dict[str, Any]] = None
         
         # Output widget for errors/debug
         self.output = ipywidgets.Output()
@@ -550,6 +556,9 @@ class EchogramViewerMultiChannel:
             # Reset pingline (will be recreated when _update_ping_lines is called)
             slot.pingline = None
             
+            # Clear station markers (will be recreated by _recreate_station_markers)
+            slot.station_markers = {}
+            
             # Link axes to master
             if master_plot is None:
                 master_plot = plot
@@ -562,6 +571,9 @@ class EchogramViewerMultiChannel:
         
         # Update visible slots
         self._update_visible_slots()
+        
+        # Recreate station markers if they were set
+        self._recreate_station_markers()
     
     def _connect_scene_events(self) -> None:
         """Connect mouse events for crosshair and click handling."""
@@ -1728,6 +1740,306 @@ class EchogramViewerMultiChannel:
         request_draw = getattr(self.graphics, "request_draw", None)
         if callable(request_draw):
             request_draw()
+    
+    # =========================================================================
+    # Station Time Markers
+    # =========================================================================
+    
+    def add_station_times(
+        self,
+        stations: Dict[str, Tuple[Any, Any]],
+        line_color: str = '#424242',  # Dark grey
+        line_width: int = 2,
+        line_style: str = 'dash',
+        region_color: Optional[str] = None,  # Auto-derive from line_color if None
+        region_alpha: float = 0.15,
+        label_color: Optional[str] = None,  # Auto-derive from line_color if None
+        label_size: str = '10pt',
+        label_position: str = 'top',  # 'top' or 'bottom'
+    ) -> None:
+        """Add station time markers to all visible echograms.
+        
+        Draws vertical lines at station start/end times with a semi-transparent
+        region between them and a label showing the station name.
+        
+        Args:
+            stations: Dict mapping station names to (start_time, end_time) tuples.
+                      Times can be datetime objects or unix timestamps (float/int).
+            line_color: Color for the vertical lines (hex or named color).
+            line_width: Width of the vertical lines in pixels.
+            line_style: Line style - 'solid', 'dash', 'dot', or 'dashdot'.
+            region_color: Fill color for the region between lines. If None,
+                         uses line_color with region_alpha transparency.
+            region_alpha: Alpha (0-1) for the region fill color.
+            label_color: Color for the station label text. If None, uses line_color.
+            label_size: Font size for labels (e.g., '10pt', '12pt').
+            label_position: Where to place the label - 'top' or 'bottom'.
+        
+        Example:
+            >>> viewer.add_station_times({
+            ...     'Station A': (datetime(2024, 1, 1, 10, 0), datetime(2024, 1, 1, 10, 30)),
+            ...     'Station B': (1704110400.0, 1704112200.0),  # unix timestamps
+            ... })
+        """
+        # Clear existing stations first
+        self.clear_station_times()
+        
+        # Store station data for recreation after layout changes
+        self._station_data = {
+            'stations': stations,
+            'line_color': line_color,
+            'line_width': line_width,
+            'line_style': line_style,
+            'region_color': region_color,
+            'region_alpha': region_alpha,
+            'label_color': label_color,
+            'label_size': label_size,
+            'label_position': label_position,
+        }
+        
+        # Convert line style to Qt pen style
+        style_map = {
+            'solid': QtCore.Qt.PenStyle.SolidLine,
+            'dash': QtCore.Qt.PenStyle.DashLine,
+            'dot': QtCore.Qt.PenStyle.DotLine,
+            'dashdot': QtCore.Qt.PenStyle.DashDotLine,
+        }
+        pen_style = style_map.get(line_style, QtCore.Qt.PenStyle.SolidLine)
+        
+        # Use line color for region and label if not specified
+        effective_label_color = label_color if label_color is not None else line_color
+        
+        for station_name, (start_time, end_time) in stations.items():
+            # Convert times to x-axis coordinates
+            start_x = self._time_to_x_coord(start_time)
+            end_x = self._time_to_x_coord(end_time)
+            
+            if start_x is None or end_x is None:
+                continue
+            
+            # Add markers to all visible slots
+            for slot in self._get_visible_slots():
+                self._add_station_marker_to_slot(
+                    slot, station_name, start_x, end_x,
+                    line_color, line_width, pen_style,
+                    region_color, region_alpha,
+                    effective_label_color, label_size, label_position
+                )
+        
+        self._request_remote_draw()
+    
+    def _time_to_x_coord(self, time_value: Any) -> Optional[float]:
+        """Convert a time value to x-axis coordinate.
+        
+        Automatically detects whether time_value is a datetime or unix timestamp.
+        """
+        # Check if it's a datetime object
+        if isinstance(time_value, datetime):
+            if self.x_axis_name == "Date time":
+                return self._datetime_to_mpl_num(time_value)
+            elif self.x_axis_name == "Ping time":
+                return time_value.timestamp()
+            else:
+                # For ping number/index axes, we can't directly convert datetime
+                # Would need to find the ping index at this time
+                return self._find_ping_index_for_time(time_value.timestamp())
+        
+        # Check if it's a numeric value (unix timestamp)
+        elif isinstance(time_value, (int, float)):
+            if self.x_axis_name == "Date time":
+                # Convert unix timestamp to matplotlib num
+                dt = datetime.fromtimestamp(time_value, tz=timezone.utc)
+                return self._datetime_to_mpl_num(dt)
+            elif self.x_axis_name == "Ping time":
+                return float(time_value)
+            else:
+                # For ping number/index axes
+                return self._find_ping_index_for_time(time_value)
+        
+        return None
+    
+    def _find_ping_index_for_time(self, timestamp: float) -> Optional[float]:
+        """Find the ping index closest to a given unix timestamp."""
+        # Try to get pings from the first echogram
+        if not self.echograms:
+            return None
+        
+        first_echogram = next(iter(self.echograms.values()))
+        if hasattr(first_echogram, 'pings') and first_echogram.pings:
+            pings = first_echogram.pings
+            for idx, ping in enumerate(pings):
+                ping_obj = ping if not isinstance(ping, dict) else next(iter(ping.values()))
+                if ping_obj.get_timestamp() >= timestamp:
+                    return float(idx)
+            return float(len(pings) - 1)
+        
+        return None
+    
+    def _add_station_marker_to_slot(
+        self,
+        slot: EchogramSlot,
+        station_name: str,
+        start_x: float,
+        end_x: float,
+        line_color: str,
+        line_width: int,
+        pen_style: Any,
+        region_color: Optional[str],
+        region_alpha: float,
+        label_color: str,
+        label_size: str,
+        label_position: str,
+    ) -> None:
+        """Add station markers to a single slot."""
+        if slot.plot_item is None:
+            return
+        
+        # Create pen for lines
+        pen = pg.mkPen(color=line_color, width=line_width, style=pen_style)
+        
+        # Create start line
+        start_line = pg.InfiniteLine(pos=start_x, angle=90, pen=pen)
+        slot.plot_item.addItem(start_line)
+        
+        # Create end line
+        end_line = pg.InfiniteLine(pos=end_x, angle=90, pen=pen)
+        slot.plot_item.addItem(end_line)
+        
+        # Create region between lines
+        if region_color is None:
+            # Parse line_color and apply alpha
+            from pyqtgraph.Qt.QtGui import QColor
+            qcolor = QColor(line_color)
+            qcolor.setAlphaF(region_alpha)
+            brush = pg.mkBrush(qcolor)
+        else:
+            from pyqtgraph.Qt.QtGui import QColor
+            qcolor = QColor(region_color)
+            qcolor.setAlphaF(region_alpha)
+            brush = pg.mkBrush(qcolor)
+        
+        region = pg.LinearRegionItem(
+            values=(start_x, end_x),
+            orientation='vertical',
+            brush=brush,
+            pen=pg.mkPen(None),  # No border (we have lines)
+            movable=False,
+        )
+        # Insert region behind images but in front of background
+        slot.plot_item.addItem(region)
+        region.setZValue(-100)  # Behind images
+        
+        # Create label
+        label = pg.TextItem(
+            text=station_name,
+            color=label_color,
+            anchor=(0.5, 1.0 if label_position == 'top' else 0.0),
+        )
+        label.setFont(pg.QtGui.QFont('Arial', int(label_size.replace('pt', ''))))
+        slot.plot_item.addItem(label)
+        
+        # Position label at center of region
+        center_x = (start_x + end_x) / 2
+        self._update_label_position(slot, label, center_x, label_position)
+        
+        # Store references for cleanup and updates
+        slot.station_markers[station_name] = {
+            'start_line': start_line,
+            'end_line': end_line,
+            'region': region,
+            'label': label,
+            'label_position': label_position,
+            'center_x': center_x,
+        }
+        
+        # Connect to view range changes to update label position
+        vb = slot.plot_item.getViewBox()
+        vb.sigRangeChanged.connect(
+            lambda _, s=slot, lbl=label, cx=center_x, pos=label_position: 
+            self._update_label_position(s, lbl, cx, pos)
+        )
+    
+    def _update_label_position(
+        self, 
+        slot: EchogramSlot, 
+        label: pg.TextItem, 
+        center_x: float,
+        label_position: str
+    ) -> None:
+        """Update label position based on current view range."""
+        if slot.plot_item is None:
+            return
+        
+        vb = slot.plot_item.getViewBox()
+        y_range = vb.viewRange()[1]
+        
+        # Position at top or bottom of view
+        if label_position == 'top':
+            # Near top with small margin
+            y_pos = y_range[0] + (y_range[1] - y_range[0]) * 0.02
+        else:
+            # Near bottom with small margin  
+            y_pos = y_range[1] - (y_range[1] - y_range[0]) * 0.02
+        
+        label.setPos(center_x, y_pos)
+    
+    def clear_station_times(self, station_name: Optional[str] = None) -> None:
+        """Remove station time markers.
+        
+        Args:
+            station_name: If specified, remove only this station's markers.
+                         If None, remove all station markers.
+        """
+        for slot in self.slots:
+            if station_name is not None:
+                # Remove specific station
+                if station_name in slot.station_markers:
+                    self._remove_station_marker_from_slot(slot, station_name)
+            else:
+                # Remove all stations
+                for name in list(slot.station_markers.keys()):
+                    self._remove_station_marker_from_slot(slot, name)
+        
+        # Clear stored data if clearing all
+        if station_name is None:
+            self._station_data = None
+        
+        self._request_remote_draw()
+    
+    def _remove_station_marker_from_slot(self, slot: EchogramSlot, station_name: str) -> None:
+        """Remove a station marker from a slot."""
+        if station_name not in slot.station_markers:
+            return
+        
+        marker = slot.station_markers[station_name]
+        if slot.plot_item is not None:
+            for item_key in ['start_line', 'end_line', 'region', 'label']:
+                item = marker.get(item_key)
+                if item is not None:
+                    try:
+                        slot.plot_item.removeItem(item)
+                    except Exception:
+                        pass
+        
+        del slot.station_markers[station_name]
+    
+    def _recreate_station_markers(self) -> None:
+        """Recreate station markers after layout change."""
+        if hasattr(self, '_station_data') and self._station_data is not None:
+            data = self._station_data
+            # Temporarily clear the data to avoid clearing in add_station_times
+            self._station_data = None
+            self.add_station_times(
+                data['stations'],
+                line_color=data['line_color'],
+                line_width=data['line_width'],
+                line_style=data['line_style'],
+                region_color=data['region_color'],
+                region_alpha=data['region_alpha'],
+                label_color=data['label_color'],
+                label_size=data['label_size'],
+                label_position=data['label_position'],
+            )
     
     # =========================================================================
     # Cleanup

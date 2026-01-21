@@ -206,12 +206,28 @@ class __WCI_scaling_infos:
             vmax = _vmax + (_vmax - vmin) * 0.01
 
         # build array with backtraced positions (beam angle, range from transducer)
-        y_coordinates = np.linspace(hmin, hmax, horizontal_pixels)
-        res = y_coordinates[1] - y_coordinates[0]
-        z_coordinates = np.arange(vmin, vmax + res, res)
+        # Apply horizontal_pixels to the longer axis to maintain aspect ratio
+        # and prevent grid explosion when one dimension is much smaller than the other
+        h_range = hmax - hmin
+        v_range = vmax - vmin
+        
+        if h_range >= v_range:
+            # Horizontal is longer: apply max pixels to horizontal
+            y_pixels = horizontal_pixels
+            z_pixels = max(1, int(np.ceil(horizontal_pixels * v_range / h_range)))
+        else:
+            # Vertical is longer: apply max pixels to vertical
+            z_pixels = horizontal_pixels
+            y_pixels = max(1, int(np.ceil(horizontal_pixels * h_range / v_range)))
+        
+        y_coordinates = np.linspace(hmin, hmax, y_pixels)
+        z_coordinates = np.linspace(vmin, vmax, z_pixels)
+        
+        y_res = y_coordinates[1] - y_coordinates[0] if len(y_coordinates) > 1 else h_range
+        z_res = z_coordinates[1] - z_coordinates[0] if len(z_coordinates) > 1 else v_range
 
         # compute the extent
-        extent = [hmin - res * 0.5, hmax + res * 0.5, vmax + res * 0.5, vmin - res * 0.5]
+        extent = [hmin - y_res * 0.5, hmax + y_res * 0.5, vmax + z_res * 0.5, vmin - z_res * 0.5]
 
         # single ping case
         if not is_iterable(pings):

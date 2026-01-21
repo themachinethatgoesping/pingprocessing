@@ -2,6 +2,7 @@
 from collections import defaultdict
 import numpy as np
 import math
+import os
 from typing import Dict, List
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping.navigation as nav
@@ -46,6 +47,28 @@ def by_file_path(pings: List[I_Ping], progress: bool = True) -> Dict[str, List[I
 
     for ping in it:
         split_pings[ping.file_data.get_primary_file_path()].append(ping)
+
+    return split_pings
+
+
+def by_folder_path(pings: List[I_Ping], progress: bool = True) -> Dict[str, List[I_Ping]]:
+    """
+    Splits a list of pings by the folder path where the primary file is located.
+
+    Args:
+        pings (List[I_Ping]): A list of pings to be split.
+        progress (bool, optional): Whether to show a progress bar. Defaults to True.
+
+    Returns:
+        Dict[str, List[I_Ping]]: A dictionary where the keys are folder paths and the values are lists of pings.
+    """
+    it = get_progress_iterator(pings, progress, desc="Split pings by folder path")
+
+    split_pings = defaultdict(list)
+
+    for ping in it:
+        folder_path = os.path.dirname(ping.file_data.get_primary_file_path())
+        split_pings[folder_path].append(ping)
 
     return split_pings
 
