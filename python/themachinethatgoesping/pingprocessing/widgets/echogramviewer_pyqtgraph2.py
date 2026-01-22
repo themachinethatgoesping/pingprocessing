@@ -7,6 +7,7 @@ Features:
 - Synchronized crosshair for target investigation across frequencies
 - Tab-based quick access for single echogram view
 - Lazy loading pattern for performance
+- Interactive parameter editing (add, move, delete points)
 """
 from __future__ import annotations
 
@@ -15,13 +16,13 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import ipywidgets
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.jupyter import GraphicsLayoutWidget
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
 
 import themachinethatgoesping as theping
 from . import pyqtgraph_helpers as pgh
@@ -32,6 +33,102 @@ def _get_axis_names(echogram):
     if hasattr(echogram, 'coord_system'):
         return echogram.coord_system.x_axis_name, echogram.coord_system.y_axis_name
     return echogram.x_axis_name, echogram.y_axis_name
+
+
+class DraggableScatterPlotItem(pg.ScatterPlotItem):
+    """ScatterPlotItem that supports dragging individual points."""
+    
+    # Signal emitted when a point is dragged: (point_index, new_x, new_y)
+    sigPointDragged = QtCore.Signal(int, float, float)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._dragging_point_idx: Optional[int] = None
+        self._drag_start_pos: Optional[QtCore.QPointF] = None
+    
+    def mousePressEvent(self, ev: QtGui.QMouseEvent) -> None:
+        """Handle mouse press - start drag if on a point."""
+        if ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        
+        # Find clicked point
+        pos = ev.pos()
+        pts = self.pointsAt(pos)
+        if len(pts) > 0:
+            self._dragging_point_idx = pts[0].index()
+            self._drag_start_pos = pos
+            ev.accept()
+        else:
+            ev.ignore()
+    
+    def mouseMoveEvent(self, ev: QtGui.QMouseEvent) -> None:
+        """Handle mouse move - drag point if dragging."""
+        if self._dragging_point_idx is None:
+            ev.ignore()
+            return
+        
+        # Map to view coordinates
+        vb = self.getViewBox()
+        if vb is None:
+            ev.ignore()
+            return
+        
+        scene_pos = ev.scenePos()
+        view_pos = vb.mapSceneToView(scene_pos)
+        
+        # Emit signal with new position (y only changes, x stays same for order)
+        self.sigPointDragged.emit(self._dragging_point_idx, view_pos.x(), view_pos.y())
+        ev.accept()
+    
+    def mouseReleaseEvent(self, ev: QtGui.QMouseEvent) -> None:
+        """Handle mouse release - end drag."""
+        if self._dragging_point_idx is not None:
+            self._dragging_point_idx = None
+            self._drag_start_pos = None
+            ev.accept()
+        else:
+            ev.ignore()
+
+
+class SafePolyLineROI(pg.PolyLineROI):
+    """PolyLineROI subclass that disables right-click context menu on handles.
+    
+    The default PolyLineROI handles can crash when right-clicked due to
+    internal state issues. This subclass intercepts and ignores right-click
+    events to prevent crashes.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Override hoverEvent and context menu on all handles
+        self._disable_handle_context_menus()
+    
+    def _disable_handle_context_menus(self):
+        """Disable context menus on all handles to prevent crashes."""
+        for handle in self.handles:
+            handle_item = handle.get('item')
+            if handle_item is not None:
+                # Override the mouseClickEvent to ignore right clicks
+                original_click = handle_item.mouseClickEvent
+                def safe_click(ev, orig=original_click):
+                    if ev.button() == QtCore.Qt.MouseButton.RightButton:
+                        ev.accept()  # Accept but do nothing
+                        return
+                    orig(ev)
+                handle_item.mouseClickEvent = safe_click
+    
+    def addHandle(self, *args, **kwargs):
+        """Override to disable context menu on newly added handles."""
+        result = super().addHandle(*args, **kwargs)
+        self._disable_handle_context_menus()
+        return result
+    
+    def setPoints(self, points, closed=None):
+        """Override to disable context menu on handles after setting points."""
+        result = super().setPoints(points, closed)
+        self._disable_handle_context_menus()
+        return result
 
 
 class EchogramSlot:
@@ -301,6 +398,20 @@ class EchogramViewerMultiChannel:
         # Station time markers storage (for recreation after layout changes)
         self._station_data: Optional[Dict[str, Any]] = None
         
+        # Parameter editor state
+        self._param_edit_state = {
+            'active_param': None,  # Currently selected parameter name
+            'editing_data': None,  # Working copy of (x_coords, y_coords) in view coordinates
+            'native_data': None,   # Original (y_reference, vec_y_val) in native coordinates
+            'has_unsaved_changes': False,
+            'selected_point_idx': None,  # Index of selected point for delete
+            'synced_params': set(),  # Set of parameter names that should sync across echograms
+            'roi_items': {},  # Dict of slot_idx -> PolyLineROI (native PyQtGraph draggable line)
+            'line_items': {},  # Dict of slot_idx -> PlotCurveItem (for full-resolution display)
+            'display_indices': None,  # Mapping from display indices to actual data indices (for downsampling)
+            '_updating_roi': False,  # Flag to prevent feedback loops during ROI updates
+        }
+        
         # Output widget for errors/debug
         self.output = ipywidgets.Output()
         
@@ -433,7 +544,1057 @@ class EchogramViewerMultiChannel:
         
         # Hover label
         self.hover_label = ipywidgets.HTML(value="&nbsp;")
+        
+        # =====================================================================
+        # Parameter Editor UI
+        # =====================================================================
+        self._build_param_editor_ui()
     
+    def _build_param_editor_ui(self) -> None:
+        """Build UI components for interactive parameter editing."""
+        # Master echogram selector
+        self.w_param_master = ipywidgets.Dropdown(
+            description="Master:",
+            options=[],
+            value=None,
+            layout=ipywidgets.Layout(width='150px'),
+        )
+        self.w_param_master.observe(self._on_param_master_change, names='value')
+        
+        # Parameter selector dropdown
+        self.w_param_select = ipywidgets.Dropdown(
+            description="Param:",
+            options=[("(none)", None)],
+            value=None,
+            layout=ipywidgets.Layout(width='150px'),
+        )
+        self.w_param_select.observe(self._on_param_select_change, names='value')
+        
+        # Button to refresh parameter list
+        self.btn_refresh_params = ipywidgets.Button(
+            description="↻",
+            tooltip="Refresh master and parameter lists",
+            layout=ipywidgets.Layout(width='35px'),
+        )
+        self.btn_refresh_params.on_click(lambda _: self._refresh_param_master_list())
+        
+        # New empty parameter button
+        self.btn_new_param = ipywidgets.Button(
+            description="New",
+            tooltip="Create a new empty parameter",
+            layout=ipywidgets.Layout(width='50px'),
+        )
+        self.btn_new_param.on_click(self._on_new_param_click)
+        
+        # Copy parameter controls
+        self.w_new_param_name = ipywidgets.Text(
+            placeholder="Name",
+            layout=ipywidgets.Layout(width='100px'),
+        )
+        self.btn_copy_param = ipywidgets.Button(
+            description="Copy",
+            tooltip="Copy selected parameter with new name",
+            layout=ipywidgets.Layout(width='50px'),
+        )
+        self.btn_copy_param.on_click(self._on_copy_param_click)
+        
+        # Copy to all button (propagate from master to all echograms)
+        self.btn_copy_to_all = ipywidgets.Button(
+            description="→All",
+            tooltip="Copy this parameter from master to all other echograms",
+            layout=ipywidgets.Layout(width='50px'),
+        )
+        self.btn_copy_to_all.on_click(self._on_copy_to_all_click)
+        
+        # Sync checkbox
+        self.w_param_sync = ipywidgets.Checkbox(
+            value=False,
+            description="Sync",
+            tooltip="Sync edits across all echograms (only when param exists in all)",
+            indent=False,
+            disabled=True,  # Disabled until param is in all echograms
+            layout=ipywidgets.Layout(width='70px'),
+        )
+        self.w_param_sync.observe(self._on_param_sync_change, names='value')
+        
+        # Apply/Discard buttons
+        self.btn_apply_param = ipywidgets.Button(
+            description="Apply",
+            tooltip="Save changes to echogram(s)",
+            button_style='success',
+            layout=ipywidgets.Layout(width='60px'),
+        )
+        self.btn_apply_param.on_click(self._on_apply_param_click)
+        
+        self.btn_discard_param = ipywidgets.Button(
+            description="Discard",
+            tooltip="Discard unsaved changes",
+            button_style='warning',
+            layout=ipywidgets.Layout(width='60px'),
+        )
+        self.btn_discard_param.on_click(self._on_discard_param_click)
+        
+        # Add point button (alternative to 'a' key)
+        self.btn_add_point = ipywidgets.Button(
+            description="+Point",
+            tooltip="Add a point at the current crosshair position",
+            layout=ipywidgets.Layout(width='60px'),
+        )
+        self.btn_add_point.on_click(lambda _: self._add_point_at_cursor())
+        
+        # Delete point button (alternative to Delete key)
+        self.btn_del_point = ipywidgets.Button(
+            description="-Point",
+            tooltip="Delete the selected point",
+            layout=ipywidgets.Layout(width='60px'),
+        )
+        self.btn_del_point.on_click(lambda _: self._delete_selected_point())
+        
+        # Status label
+        self.w_param_status = ipywidgets.HTML(value="")
+        
+        # Help text (updated for PolyLineROI interaction + keyboard shortcuts)
+        self.w_param_help = ipywidgets.HTML(
+            value="<small>Drag handles to move | <b>Click plot, then A</b>=add point | <b>Del/Backspace</b>=delete nearest point | Buttons: +Point/-Point</small>",
+            layout=ipywidgets.Layout(width='auto'),
+        )
+        
+        # Initially refresh master and parameter list
+        self._refresh_param_master_list()
+    
+    def _refresh_param_master_list(self) -> None:
+        """Refresh the master echogram dropdown."""
+        # Build options from echogram keys
+        options = []
+        for key in self.echograms.keys():
+            options.append((str(key), key))
+        
+        if not options:
+            self.w_param_master.options = []
+            self.w_param_master.value = None
+            self._refresh_param_list()
+            return
+        
+        old_value = self.w_param_master.value
+        self.w_param_master.options = options
+        
+        # Preserve selection if still valid
+        valid_keys = [k for _, k in options]
+        if old_value in valid_keys:
+            self.w_param_master.value = old_value
+        else:
+            self.w_param_master.value = options[0][1] if options else None
+        
+        # Refresh param list based on selected master
+        self._refresh_param_list()
+    
+    def _on_param_master_change(self, change: Dict[str, Any]) -> None:
+        """Handle master echogram selection change."""
+        # Refresh parameter list for the new master
+        self._refresh_param_list()
+        
+        # Clear current selection if it doesn't exist in new master
+        self._param_edit_state['active_param'] = None
+        self._param_edit_state['editing_data'] = None
+        self._param_edit_state['native_data'] = None
+        self._param_edit_state['has_unsaved_changes'] = False
+        self._param_edit_state['selected_point_idx'] = None
+        self._clear_param_visualization()
+        self.w_param_status.value = ""
+    
+    def _get_master_echogram(self) -> Optional[Any]:
+        """Get the currently selected master echogram."""
+        master_key = self.w_param_master.value
+        if master_key is None:
+            return None
+        return self.echograms.get(master_key)
+    
+    def _refresh_param_list(self) -> None:
+        """Refresh the parameter dropdown with parameters from the master echogram."""
+        master_eg = self._get_master_echogram()
+        
+        if master_eg is None or not hasattr(master_eg, '_coord_system'):
+            self.w_param_select.options = [("(none)", None)]
+            self.w_param_select.value = None
+            self.w_param_sync.disabled = True
+            return
+        
+        cs = master_eg._coord_system
+        if not hasattr(cs, 'param'):
+            self.w_param_select.options = [("(none)", None)]
+            self.w_param_select.value = None
+            self.w_param_sync.disabled = True
+            return
+        
+        params = set(cs.param.keys())
+        
+        # Build options list
+        options = [("(none)", None)]
+        for name in sorted(params):
+            options.append((name, name))
+        
+        # Preserve selection if still valid
+        old_value = self.w_param_select.value
+        self.w_param_select.options = options
+        if old_value in params:
+            self.w_param_select.value = old_value
+        else:
+            self.w_param_select.value = None
+        
+        # Update sync checkbox state based on current param
+        self._update_sync_checkbox_state()
+    
+    def _update_sync_checkbox_state(self) -> None:
+        """Update sync checkbox enabled state based on whether param exists in all echograms."""
+        param_name = self.w_param_select.value
+        if param_name is None:
+            self.w_param_sync.disabled = True
+            self.w_param_sync.value = False
+            return
+        
+        # Check if param exists in all echograms
+        all_have_param = True
+        for eg in self.echograms.values():
+            if not hasattr(eg, '_coord_system') or not hasattr(eg._coord_system, 'param'):
+                all_have_param = False
+                break
+            if param_name not in eg._coord_system.param:
+                all_have_param = False
+                break
+        
+        self.w_param_sync.disabled = not all_have_param
+        if not all_have_param:
+            self.w_param_sync.value = False
+    
+    def _on_param_select_change(self, change: Dict[str, Any]) -> None:
+        """Handle parameter selection change."""
+        new_param = change['new']
+        
+        # Check for unsaved changes
+        if self._param_edit_state['has_unsaved_changes']:
+            # Show warning but allow change (user can discard or apply first)
+            self.w_param_status.value = "<span style='color:orange'>⚠ Unsaved changes exist</span>"
+        
+        # Update state
+        self._param_edit_state['active_param'] = new_param
+        self._param_edit_state['selected_point_idx'] = None
+        
+        # Update sync checkbox state
+        self._update_sync_checkbox_state()
+        
+        # Load parameter data
+        if new_param is not None:
+            self._load_param_for_editing(new_param)
+        else:
+            self._param_edit_state['editing_data'] = None
+            self._param_edit_state['native_data'] = None
+            self._param_edit_state['has_unsaved_changes'] = False
+            self.w_param_status.value = ""
+        
+        # Update visualization
+        self._update_param_visualization()
+    
+    def _load_param_for_editing(self, param_name: str) -> None:
+        """Load parameter data for editing from the selected master echogram.
+        
+        Handles both sparse format (control points) and dense format (per-ping values).
+        Sparse format is preferred for editing as it shows exact control points.
+        """
+        master_eg = self._get_master_echogram()
+        
+        if master_eg is None:
+            self.w_param_status.value = "<span style='color:red'>No master echogram selected</span>"
+            return
+        
+        if not hasattr(master_eg, '_coord_system'):
+            self.w_param_status.value = "<span style='color:red'>Echogram has no coordinate system</span>"
+            return
+        
+        cs = master_eg._coord_system
+        if param_name not in cs.param:
+            self.w_param_status.value = f"<span style='color:red'>Parameter '{param_name}' not found</span>"
+            return
+        
+        y_reference, param_data = cs.param[param_name]
+        
+        # Check if sparse format: (y_reference, (sparse_x_ping_time, sparse_y_native))
+        is_sparse = isinstance(param_data, tuple) and len(param_data) == 2
+        
+        try:
+            if is_sparse:
+                # Sparse format - load the exact control points
+                sparse_x_ping_time, sparse_y_native = param_data
+                sparse_x_ping_time = np.asarray(sparse_x_ping_time, dtype=np.float64)
+                sparse_y_native = np.asarray(sparse_y_native, dtype=np.float64)
+                
+                # Store native data
+                self._param_edit_state['native_data'] = (y_reference, (sparse_x_ping_time.copy(), sparse_y_native.copy()))
+                
+                # Convert sparse x (ping_time in unix seconds) to view x coordinates
+                # View x depends on x_axis_name:
+                # - "Ping time": unix timestamp (seconds)
+                # - "Date time": matplotlib day number
+                # - "Ping index": ping index
+                all_ping_times = np.array(cs.ping_times)
+                
+                if cs.x_axis_name == "Date time":
+                    # Convert ping_times to matplotlib day numbers for view
+                    all_view_x = all_ping_times / 86400.0  # unix seconds to days
+                elif cs.x_axis_name == "Ping time":
+                    all_view_x = all_ping_times  # already in seconds
+                else:
+                    # Ping index - need to interpolate
+                    all_view_x = np.arange(len(all_ping_times), dtype=np.float64)
+                
+                # Sort for interpolation
+                sort_idx = np.argsort(all_ping_times)
+                sorted_ping_times = all_ping_times[sort_idx]
+                sorted_view_x = all_view_x[sort_idx]
+                
+                # Convert ping_times to view x
+                x_view = np.interp(sparse_x_ping_time, sorted_ping_times, sorted_view_x)
+                
+                # Convert sparse y (native) to view y coordinates
+                y_view = self._convert_native_to_view_y(cs, sparse_y_native, y_reference)
+                
+                self._param_edit_state['editing_data'] = (x_view, y_view)
+                self._param_edit_state['has_unsaved_changes'] = False
+                self.w_param_status.value = f"<span style='color:green'>Loaded '{param_name}' ({len(x_view)} control points)</span>"
+            else:
+                # Dense format - load downsampled for editing
+                self._param_edit_state['native_data'] = (y_reference, np.array(param_data).copy())
+                
+                x_coords, y_coords = cs.get_ping_param(param_name, use_x_coordinates=False)
+                x_coords = np.array([self._extent_value_to_float(x) for x in x_coords])
+                y_coords = np.array(y_coords, dtype=np.float64)
+                
+                # Filter out NaN values
+                valid_mask = np.isfinite(y_coords)
+                x_valid = x_coords[valid_mask]
+                y_valid = y_coords[valid_mask]
+                
+                # Downsample if too many points
+                MAX_EDIT_POINTS = 500
+                if len(x_valid) > MAX_EDIT_POINTS:
+                    step = len(x_valid) // MAX_EDIT_POINTS
+                    x_valid = x_valid[::step]
+                    y_valid = y_valid[::step]
+                    self.w_param_status.value = f"<span style='color:green'>Loaded '{param_name}' ({len(x_valid)} points, downsampled from dense)</span>"
+                else:
+                    n_valid = len(x_valid)
+                    if n_valid == 0:
+                        self.w_param_status.value = f"<span style='color:green'>Loaded '{param_name}' (empty - use 'a' to add)</span>"
+                    else:
+                        self.w_param_status.value = f"<span style='color:green'>Loaded '{param_name}' ({n_valid} dense points)</span>"
+                
+                self._param_edit_state['editing_data'] = (x_valid, y_valid)
+                self._param_edit_state['has_unsaved_changes'] = False
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.w_param_status.value = f"<span style='color:red'>Error: {e}</span>"
+            self._param_edit_state['editing_data'] = None
+    
+    def _on_copy_param_click(self, _: Any) -> None:
+        """Handle copy parameter button click - copy to master echogram only."""
+        source_param = self.w_param_select.value
+        new_name = self.w_new_param_name.value.strip()
+        
+        if source_param is None:
+            self.w_param_status.value = "<span style='color:red'>Select a parameter to copy</span>"
+            return
+        
+        if not new_name:
+            self.w_param_status.value = "<span style='color:red'>Enter a name for the copy</span>"
+            return
+        
+        master_eg = self._get_master_echogram()
+        if master_eg is None:
+            self.w_param_status.value = "<span style='color:red'>No master echogram selected</span>"
+            return
+        
+        if not hasattr(master_eg, '_coord_system'):
+            self.w_param_status.value = "<span style='color:red'>Master has no coordinate system</span>"
+            return
+        
+        cs = master_eg._coord_system
+        if source_param not in cs.param:
+            self.w_param_status.value = f"<span style='color:red'>Parameter '{source_param}' not found in master</span>"
+            return
+        
+        # Check if new name already exists
+        if new_name in cs.param:
+            self.w_param_status.value = f"<span style='color:red'>Parameter '{new_name}' already exists</span>"
+            return
+        
+        # Copy the parameter within master
+        y_ref, vec_y_val = cs.param[source_param]
+        cs.param[new_name] = (y_ref, np.array(vec_y_val).copy())
+        
+        self.w_param_status.value = f"<span style='color:green'>Copied '{source_param}' to '{new_name}'</span>"
+        self._refresh_param_list()
+        # Select the new parameter
+        self.w_param_select.value = new_name
+        self.w_new_param_name.value = ""
+    
+    def _on_new_param_click(self, _: Any) -> None:
+        """Create a new empty parameter in the master echogram."""
+        new_name = self.w_new_param_name.value.strip()
+        
+        if not new_name:
+            self.w_param_status.value = "<span style='color:red'>Enter a name for the new parameter</span>"
+            return
+        
+        master_eg = self._get_master_echogram()
+        if master_eg is None:
+            self.w_param_status.value = "<span style='color:red'>No master echogram selected</span>"
+            return
+        
+        if not hasattr(master_eg, '_coord_system'):
+            self.w_param_status.value = "<span style='color:red'>Master has no coordinate system</span>"
+            return
+        
+        cs = master_eg._coord_system
+        
+        # Check if already exists
+        if new_name in cs.param:
+            self.w_param_status.value = f"<span style='color:red'>Parameter '{new_name}' already exists</span>"
+            return
+        
+        # Create empty parameter with NaN values (one per ping)
+        n_pings = cs.n_pings
+        empty_values = np.full(n_pings, np.nan, dtype=np.float64)
+        
+        # Use current y axis name as y_reference (e.g., 'Depth (m)', 'Range (m)', etc.)
+        y_reference = cs.y_axis_name if cs.y_axis_name else "Y indice"
+        cs.param[new_name] = (y_reference, empty_values)
+        
+        self.w_param_status.value = f"<span style='color:green'>Created empty '{new_name}'</span>"
+        self._refresh_param_list()
+        self.w_param_select.value = new_name
+        self.w_new_param_name.value = ""
+    
+    def _on_copy_to_all_click(self, _: Any) -> None:
+        """Copy the current parameter from master to all other echograms."""
+        param_name = self.w_param_select.value
+        if param_name is None:
+            self.w_param_status.value = "<span style='color:red'>Select a parameter first</span>"
+            return
+        
+        master_eg = self._get_master_echogram()
+        if master_eg is None:
+            self.w_param_status.value = "<span style='color:red'>No master echogram selected</span>"
+            return
+        
+        if not hasattr(master_eg, '_coord_system'):
+            self.w_param_status.value = "<span style='color:red'>Master has no coordinate system</span>"
+            return
+        
+        master_cs = master_eg._coord_system
+        if param_name not in master_cs.param:
+            self.w_param_status.value = f"<span style='color:red'>Parameter '{param_name}' not in master</span>"
+            return
+        
+        y_ref, vec_y_val = master_cs.param[param_name]
+        master_n_pings = len(vec_y_val)
+        
+        # Pre-convert to numpy array once
+        vec_y_val_np = np.asarray(vec_y_val, dtype=np.float64)
+        
+        # Copy to all other echograms
+        copied_count = 0
+        for key, eg in self.echograms.items():
+            if eg is master_eg:
+                continue
+            if not hasattr(eg, '_coord_system'):
+                continue
+            
+            cs = eg._coord_system
+            n_pings = cs.n_pings
+            
+            # Create appropriate array
+            if n_pings != master_n_pings:
+                new_values = np.full(n_pings, np.nan, dtype=np.float64)
+            else:
+                new_values = vec_y_val_np.copy()
+            
+            cs.param[param_name] = (y_ref, new_values)
+            copied_count += 1
+        
+        # Update UI
+        if copied_count > 0:
+            self.w_param_status.value = f"<span style='color:green'>Copied to {copied_count} echogram(s)</span>"
+            # Enable sync checkbox since param now exists in all
+            self.w_param_sync.disabled = False
+        else:
+            self.w_param_status.value = "<span style='color:orange'>No other echograms to copy to</span>"
+    
+    def _on_param_sync_change(self, change: Dict[str, Any]) -> None:
+        """Handle sync checkbox change."""
+        param_name = self._param_edit_state['active_param']
+        if param_name is None:
+            return
+        
+        if change['new']:
+            self._param_edit_state['synced_params'].add(param_name)
+        else:
+            self._param_edit_state['synced_params'].discard(param_name)
+    
+    def _on_apply_param_click(self, _: Any) -> None:
+        """Apply edited parameter back to echogram(s).
+        
+        Stores sparse control points directly in cs.param as:
+        (y_reference, (sparse_x_in_ping_time, sparse_y_in_native))
+        """
+        param_name = self._param_edit_state['active_param']
+        if param_name is None:
+            return
+        
+        editing_data = self._param_edit_state['editing_data']
+        native_data = self._param_edit_state['native_data']
+        
+        if editing_data is None or native_data is None:
+            self.w_param_status.value = "<span style='color:red'>No data to apply</span>"
+            return
+        
+        x_coords, y_coords = editing_data
+        y_reference, _ = native_data
+        
+        # Determine which echograms to update
+        if self.w_param_sync.value and param_name in self._param_edit_state['synced_params']:
+            echograms_to_update = list(self.echograms.values())
+        else:
+            # Just the master echogram
+            master_eg = self._get_master_echogram()
+            echograms_to_update = [master_eg] if master_eg is not None else []
+        
+        # Convert from view coordinates back to native and save as sparse
+        updated_count = 0
+        for eg in echograms_to_update:
+            if not hasattr(eg, '_coord_system'):
+                continue
+            cs = eg._coord_system
+            
+            try:
+                # Convert view y_coords back to native y_reference coordinates
+                native_y = self._convert_view_to_native_y(cs, y_coords, y_reference)
+                
+                # Convert view x_coords to ping_times (unix seconds)
+                # View x depends on x_axis_name:
+                # - "Ping time": unix timestamp (seconds)
+                # - "Date time": matplotlib day number (days since 1970)
+                # - "Ping index": ping index
+                all_ping_times = np.array(cs.ping_times)
+                
+                if cs.x_axis_name == "Date time":
+                    # View x is in matplotlib day numbers, convert to view format
+                    all_view_x = all_ping_times / 86400.0  # unix seconds to days
+                elif cs.x_axis_name == "Ping time":
+                    all_view_x = all_ping_times  # already in seconds
+                else:
+                    # Ping index
+                    all_view_x = np.arange(len(all_ping_times), dtype=np.float64)
+                
+                # Sort for proper interpolation
+                sort_idx = np.argsort(all_view_x)
+                sorted_view_x = all_view_x[sort_idx]
+                sorted_ping_times = all_ping_times[sort_idx]
+                
+                # Convert x_coords (view) to ping_times
+                x_as_ping_times = np.interp(x_coords, sorted_view_x, sorted_ping_times)
+                
+                # Sort by x for storage
+                sort_order = np.argsort(x_as_ping_times)
+                x_as_ping_times = x_as_ping_times[sort_order]
+                native_y = native_y[sort_order]
+                
+                # Deduplicate x values (average y for duplicates) - required by LinearInterpolator
+                unique_x, indices = np.unique(x_as_ping_times, return_inverse=True)
+                if len(unique_x) < len(x_as_ping_times):
+                    # Average y values for duplicate x
+                    sums = np.bincount(indices, weights=native_y)
+                    counts = np.bincount(indices)
+                    unique_y = sums / counts
+                    x_as_ping_times = unique_x
+                    native_y = unique_y
+                
+                # Store as sparse format: (y_reference, (x_ping_times, y_native))
+                cs.param[param_name] = (y_reference, (x_as_ping_times.copy(), native_y.copy()))
+                updated_count += 1
+            except Exception as e:
+                with self.output:
+                    print(f"Error updating {eg}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        if updated_count > 0:
+            self._param_edit_state['has_unsaved_changes'] = False
+            self._param_edit_state['native_data'] = (y_reference, (x_as_ping_times.copy(), native_y.copy()))
+            self.w_param_status.value = f"<span style='color:green'>Applied {len(x_coords)} points to {updated_count} echogram(s)</span>"
+        else:
+            self.w_param_status.value = "<span style='color:red'>Failed to apply changes</span>"
+    
+    def _on_discard_param_click(self, _: Any) -> None:
+        """Discard unsaved changes and reload from echogram."""
+        param_name = self._param_edit_state['active_param']
+        if param_name is not None:
+            self._load_param_for_editing(param_name)
+            self._update_param_visualization()
+            self.w_param_status.value = "<span style='color:blue'>Changes discarded</span>"
+    
+    def _convert_view_to_native_y(self, cs, view_y: np.ndarray, y_reference: str) -> np.ndarray:
+        """Convert y values from current view coordinates to native parameter coordinates.
+        
+        Args:
+            cs: EchogramCoordinateSystem
+            view_y: Y values in current view coordinates
+            y_reference: Target native coordinate type
+            
+        Returns:
+            Y values in native coordinate system
+        """
+        # Current y coordinates are in cs.y_axis_name
+        # We need to convert to y_reference
+        
+        # First convert view_y to sample indices
+        # view_y = a_y + b_y * sample_idx, so sample_idx = (view_y - a_y) / b_y
+        if cs._affine_sample_to_y is None:
+            return view_y  # No conversion available
+        
+        a_y, b_y = cs._affine_sample_to_y
+        # Use mean coefficients for now (could be more sophisticated)
+        a_y_mean = np.nanmean(a_y)
+        b_y_mean = np.nanmean(b_y)
+        
+        if b_y_mean == 0:
+            sample_indices = view_y
+        else:
+            sample_indices = (view_y - a_y_mean) / b_y_mean
+        
+        # Now convert sample indices to native coordinate
+        match y_reference:
+            case "Y indice":
+                return sample_indices
+            case "Sample number":
+                if not cs.has_sample_nrs:
+                    return sample_indices
+                a, b = cs._affine_sample_to_sample_nr
+                a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                return a_mean + b_mean * sample_indices
+            case "Depth (m)":
+                if not cs.has_depths:
+                    return sample_indices
+                a, b = cs._affine_sample_to_depth
+                a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                return a_mean + b_mean * sample_indices
+            case "Range (m)":
+                if not cs.has_ranges:
+                    return sample_indices
+                a, b = cs._affine_sample_to_range
+                a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                return a_mean + b_mean * sample_indices
+            case _:
+                return view_y
+    
+    def _convert_native_to_view_y(self, cs, native_y: np.ndarray, y_reference: str) -> np.ndarray:
+        """Convert y values from native parameter coordinates to current view coordinates.
+        
+        Args:
+            cs: EchogramCoordinateSystem
+            native_y: Y values in native coordinate system (y_reference)
+            y_reference: Source native coordinate type
+            
+        Returns:
+            Y values in current view coordinates
+        """
+        # First convert native_y to sample indices
+        match y_reference:
+            case "Y indice":
+                sample_indices = native_y
+            case "Sample number":
+                if not cs.has_sample_nrs:
+                    sample_indices = native_y
+                else:
+                    a, b = cs._affine_sample_to_sample_nr
+                    a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                    if b_mean != 0:
+                        sample_indices = (native_y - a_mean) / b_mean
+                    else:
+                        sample_indices = native_y
+            case "Depth (m)":
+                if not cs.has_depths:
+                    sample_indices = native_y
+                else:
+                    a, b = cs._affine_sample_to_depth
+                    a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                    if b_mean != 0:
+                        sample_indices = (native_y - a_mean) / b_mean
+                    else:
+                        sample_indices = native_y
+            case "Range (m)":
+                if not cs.has_ranges:
+                    sample_indices = native_y
+                else:
+                    a, b = cs._affine_sample_to_range
+                    a_mean, b_mean = np.nanmean(a), np.nanmean(b)
+                    if b_mean != 0:
+                        sample_indices = (native_y - a_mean) / b_mean
+                    else:
+                        sample_indices = native_y
+            case _:
+                sample_indices = native_y
+        
+        # Now convert sample indices to current view coordinates
+        if cs._affine_sample_to_y is None:
+            return sample_indices
+        
+        a_y, b_y = cs._affine_sample_to_y
+        a_y_mean = np.nanmean(a_y)
+        b_y_mean = np.nanmean(b_y)
+        
+        return a_y_mean + b_y_mean * sample_indices
+    
+    def _update_param_visualization(self) -> None:
+        """Update the parameter visualization on all visible plots using PolyLineROI."""
+        # Remove old visualization items
+        self._clear_param_visualization()
+        
+        param_name = self._param_edit_state['active_param']
+        editing_data = self._param_edit_state['editing_data']
+        
+        if param_name is None:
+            return
+        
+        # Handle None or empty editing_data
+        if editing_data is None:
+            x_coords = np.array([], dtype=np.float64)
+            y_coords = np.array([], dtype=np.float64)
+        else:
+            x_coords, y_coords = editing_data
+        
+        n_points = len(x_coords)
+        
+        # For large datasets, use downsampling for ROI handles
+        # Show all points as a line but only create draggable handles for subset
+        MAX_ROI_HANDLES = 500  # PolyLineROI can get slow with too many handles
+        if n_points > MAX_ROI_HANDLES:
+            # Downsample for ROI handles (keep every nth point)
+            step = max(1, n_points // MAX_ROI_HANDLES)
+            display_indices = np.arange(0, n_points, step)
+            x_display = x_coords[display_indices]
+            y_display = y_coords[display_indices]
+            is_downsampled = True
+        else:
+            x_display = x_coords
+            y_display = y_coords
+            display_indices = np.arange(n_points) if n_points > 0 else np.array([], dtype=int)
+            is_downsampled = False
+        
+        # Store mapping for handle->data index conversion
+        self._param_edit_state['display_indices'] = display_indices
+        
+        # Create visualization on each visible slot
+        for slot in self._get_visible_slots():
+            if slot.plot_item is None:
+                continue
+            
+            # If downsampled, show full line separately for accuracy
+            if is_downsampled and n_points > 0:
+                pen = pg.mkPen(color='#FF6600', width=2, style=QtCore.Qt.PenStyle.DashLine)
+                line_item = pg.PlotCurveItem(x_coords, y_coords, pen=pen)
+                slot.plot_item.addItem(line_item)
+                self._param_edit_state['line_items'][slot.slot_idx] = line_item
+            
+            # Create PolyLineROI for interactive editing
+            # Use SafePolyLineROI to prevent crashes from right-click on handles
+            if len(x_display) > 0:
+                # Convert to list of [x, y] positions for PolyLineROI
+                positions = [[float(x_display[i]), float(y_display[i])] for i in range(len(x_display))]
+                
+                roi = SafePolyLineROI(
+                    positions,
+                    closed=False,
+                    pen=pg.mkPen('#FF6600', width=2),
+                    hoverPen=pg.mkPen('#FFAA00', width=3),
+                    handlePen=pg.mkPen('#FF6600', width=1),
+                    handleHoverPen=pg.mkPen('#FF0000', width=2),
+                    movable=False,  # Don't allow moving entire ROI, only handles
+                    removable=False,
+                )
+                
+                # Connect signal for when handles are dragged
+                roi.sigRegionChanged.connect(lambda r=roi, s=slot: self._on_roi_changed(r, s))
+                roi.sigRegionChangeFinished.connect(lambda r=roi, s=slot: self._on_roi_change_finished(r, s))
+                
+                slot.plot_item.addItem(roi)
+                self._param_edit_state['roi_items'][slot.slot_idx] = roi
+            
+            elif n_points == 0:
+                # No points - show message (handled via status label)
+                pass
+        
+        if is_downsampled:
+            self.w_param_status.value = f"<span style='color:orange'>Showing {len(x_display)}/{n_points} handles (downsampled)</span>"
+        
+        self._request_remote_draw()
+    
+    def _on_roi_changed(self, roi: pg.PolyLineROI, slot: EchogramSlot) -> None:
+        """Handle ROI being dragged - update data in real-time.
+        
+        During drag we update X and Y coordinates from the active ROI.
+        We don't sync other ROIs during drag to avoid feedback loops.
+        Sorting happens only when drag finishes.
+        """
+        if self._param_edit_state.get('_updating_roi'):
+            return  # Prevent feedback loops
+        
+        # Mark that we're dragging
+        self._param_edit_state['_is_dragging_roi'] = True
+        self._param_edit_state['_active_drag_slot'] = slot.slot_idx
+        self._param_edit_state['has_unsaved_changes'] = True
+    
+    def _on_roi_change_finished(self, roi: pg.PolyLineROI, slot: EchogramSlot) -> None:
+        """Handle ROI drag finished - read final positions, resort if needed, rebuild.
+        
+        Only rebuilds the visualization if points crossed each other on X axis.
+        """
+        if not self._param_edit_state.get('_is_dragging_roi'):
+            return
+        
+        self._param_edit_state['_is_dragging_roi'] = False
+        self._param_edit_state['_active_drag_slot'] = None
+        
+        editing_data = self._param_edit_state['editing_data']
+        if editing_data is None:
+            return
+        
+        try:
+            # Get current positions from ROI handles
+            handle_positions = roi.getLocalHandlePositions()
+            if len(handle_positions) == 0:
+                return
+            
+            x_coords, y_coords = editing_data
+            display_indices = self._param_edit_state.get('display_indices')
+            
+            # Read final positions from the ROI
+            for i, (name, pos) in enumerate(handle_positions):
+                if display_indices is not None and i < len(display_indices):
+                    actual_idx = display_indices[i]
+                else:
+                    actual_idx = i
+                
+                if 0 <= actual_idx < len(x_coords):
+                    x_coords[actual_idx] = pos.x()
+                    y_coords[actual_idx] = pos.y()
+            
+            # Check if points are out of order (need resorting)
+            needs_resort = False
+            for i in range(len(x_coords) - 1):
+                if x_coords[i] > x_coords[i + 1]:
+                    needs_resort = True
+                    break
+            
+            if needs_resort:
+                # Sort by X coordinate
+                sort_indices = np.argsort(x_coords)
+                x_coords = x_coords[sort_indices].copy()
+                y_coords = y_coords[sort_indices].copy()
+                self._param_edit_state['editing_data'] = (x_coords, y_coords)
+                
+                # Rebuild visualization with sorted data
+                self._clear_param_visualization()
+                self._update_param_visualization()
+                self.w_param_status.value = "<span style='color:orange'>Points reordered (unsaved)</span>"
+            else:
+                # Just update the data, no need to rebuild ROI
+                self._param_edit_state['editing_data'] = (x_coords, y_coords)
+                
+                # Update line items if downsampled
+                for slot_idx, line_item in list(self._param_edit_state['line_items'].items()):
+                    try:
+                        line_item.setData(x_coords, y_coords)
+                    except Exception:
+                        pass
+                
+                # Sync other ROIs
+                self._param_edit_state['_updating_roi'] = True
+                try:
+                    for other_slot_idx, other_roi in list(self._param_edit_state['roi_items'].items()):
+                        if other_slot_idx != slot.slot_idx:
+                            try:
+                                if display_indices is not None:
+                                    x_disp = x_coords[display_indices]
+                                    y_disp = y_coords[display_indices]
+                                else:
+                                    x_disp = x_coords
+                                    y_disp = y_coords
+                                positions = [[float(x_disp[j]), float(y_disp[j])] for j in range(len(x_disp))]
+                                other_roi.setPoints(positions)
+                            except Exception:
+                                pass
+                finally:
+                    self._param_edit_state['_updating_roi'] = False
+                
+                self.w_param_status.value = "<span style='color:orange'>Modified (unsaved)</span>"
+            
+        except Exception as e:
+            with self.output:
+                print(f"ROI finish error: {e}")
+            self.w_param_status.value = f"<span style='color:red'>Error: {e}</span>"
+    
+    def _clear_param_visualization(self) -> None:
+        """Remove parameter visualization items from all plots."""
+        # Remove ROI items
+        for slot_idx, roi in list(self._param_edit_state.get('roi_items', {}).items()):
+            slot = self.slots[slot_idx] if slot_idx < len(self.slots) else None
+            if slot and slot.plot_item:
+                try:
+                    slot.plot_item.removeItem(roi)
+                except Exception:
+                    pass
+        self._param_edit_state['roi_items'] = {}
+        
+        # Remove line items
+        for slot_idx, line in list(self._param_edit_state['line_items'].items()):
+            slot = self.slots[slot_idx] if slot_idx < len(self.slots) else None
+            if slot and slot.plot_item:
+                try:
+                    slot.plot_item.removeItem(line)
+                except Exception:
+                    pass
+        self._param_edit_state['line_items'].clear()
+    
+
+    
+    def _delete_selected_point(self) -> bool:
+        """Delete the point closest to the cursor position on the X-axis.
+        
+        The deletion finds the point with the smallest X-axis distance to the
+        current crosshair position, ensuring the user deletes the intended point.
+        """
+        # Prevent deletion during active drag to avoid crashes
+        if self._param_edit_state.get('_is_dragging_roi'):
+            self.w_param_status.value = "<span style='color:red'>Cannot delete while dragging</span>"
+            return False
+        
+        # Prevent rapid-fire deletions
+        if self._param_edit_state.get('_deletion_in_progress'):
+            return False
+        
+        try:
+            self._param_edit_state['_deletion_in_progress'] = True
+            
+            editing_data = self._param_edit_state['editing_data']
+            
+            if editing_data is None:
+                self.w_param_status.value = "<span style='color:red'>No parameter data to delete from</span>"
+                return False
+            
+            x_coords, y_coords = editing_data
+            
+            if len(x_coords) == 0:
+                self.w_param_status.value = "<span style='color:red'>No points to delete</span>"
+                return False
+            
+            # Find point closest to cursor on X-axis
+            cursor_pos = getattr(self, '_last_crosshair_position', None)
+            if cursor_pos is not None:
+                cursor_x = cursor_pos[0]
+                # Find index of point with minimum X distance to cursor
+                x_distances = np.abs(x_coords - cursor_x)
+                idx = int(np.argmin(x_distances))
+            else:
+                # Fallback to last point if no cursor position
+                idx = len(x_coords) - 1
+            
+            new_x = np.delete(x_coords, idx)
+            new_y = np.delete(y_coords, idx)
+            
+            # Update state before visualization to ensure consistency
+            self._param_edit_state['editing_data'] = (new_x, new_y)
+            self._param_edit_state['selected_point_idx'] = None
+            self._param_edit_state['has_unsaved_changes'] = True
+            
+            # Clear existing visualization first
+            self._clear_param_visualization()
+            
+            # Update visualization with new data
+            self._update_param_visualization()
+            self.w_param_status.value = "<span style='color:orange'>Point deleted (unsaved)</span>"
+            return True
+            
+        except Exception as e:
+            with self.output:
+                print(f"Delete point error: {e}")
+            self.w_param_status.value = f"<span style='color:red'>Delete error: {e}</span>"
+            return False
+        finally:
+            self._param_edit_state['_deletion_in_progress'] = False
+    
+    def _add_point_at_cursor(self) -> bool:
+        """Add a new point at the current cursor position."""
+        # Use last known position (persists after mouse leaves plot)
+        cursor_pos = getattr(self, '_last_crosshair_position', None)
+        if cursor_pos is None:
+            self.w_param_status.value = "<span style='color:red'>Move cursor over plot first</span>"
+            return False
+        
+        # Check if we have an active parameter
+        if self._param_edit_state['active_param'] is None:
+            self.w_param_status.value = "<span style='color:red'>Select a parameter first</span>"
+            return False
+        
+        editing_data = self._param_edit_state['editing_data']
+        cursor_x, cursor_y = cursor_pos
+        
+        # Handle case where editing_data is None or empty
+        if editing_data is None:
+            # Initialize with empty arrays
+            x_coords = np.array([], dtype=np.float64)
+            y_coords = np.array([], dtype=np.float64)
+        else:
+            x_coords, y_coords = editing_data
+        
+        # Find insertion point to maintain sorted order by x
+        insert_idx = np.searchsorted(x_coords, cursor_x)
+        
+        # Insert the new point
+        new_x = np.insert(x_coords, insert_idx, cursor_x)
+        new_y = np.insert(y_coords, insert_idx, cursor_y)
+        
+        self._param_edit_state['editing_data'] = (new_x, new_y)
+        self._param_edit_state['selected_point_idx'] = insert_idx
+        self._param_edit_state['has_unsaved_changes'] = True
+        
+        self._update_param_visualization()
+        self.w_param_status.value = "<span style='color:orange'>Point added (unsaved)</span>"
+        return True
+    
+    def _build_param_editor_row(self) -> ipywidgets.VBox:
+        """Build the parameter editor row widget."""
+        # First row: master selection and parameter selection
+        row1 = ipywidgets.HBox([
+            self.w_param_master,
+            self.w_param_select,
+            self.btn_refresh_params,
+            self.w_new_param_name,
+            self.btn_new_param,
+            self.btn_copy_param,
+            self.btn_copy_to_all,
+        ])
+        # Second row: point editing actions
+        row2 = ipywidgets.HBox([
+            self.btn_add_point,
+            self.btn_del_point,
+            self.w_param_sync,
+            self.btn_apply_param,
+            self.btn_discard_param,
+            self.w_param_status,
+            self.w_param_help,
+        ])
+        return ipywidgets.VBox([row1, row2])
+
     def _make_graphics_widget(self) -> None:
         """Create the PyQtGraph graphics widget."""
         self.graphics = GraphicsLayoutWidget(
@@ -443,6 +1604,10 @@ class EchogramViewerMultiChannel:
         pgh.apply_widget_layout(self.graphics, self.widget_width_px, self.widget_height_px)
         if hasattr(self.graphics, "gfxView"):
             self.graphics.gfxView.setBackground("w")
+        
+        # Hook into jupyter_rfb's handle_event to capture keyboard events
+        # since pyqtgraph.jupyter doesn't forward key events to Qt by default
+        self._setup_rfb_event_handler()
         
         # Set up auto-update hook
         self._original_request_draw = self.graphics.request_draw
@@ -574,6 +1739,13 @@ class EchogramViewerMultiChannel:
         
         # Recreate station markers if they were set
         self._recreate_station_markers()
+        
+        # Recreate parameter visualization if active
+        if hasattr(self, '_param_edit_state') and self._param_edit_state.get('active_param') is not None:
+            # Clear old items (they were removed with plots)
+            self._param_edit_state['scatter_items'].clear()
+            self._param_edit_state['line_items'].clear()
+            self._update_param_visualization()
     
     def _connect_scene_events(self) -> None:
         """Connect mouse events for crosshair and click handling."""
@@ -597,6 +1769,74 @@ class EchogramViewerMultiChannel:
         # Connect and track
         self._scene_click_connection = scene.sigMouseClicked.connect(self._handle_scene_click)
         self._scene_move_connection = scene.sigMouseMoved.connect(self._handle_scene_move)
+        
+        # Note: Keyboard shortcuts are handled via jupyter_rfb handle_event hook
+        # (see _setup_rfb_event_handler) since pyqtgraph.jupyter doesn't forward
+        # key events to Qt by default.
+    
+    def _setup_rfb_event_handler(self) -> None:
+        """Hook into jupyter_rfb's handle_event to capture keyboard events.
+        
+        The pyqtgraph.jupyter GraphicsLayoutWidget is based on jupyter_rfb.RemoteFrameBuffer,
+        which receives events from the browser. However, it only forwards mouse/wheel events
+        to Qt, not keyboard events. We hook into handle_event to capture key_down/key_up.
+        """
+        if not hasattr(self.graphics, 'handle_event'):
+            return
+        
+        # Skip if already hooked
+        if hasattr(self, '_rfb_event_hooked') and self._rfb_event_hooked:
+            return
+        
+        # Store the original handle_event
+        original_handle_event = self.graphics.handle_event
+        viewer = self
+        
+        def hooked_handle_event(event):
+            """Extended handle_event that also processes keyboard events."""
+            event_type = event.get('event_type', '')
+            
+            # Handle keyboard events for parameter editing
+            if event_type == 'key_down':
+                key = event.get('key', '')
+                viewer._handle_rfb_key_down(key, event.get('modifiers', ()))
+            
+            # Track mouse position for crosshair (use pointer_move events)
+            if event_type == 'pointer_move':
+                viewer._last_pointer_position = (event.get('x', 0), event.get('y', 0))
+            
+            # Always call original handler
+            return original_handle_event(event)
+        
+        self.graphics.handle_event = hooked_handle_event
+        self._rfb_event_hooked = True
+        self._last_pointer_position = None
+    
+    def _handle_rfb_key_down(self, key: str, modifiers: tuple) -> None:
+        """Handle key_down event from jupyter_rfb.
+        
+        Parameters
+        ----------
+        key : str
+            The key name as per jupyter_rfb spec (e.g., 'a', 'Delete', 'Backspace')
+        modifiers : tuple
+            Tuple of modifier keys being held (e.g., ('Shift', 'Control'))
+        """
+        # Only process keys if we have an active parameter being edited
+        if self._param_edit_state.get('active_param') is None:
+            return
+        
+        # Delete/Backspace - remove last point
+        if key in ('Delete', 'Backspace'):
+            self._delete_selected_point()
+            return
+        
+        # 'a' or 'A' - add point at cursor
+        if key.lower() == 'a':
+            self._add_point_at_cursor()
+            return
+    
+
     
     def _get_master_plot(self) -> Optional[pg.PlotItem]:
         """Get the first visible plot item (master for axis linking)."""
@@ -1031,6 +2271,11 @@ class EchogramViewerMultiChannel:
     
     def _handle_scene_click(self, event: Any) -> None:
         """Handle mouse click on scene."""
+        # Ensure widget has focus for keyboard events (important for shortcuts)
+        gfx_view = getattr(self.graphics, "gfxView", None)
+        if gfx_view is not None:
+            gfx_view.setFocus()
+        
         pos = event.scenePos()
         for slot in self._get_visible_slots():
             if slot.plot_item is None:
@@ -1071,6 +2316,7 @@ class EchogramViewerMultiChannel:
     def _update_crosshairs(self, x: float, y: float) -> None:
         """Update crosshair position on all visible plots."""
         self._crosshair_position = (x, y)
+        self._last_crosshair_position = (x, y)  # Store for add point button
         for slot in self._get_visible_slots():
             if slot.crosshair_v and slot.crosshair_h:
                 slot.crosshair_v.setValue(x)
@@ -1664,6 +2910,7 @@ class EchogramViewerMultiChannel:
             ipywidgets.HBox([self.graphics]),
             controls_row,
             buttons_row,
+            self._build_param_editor_row(),
             self.hover_label,
         ]
         

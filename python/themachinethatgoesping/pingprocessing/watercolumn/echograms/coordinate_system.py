@@ -261,6 +261,7 @@ class EchogramCoordinateSystem:
         """Get a ping parameter's values in current coordinate system.
         
         Uses vectorized affine transforms for speed.
+        Handles both dense format (one value per ping) and sparse format (control points).
         
         Args:
             name: Parameter name.
@@ -272,17 +273,63 @@ class EchogramCoordinateSystem:
         self.reinit()
         assert name in self.param.keys(), f"ERROR[get_ping_param]: name '{name}' not registered"
         
-        if use_x_coordinates:
-            x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
-            x_indices = np.array(self.feature_mapper.feature_to_index(
-                self.x_axis_name, x_coordinates, mp_cores=self.mp_cores
-            ))
+        reference, param_data = self.param[name]
+        
+        # Check if sparse format: (y_reference, (sparse_x_ping_time, sparse_y_native))
+        is_sparse = isinstance(param_data, tuple) and len(param_data) == 2
+        
+        if is_sparse:
+            # Sparse format - interpolate to requested x coordinates
+            sparse_x_ping_time, sparse_y_native = param_data
+            sparse_x_ping_time = np.asarray(sparse_x_ping_time, dtype=np.float64)
+            sparse_y_native = np.asarray(sparse_y_native, dtype=np.float64)
+            
+            # Ensure sorted by x (required by LinearInterpolator)
+            sort_idx = np.argsort(sparse_x_ping_time)
+            sparse_x_ping_time = sparse_x_ping_time[sort_idx]
+            sparse_y_native = sparse_y_native[sort_idx]
+            
+            # Remove duplicates (average y for same x)
+            unique_x, inv_idx = np.unique(sparse_x_ping_time, return_inverse=True)
+            if len(unique_x) < len(sparse_x_ping_time):
+                sums = np.bincount(inv_idx, weights=sparse_y_native)
+                counts = np.bincount(inv_idx)
+                sparse_x_ping_time = unique_x
+                sparse_y_native = sums / counts
+            
+            if use_x_coordinates:
+                x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+                x_indices = np.array(self.feature_mapper.feature_to_index(
+                    self.x_axis_name, x_coordinates, mp_cores=self.mp_cores
+                ))
+            else:
+                x_indices = np.arange(self._n_pings)
+                x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
+            
+            # Get ping_times for interpolation target
+            target_ping_times = np.array(self.ping_times)[x_indices]
+            
+            # Interpolate sparse to target using LinearInterpolator
+            if len(sparse_x_ping_time) > 0:
+                interpolator = tools.vectorinterpolators.LinearInterpolator(
+                    sparse_x_ping_time, sparse_y_native, extrapolation_mode="nearest"
+                )
+                param = interpolator(target_ping_times)
+            else:
+                param = np.full(len(x_indices), np.nan)
         else:
-            x_indices = np.arange(self._n_pings)
-            x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
-
-        reference, param_all = self.param[name]
-        param = np.array(param_all)[x_indices]
+            # Dense format - original behavior
+            if use_x_coordinates:
+                x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+                x_indices = np.array(self.feature_mapper.feature_to_index(
+                    self.x_axis_name, x_coordinates, mp_cores=self.mp_cores
+                ))
+            else:
+                x_indices = np.arange(self._n_pings)
+                x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
+            
+            param_all = param_data
+            param = np.array(param_all)[x_indices]
         
         # Convert param values to sample indices first, then to y coordinates
         # param_value → sample_index: sample = (param - a_param) / b_param (inverse of a + b*sample)
