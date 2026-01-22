@@ -7,6 +7,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from ..indexers import EchogramImageRequest
+    from .storage_mode import StorageAxisMode
 
 
 class EchogramDataBackend(ABC):
@@ -99,6 +100,16 @@ class EchogramDataBackend(ABC):
     def linear_mean(self) -> bool:
         """Whether to use linear mean for beam averaging."""
         ...
+
+    @property
+    def storage_mode(self) -> "StorageAxisMode":
+        """Storage coordinate system for this backend.
+        
+        Default implementation returns (ping_index, sample_index).
+        Override in backends that use different storage coordinates.
+        """
+        from .storage_mode import StorageAxisMode
+        return StorageAxisMode.default()
 
     # =========================================================================
     # Ping parameters (bottom, echosounder depth, etc.)

@@ -21,11 +21,12 @@ import json
 import numpy as np
 
 from .base import EchogramDataBackend
+from .storage_mode import StorageAxisMode
 from ..indexers import EchogramImageRequest
 
 
-# Mmap store format version (2.0 = binary .npy metadata instead of JSON)
-MMAP_FORMAT_VERSION = "2.0"
+# Mmap store format version (3.0 = adds storage_mode support)
+MMAP_FORMAT_VERSION = "3.0"
 
 
 class MmapDataBackend(EchogramDataBackend):
@@ -95,13 +96,20 @@ class MmapDataBackend(EchogramDataBackend):
         with open(metadata_file, "r") as f:
             metadata = json.load(f)
         
-        # Verify format version
+        # Verify format version (support 2.x and 3.x)
         version = metadata.get("format_version", "unknown")
-        if not version.startswith("2."):
+        if not (version.startswith("2.") or version.startswith("3.")):
             raise ValueError(
                 f"Unsupported mmap store format version: {version}. "
-                f"Expected version {MMAP_FORMAT_VERSION}"
+                f"Expected version 2.x or {MMAP_FORMAT_VERSION}"
             )
+        
+        # Load storage mode (new in 3.0, default for older versions)
+        storage_mode_dict = metadata.get("storage_mode", None)
+        if storage_mode_dict is not None:
+            metadata["_storage_mode"] = StorageAxisMode.from_dict(storage_mode_dict)
+        else:
+            metadata["_storage_mode"] = StorageAxisMode.default()
         
         # Load array metadata from binary .npy files
         metadata["ping_times"] = np.load(path / "ping_times.npy")
@@ -201,6 +209,11 @@ class MmapDataBackend(EchogramDataBackend):
     @property
     def linear_mean(self) -> bool:
         return self._metadata.get("linear_mean", True)
+
+    @property
+    def storage_mode(self) -> StorageAxisMode:
+        """Storage coordinate system for this backend."""
+        return self._metadata.get("_storage_mode", StorageAxisMode.default())
 
     # =========================================================================
     # Ping parameters

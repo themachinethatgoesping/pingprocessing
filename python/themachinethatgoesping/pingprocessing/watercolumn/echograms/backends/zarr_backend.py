@@ -18,11 +18,12 @@ except ImportError:
     HAS_ZARR = False
 
 from .base import EchogramDataBackend
+from .storage_mode import StorageAxisMode
 from ..indexers import EchogramImageRequest
 
 
-# Zarr store format version
-ZARR_FORMAT_VERSION = "1.0"
+# Zarr store format version (2.0 = adds storage_mode support)
+ZARR_FORMAT_VERSION = "2.0"
 
 
 class ZarrDataBackend(EchogramDataBackend):
@@ -39,7 +40,7 @@ class ZarrDataBackend(EchogramDataBackend):
     - range_min/max: 1D arrays of range extents (optional)
     - depth_min/max: 1D arrays of depth extents (optional)
     - ping_params/*: Ping parameter arrays (bottom, echosounder depth, etc.)
-    - Attributes: wci_value, linear_mean, has_navigation, format_version
+    - Attributes: wci_value, linear_mean, has_navigation, format_version, storage_mode
     """
 
     def __init__(
@@ -81,6 +82,15 @@ class ZarrDataBackend(EchogramDataBackend):
         self._wci_value = ds.attrs.get("wci_value", "sv")
         self._linear_mean = ds.attrs.get("linear_mean", True)
         self._has_navigation = ds.attrs.get("has_navigation", False)
+        
+        # Load storage mode from attributes
+        storage_mode_dict = ds.attrs.get("storage_mode", None)
+        if storage_mode_dict is not None:
+            if isinstance(storage_mode_dict, str):
+                storage_mode_dict = json.loads(storage_mode_dict)
+            self._storage_mode = StorageAxisMode.from_dict(storage_mode_dict)
+        else:
+            self._storage_mode = StorageAxisMode.default()
         
         # Eagerly load small 1D metadata arrays (avoid repeated Dask computation)
         self._ping_times = ds["ping_times"].values
@@ -237,6 +247,11 @@ class ZarrDataBackend(EchogramDataBackend):
     @property
     def linear_mean(self) -> bool:
         return self._linear_mean
+
+    @property
+    def storage_mode(self) -> StorageAxisMode:
+        """Storage coordinate system for this backend."""
+        return self._storage_mode
 
     def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         return self._ping_params
