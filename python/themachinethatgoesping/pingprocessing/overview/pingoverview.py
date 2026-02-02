@@ -108,7 +108,33 @@ class PingOverview:
         ax.plot(self.variables['datetime'], speed_knots, **kwargs)
         ax.set_ylabel('Speed (knots)')
         ax.set_xlabel('DateTime')
-            
+
+    def get_ping_rate_hz(self):
+        """
+        Compute the ping rate in Hz (pings per second).
+
+        Returns:
+            np.ndarray: Array of ping rates in Hz for each ping interval.
+        """
+        timestamps = np.array(self.variables['timestamp'])
+        dt = np.diff(timestamps)
+        ping_rate_hz = 1.0 / dt
+        return np.concatenate(([ping_rate_hz[0]], ping_rate_hz))
+
+    def plot_ping_rate_hz(self, ax, **kwargs):
+        """
+        Plot ping rate in Hz over time on a given axis.
+
+        Parameters:
+            ax (matplotlib.axes.Axes): The axis on which to plot the ping rate.
+            **kwargs: Additional keyword arguments to be passed to the plot function.
+        Returns:
+            None
+        """
+        ping_rate_hz = self.get_ping_rate_hz()
+        ax.plot(self.variables['datetime'], ping_rate_hz, **kwargs)
+        ax.set_ylabel('Ping Rate (Hz)')
+        ax.set_xlabel('DateTime')
 
     def add_ping_list(self, ping_list: List, progress: bool = False) -> None:
         """

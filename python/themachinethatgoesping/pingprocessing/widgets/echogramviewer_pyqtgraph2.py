@@ -3202,7 +3202,7 @@ class EchogramViewerMultiChannel:
         # Connect to view range changes to update label position
         vb = slot.plot_item.getViewBox()
         vb.sigRangeChanged.connect(
-            lambda _, s=slot, lbl=label, cx=center_x, pos=label_position: 
+            lambda *args, s=slot, lbl=label, cx=center_x, pos=label_position: 
             self._update_label_position(s, lbl, cx, pos)
         )
     
