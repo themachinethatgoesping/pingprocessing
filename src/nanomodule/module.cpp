@@ -4,7 +4,7 @@
 
 #include <nanobind/nanobind.h>
 
-#include <themachinethatgoesping/tools_nanobind/pytensor_nanobind.hpp> // Numpy bindings
+#include <xtensor-python/nanobind/pytensor.hpp> // Numpy bindings
 
 #include "watercolumn/module.hpp"
 

@@ -19,6 +19,5 @@ endif
 
 # -- python modules --
 if get_option('build_pythonmodule').enabled()
-    subdir('pymodule')
     subdir('nanomodule')
 endif
