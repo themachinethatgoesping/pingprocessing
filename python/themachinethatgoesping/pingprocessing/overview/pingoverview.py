@@ -59,6 +59,8 @@ class PingOverview:
         """
         self.variables = defaultdict(list)
         self.stats = defaultdict(dict)
+        self._file_paths = []       # unique file paths (small list)
+        self._file_path_map = {}    # path → index (for fast lookup during add)
 
         if ping_list is not None:
             self.add_ping_list(ping_list, progress)
@@ -168,6 +170,12 @@ class PingOverview:
         self.variables["latitude"].append(geolocation.latitude)
         self.variables["longitude"].append(geolocation.longitude)
 
+        file_path = ping.file_data.get_primary_file_path()
+        if file_path not in self._file_path_map:
+            self._file_path_map[file_path] = len(self._file_paths)
+            self._file_paths.append(file_path)
+        self.variables["file_path_index"].append(self._file_path_map[file_path])
+
         stats = defaultdict(dict)
 
     def get_stat_keys(self) -> List:
@@ -272,6 +280,112 @@ class PingOverview:
             self.stats[key]["median"] = np.median(self.variables[key])
 
         return self.stats[key]["median"]
+
+    def get_file_paths(self) -> List[str]:
+        """
+        Return the list of unique file paths.
+
+        Returns
+        -------
+        List[str]
+            Unique file paths referenced by pings in this overview.
+        """
+        return self._file_paths
+
+    def get_file_path(self, ping_index: int) -> str:
+        """
+        Return the file path for a specific ping by its index.
+
+        Parameters
+        ----------
+        ping_index : int
+            Index of the ping in this overview.
+
+        Returns
+        -------
+        str
+            The file path of the ping.
+        """
+        return self._file_paths[self.variables["file_path_index"][ping_index]]
+
+    def get_pings_per_file_path(self) -> dict:
+        """
+        Return a mapping from file path to list of ping indices.
+
+        Returns
+        -------
+        dict
+            Dictionary mapping file_path → list of ping indices.
+        """
+        result = defaultdict(list)
+        for i, idx in enumerate(self.variables["file_path_index"]):
+            result[self._file_paths[idx]].append(i)
+        return dict(result)
+
+    def _get_minmax_per_file(self, key: str) -> dict:
+        """
+        Return min and max of *key* grouped by file path.
+
+        Parameters
+        ----------
+        key : str
+            Variable name (e.g. 'timestamp', 'latitude').
+
+        Returns
+        -------
+        dict
+            ``{file_path: (min_val, max_val), …}``
+        """
+        vals = self.variables[key]
+        result = {}
+        for fp, indices in self.get_pings_per_file_path().items():
+            file_vals = [vals[i] for i in indices]
+            result[fp] = (min(file_vals), max(file_vals))
+        return result
+
+    def get_timestamp_range_per_file(self) -> dict:
+        """
+        Return min/max timestamp per file path.
+
+        Returns
+        -------
+        dict
+            ``{file_path: (min_timestamp, max_timestamp), …}``
+        """
+        return self._get_minmax_per_file("timestamp")
+
+    def get_datetime_range_per_file(self) -> dict:
+        """
+        Return min/max datetime per file path.
+
+        Returns
+        -------
+        dict
+            ``{file_path: (min_datetime, max_datetime), …}``
+        """
+        return self._get_minmax_per_file("datetime")
+
+    def get_latitude_range_per_file(self) -> dict:
+        """
+        Return min/max latitude per file path.
+
+        Returns
+        -------
+        dict
+            ``{file_path: (min_latitude, max_latitude), …}``
+        """
+        return self._get_minmax_per_file("latitude")
+
+    def get_longitude_range_per_file(self) -> dict:
+        """
+        Return min/max longitude per file path.
+
+        Returns
+        -------
+        dict
+            ``{file_path: (min_longitude, max_longitude), …}``
+        """
+        return self._get_minmax_per_file("longitude")
 
 
 from typing import Dict, List, Union
