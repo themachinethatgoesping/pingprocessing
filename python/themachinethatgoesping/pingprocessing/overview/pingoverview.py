@@ -59,8 +59,10 @@ class PingOverview:
         """
         self.variables = defaultdict(list)
         self.stats = defaultdict(dict)
-        self._file_paths = []       # unique file paths (small list)
-        self._file_path_map = {}    # path → index (for fast lookup during add)
+        self._primary_file_paths = []       # unique primary file paths
+        self._primary_file_path_map = {}    # primary path → index
+        self._all_file_paths = []            # unique file paths (primary + secondary)
+        self._all_file_path_map = {}         # path → index
 
         if ping_list is not None:
             self.add_ping_list(ping_list, progress)
@@ -170,11 +172,24 @@ class PingOverview:
         self.variables["latitude"].append(geolocation.latitude)
         self.variables["longitude"].append(geolocation.longitude)
 
-        file_path = ping.file_data.get_primary_file_path()
-        if file_path not in self._file_path_map:
-            self._file_path_map[file_path] = len(self._file_paths)
-            self._file_paths.append(file_path)
-        self.variables["file_path_index"].append(self._file_path_map[file_path])
+        # Primary file path (one per ping)
+        primary_path = ping.file_data.get_primary_file_path()
+        if primary_path not in self._primary_file_path_map:
+            self._primary_file_path_map[primary_path] = len(self._primary_file_paths)
+            self._primary_file_paths.append(primary_path)
+        self.variables["primary_file_path_index"].append(
+            self._primary_file_path_map[primary_path]
+        )
+
+        # All file paths (primary + secondary, e.g. water column + bottom)
+        all_paths = ping.file_data.get_file_paths()
+        path_indices = []
+        for fp in all_paths:
+            if fp not in self._all_file_path_map:
+                self._all_file_path_map[fp] = len(self._all_file_paths)
+                self._all_file_paths.append(fp)
+            path_indices.append(self._all_file_path_map[fp])
+        self.variables["file_path_indices"].append(path_indices)
 
         stats = defaultdict(dict)
 
@@ -281,20 +296,31 @@ class PingOverview:
 
         return self.stats[key]["median"]
 
-    def get_file_paths(self) -> List[str]:
+    def get_primary_file_paths(self) -> List[str]:
         """
-        Return the list of unique file paths.
+        Return the list of unique primary file paths.
 
         Returns
         -------
         List[str]
-            Unique file paths referenced by pings in this overview.
+            Unique primary file paths referenced by pings in this overview.
         """
-        return self._file_paths
+        return self._primary_file_paths
 
-    def get_file_path(self, ping_index: int) -> str:
+    def get_file_paths(self) -> List[str]:
         """
-        Return the file path for a specific ping by its index.
+        Return all unique file paths (primary and secondary).
+
+        Returns
+        -------
+        List[str]
+            All unique file paths referenced by pings in this overview.
+        """
+        return self._all_file_paths
+
+    def get_primary_file_path(self, ping_index: int) -> str:
+        """
+        Return the primary file path for a specific ping by its index.
 
         Parameters
         ----------
@@ -304,13 +330,48 @@ class PingOverview:
         Returns
         -------
         str
-            The file path of the ping.
+            The primary file path of the ping.
         """
-        return self._file_paths[self.variables["file_path_index"][ping_index]]
+        return self._primary_file_paths[
+            self.variables["primary_file_path_index"][ping_index]
+        ]
+
+    def get_file_paths_for_ping(self, ping_index: int) -> List[str]:
+        """
+        Return all file paths for a specific ping.
+
+        Parameters
+        ----------
+        ping_index : int
+            Index of the ping in this overview.
+
+        Returns
+        -------
+        List[str]
+            All file paths associated with the ping.
+        """
+        return [
+            self._all_file_paths[i]
+            for i in self.variables["file_path_indices"][ping_index]
+        ]
+
+    def get_pings_per_primary_file_path(self) -> dict:
+        """
+        Return a mapping from primary file path to list of ping indices.
+
+        Returns
+        -------
+        dict
+            Dictionary mapping primary_file_path → list of ping indices.
+        """
+        result = defaultdict(list)
+        for i, idx in enumerate(self.variables["primary_file_path_index"]):
+            result[self._primary_file_paths[idx]].append(i)
+        return dict(result)
 
     def get_pings_per_file_path(self) -> dict:
         """
-        Return a mapping from file path to list of ping indices.
+        Return a mapping from file path (any) to list of ping indices.
 
         Returns
         -------
@@ -318,8 +379,9 @@ class PingOverview:
             Dictionary mapping file_path → list of ping indices.
         """
         result = defaultdict(list)
-        for i, idx in enumerate(self.variables["file_path_index"]):
-            result[self._file_paths[idx]].append(i)
+        for i, idx_list in enumerate(self.variables["file_path_indices"]):
+            for idx in idx_list:
+                result[self._all_file_paths[idx]].append(i)
         return dict(result)
 
     def _get_minmax_per_file(self, key: str) -> dict:
@@ -338,7 +400,7 @@ class PingOverview:
         """
         vals = self.variables[key]
         result = {}
-        for fp, indices in self.get_pings_per_file_path().items():
+        for fp, indices in self.get_pings_per_primary_file_path().items():
             file_vals = [vals[i] for i in indices]
             result[fp] = (min(file_vals), max(file_vals))
         return result

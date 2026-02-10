@@ -12,6 +12,7 @@ from . import overlap_filter
 from .overlap_filter import (
     filter_by_spatial_overlap,
     filter_by_temporal_overlap,
+    filter_by_speed,
     subset_overview,
 )
 

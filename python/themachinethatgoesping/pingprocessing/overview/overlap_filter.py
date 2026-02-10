@@ -85,15 +85,38 @@ def subset_overview(overview: PingOverview, indices) -> PingOverview:
     for key, values in overview.variables.items():
         subset.variables[key] = [values[i] for i in indices]
 
-    # Rebuild file-path lookup with only the paths actually referenced
-    # by the kept pings, and remap file_path_index to new indices.
-    old_indices = subset.variables.get("file_path_index", [])
-    used_old = sorted(set(old_indices))
-    old_to_new = {old: new for new, old in enumerate(used_old)}
+    # Rebuild primary file-path lookup with only referenced paths.
+    old_primary = subset.variables.get("primary_file_path_index", [])
+    used_primary = sorted(set(old_primary))
+    primary_old_to_new = {old: new for new, old in enumerate(used_primary)}
 
-    subset._file_paths = [overview._file_paths[i] for i in used_old]
-    subset._file_path_map = {fp: i for i, fp in enumerate(subset._file_paths)}
-    subset.variables["file_path_index"] = [old_to_new[i] for i in old_indices]
+    subset._primary_file_paths = [
+        overview._primary_file_paths[i] for i in used_primary
+    ]
+    subset._primary_file_path_map = {
+        fp: i for i, fp in enumerate(subset._primary_file_paths)
+    }
+    subset.variables["primary_file_path_index"] = [
+        primary_old_to_new[i] for i in old_primary
+    ]
+
+    # Rebuild all-file-paths lookup with only referenced paths.
+    used_all = set()
+    for idx_list in subset.variables.get("file_path_indices", []):
+        used_all.update(idx_list)
+    used_all = sorted(used_all)
+    all_old_to_new = {old: new for new, old in enumerate(used_all)}
+
+    subset._all_file_paths = [
+        overview._all_file_paths[i] for i in used_all
+    ]
+    subset._all_file_path_map = {
+        fp: i for i, fp in enumerate(subset._all_file_paths)
+    }
+    subset.variables["file_path_indices"] = [
+        [all_old_to_new[i] for i in idx_list]
+        for idx_list in subset.variables.get("file_path_indices", [])
+    ]
 
     subset.original_indices = indices
     return subset
@@ -305,3 +328,37 @@ def filter_by_temporal_overlap(
         subset_overview(ov, np.where(mask)[0])
         for ov, mask in zip(overviews, masks)
     ]
+
+
+def filter_by_speed(
+    overview: PingOverview,
+    min_knots: float = None,
+    max_knots: float = None,
+) -> PingOverview:
+    """
+    Filter a PingOverview by inter-ping speed.
+
+    Computes the speed between consecutive pings and keeps only pings
+    where the speed is within [*min_knots*, *max_knots*].
+
+    Parameters
+    ----------
+    overview : PingOverview
+        The overview to filter.
+    min_knots : float, optional
+        Minimum speed in knots (inclusive). Pings below this are removed.
+    max_knots : float, optional
+        Maximum speed in knots (inclusive). Pings above this are removed.
+
+    Returns
+    -------
+    PingOverview
+        Filtered overview with ``original_indices`` attribute.
+    """
+    speed = overview.get_speed_in_knots()
+    mask = np.ones(len(speed), dtype=bool)
+    if min_knots is not None:
+        mask &= speed >= min_knots
+    if max_knots is not None:
+        mask &= speed <= max_knots
+    return subset_overview(overview, np.where(mask)[0])
