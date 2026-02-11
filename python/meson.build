@@ -19,6 +19,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/widgets/tools/interactivelinebuilder.py',
   'themachinethatgoesping/pingprocessing/overview/__init__.py',
   'themachinethatgoesping/pingprocessing/overview/nav_plot.py',
+  'themachinethatgoesping/pingprocessing/overview/overlap_filter.py',
   'themachinethatgoesping/pingprocessing/overview/pingoverview.py',
   'themachinethatgoesping/pingprocessing/overview/map_builder/__init__.py',
   'themachinethatgoesping/pingprocessing/overview/map_builder/coordinate_system.py',
