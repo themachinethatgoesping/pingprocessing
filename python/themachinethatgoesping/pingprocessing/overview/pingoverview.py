@@ -140,6 +140,66 @@ class PingOverview:
         ax.set_ylabel('Ping Rate (Hz)')
         ax.set_xlabel('DateTime')
 
+    def get_course_over_ground(self):
+        """Compute course-over-ground (COG) in degrees for each ping.
+
+        COG is the bearing from each ping to the next (north = 0°,
+        east = 90°).  The last ping gets the same COG as the
+        second-to-last.
+
+        Returns:
+            np.ndarray: COG in degrees [0, 360) per ping.
+        """
+        import math
+        lat = np.asarray(self.variables['latitude'])
+        lon = np.asarray(self.variables['longitude'])
+
+        phi1 = np.radians(lat[:-1])
+        phi2 = np.radians(lat[1:])
+        d_lambda = np.radians(lon[1:] - lon[:-1])
+
+        x = np.sin(d_lambda) * np.cos(phi2)
+        y = (np.cos(phi1) * np.sin(phi2)
+             - np.sin(phi1) * np.cos(phi2) * np.cos(d_lambda))
+
+        cog = np.degrees(np.arctan2(x, y)) % 360.0
+        return np.concatenate((cog, [cog[-1]]))
+
+    def plot_heading_vs_course(self, ax, heading_offset=0.0, **kwargs):
+        """Plot true heading (yaw) and course-over-ground on the same axis.
+
+        Useful for visually checking whether the vessel heading agrees
+        with the actual track direction.
+
+        Parameters:
+            ax (matplotlib.axes.Axes): Target axis.
+            heading_offset (float): Offset added to yaw before plotting
+                (same convention as ``split_pings.by_course``).
+            **kwargs: Forwarded to both ``ax.plot`` calls.
+        """
+        dt = self.variables['datetime']
+        yaw = np.asarray(self.variables.get('yaw', []))
+        cog = self.get_course_over_ground()
+
+        if len(yaw) == 0:
+            ax.plot(dt, cog, '.', markersize=1, label='COG', **kwargs)
+            ax.set_ylabel('Bearing (°)')
+            ax.set_xlabel('DateTime')
+            ax.legend()
+            return
+
+        adjusted_heading = (yaw + heading_offset) % 360.0
+        diff = np.abs((cog - adjusted_heading + 180.0) % 360.0 - 180.0)
+
+        ax.plot(dt, cog, '.', markersize=1, label='COG', alpha=0.5)
+        ax.plot(dt, adjusted_heading, '.', markersize=1,
+                label=f'Heading (yaw+{heading_offset}°)' if heading_offset else 'Heading (yaw)',
+                alpha=0.5)
+        ax.plot(dt, diff, '.', markersize=1, label='|Δ|', alpha=0.5)
+        ax.set_ylabel('Bearing / Difference (°)')
+        ax.set_xlabel('DateTime')
+        ax.legend()
+
     def add_ping_list(self, ping_list: List, progress: bool = False) -> None:
         """
         Adds a list of pings to the overview.
@@ -171,6 +231,9 @@ class PingOverview:
         geolocation = ping.get_geolocation()
         self.variables["latitude"].append(geolocation.latitude)
         self.variables["longitude"].append(geolocation.longitude)
+        self.variables["yaw"].append(geolocation.yaw)
+        self.variables["pitch"].append(geolocation.pitch)
+        self.variables["roll"].append(geolocation.roll)
 
         # Primary file path (one per ping)
         primary_path = ping.file_data.get_primary_file_path()
@@ -448,6 +511,198 @@ class PingOverview:
             ``{file_path: (min_longitude, max_longitude), …}``
         """
         return self._get_minmax_per_file("longitude")
+
+    def to_ping_proxies(self) -> List:
+        """Create lightweight proxy objects that duck-type ``I_Ping``.
+
+        Each proxy implements the methods used by
+        :mod:`~themachinethatgoesping.pingprocessing.filter_pings` and
+        :mod:`~themachinethatgoesping.pingprocessing.split_pings`, so you
+        can pass the returned list directly to any of those functions.
+
+        To convert the result back, simply pass the (filtered/split)
+        proxy list to ``PingOverview(proxy_list)`` — the constructor
+        accepts proxies since they implement the same interface as
+        real pings.
+
+        Returns
+        -------
+        list of PingProxy
+            One proxy per ping in this overview, in order.  Each proxy
+            has an ``overview_index`` attribute recording its position
+            in this overview.
+        """
+        from .pingproxy import PingProxy, _FileDataProxy
+
+        v = self.variables
+        timestamps = v["timestamp"]
+        datetimes = v["datetime"]
+        latitudes = v["latitude"]
+        longitudes = v["longitude"]
+        yaws = v.get("yaw", [])
+        pitches = v.get("pitch", [])
+        rolls = v.get("roll", [])
+        primary_idx = v.get("primary_file_path_index", [])
+        file_path_idx = v.get("file_path_indices", [])
+        n = len(timestamps)
+
+        primary_fps = self._primary_file_paths
+        all_fps = self._all_file_paths
+
+        proxies = []
+        for i in range(n):
+            primary_path = primary_fps[primary_idx[i]] if i < len(primary_idx) else ""
+            all_paths = (
+                [all_fps[j] for j in file_path_idx[i]]
+                if i < len(file_path_idx)
+                else []
+            )
+            proxies.append(
+                PingProxy(
+                    timestamp=timestamps[i],
+                    datetime_val=datetimes[i],
+                    latitude=latitudes[i],
+                    longitude=longitudes[i],
+                    yaw=yaws[i] if i < len(yaws) else 0.0,
+                    pitch=pitches[i] if i < len(pitches) else 0.0,
+                    roll=rolls[i] if i < len(rolls) else 0.0,
+                    primary_file_path=primary_path,
+                    all_file_paths=all_paths,
+                    overview_index=i,
+                )
+            )
+
+        return proxies
+
+    # ------------------------------------------------------------------
+    # Track data for map viewer (density-adaptive downsampling)
+    # ------------------------------------------------------------------
+
+    def _ensure_latlon_arrays(self):
+        """Lazily cache lat/lon as numpy arrays for vectorised ops."""
+        if not hasattr(self, "_lat_arr") or self._lat_arr is None:
+            self._lat_arr = np.asarray(self.variables["latitude"], dtype=float)
+            self._lon_arr = np.asarray(self.variables["longitude"], dtype=float)
+
+    def get_track_data(
+        self,
+        min_lat: float = None,
+        max_lat: float = None,
+        min_lon: float = None,
+        max_lon: float = None,
+        max_points: int = 50_000,
+        context_fraction: float = 0.2,
+    ):
+        """Return downsampled track coordinates for the given view.
+
+        The algorithm splits the point budget between **viewport** and
+        **context** (outside-viewport backbone):
+
+        * **Viewport** (``1 - context_fraction`` of *max_points*):  A
+          grid-based density filter keeps the first point per cell so
+          that dense areas are thinned while sparse outliers survive.
+        * **Context** (``context_fraction`` of *max_points*): Points
+          outside the viewport are uniformly sub-sampled to preserve
+          the overall track shape, survey-line starts/ends, and line
+          continuity when panning.
+
+        The first and last point of the *entire* track are always
+        included.
+
+        Parameters
+        ----------
+        min_lat, max_lat, min_lon, max_lon : float, optional
+            View bounding box in degrees.  ``None`` → full extent.
+        max_points : int
+            Total point budget (default 50 000).
+        context_fraction : float
+            Fraction of *max_points* reserved for the out-of-viewport
+            backbone (default 0.2 = 20 %).
+
+        Returns
+        -------
+        latitudes : np.ndarray
+        longitudes : np.ndarray
+        indices : np.ndarray of int
+            Indices into the overview arrays (sorted, temporal order).
+        """
+        self._ensure_latlon_arrays()
+        lats = self._lat_arr
+        lons = self._lon_arr
+        n = len(lats)
+
+        if n == 0:
+            empty = np.array([], dtype=float)
+            return empty, empty, np.array([], dtype=int)
+
+        # --- 1. Budget split ------------------------------------------------
+        context_budget = max(2, int(max_points * context_fraction))
+        viewport_budget = max_points - context_budget
+
+        # --- 2. View bounds (default to full extent) -----------------------
+        have_bounds = not (min_lat is None and max_lat is None
+                          and min_lon is None and max_lon is None)
+        if min_lat is None:
+            min_lat = float(lats.min())
+        if max_lat is None:
+            max_lat = float(lats.max())
+        if min_lon is None:
+            min_lon = float(lons.min())
+        if max_lon is None:
+            max_lon = float(lons.max())
+
+        # Full-extent request → no inside/outside split needed.
+        if not have_bounds and n <= max_points:
+            idx = np.arange(n, dtype=int)
+            return lats[idx], lons[idx], idx
+
+        # --- 3. Separate visible / context indices -------------------------
+        vis_mask = (
+            (lats >= min_lat) & (lats <= max_lat)
+            & (lons >= min_lon) & (lons <= max_lon)
+        )
+        vis_idx = np.where(vis_mask)[0]
+        out_idx = np.where(~vis_mask)[0]
+
+        # --- 4. Context backbone (uniform sub-sample outside viewport) -----
+        if len(out_idx) > context_budget:
+            step = max(1, len(out_idx) // context_budget)
+            ctx_idx = out_idx[::step]
+        else:
+            ctx_idx = out_idx
+
+        # --- 5. Viewport: grid-based density filter ------------------------
+        if len(vis_idx) <= viewport_budget:
+            vp_idx = vis_idx
+        else:
+            vis_lats = lats[vis_idx]
+            vis_lons = lons[vis_idx]
+
+            lat_range = max(max_lat - min_lat, 1e-6)
+            lon_range = max(max_lon - min_lon, 1e-6)
+
+            aspect = lon_range / lat_range
+            ny = max(1, int(np.sqrt(viewport_budget / aspect)))
+            nx = max(1, int(ny * aspect))
+
+            cell_y = np.clip(
+                ((vis_lats - min_lat) / lat_range * ny).astype(np.int64),
+                0, ny - 1,
+            )
+            cell_x = np.clip(
+                ((vis_lons - min_lon) / lon_range * nx).astype(np.int64),
+                0, nx - 1,
+            )
+            cell_keys = cell_y * np.int64(nx) + cell_x
+
+            _, first_in_cell = np.unique(cell_keys, return_index=True)
+            vp_idx = vis_idx[np.sort(first_in_cell)]
+
+        # --- 6. Merge, always keep first & last of entire track ------------
+        selected = np.union1d(vp_idx, ctx_idx)
+        selected = np.union1d(selected, [0, n - 1])
+
+        return lats[selected], lons[selected], selected
 
 
 from typing import Dict, List, Union

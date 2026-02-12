@@ -15,6 +15,12 @@ from .overlap_filter import (
     filter_by_speed,
     subset_overview,
 )
+from . import cluster
+from .cluster import (
+    cluster_by_region,
+    cluster_by_kmeans,
+    ClusterResult,
+)
 
 # Map builder (geospatial data visualization)
 from . import map_builder
@@ -24,4 +30,10 @@ from .map_builder import (
     BoundingBox,
     MapDataBackend,
     GeoTiffBackend,
+)
+from . import pingproxy
+from .pingproxy import (
+    PingProxy,
+    proxies_from_overview,
+    overview_from_proxies,
 )

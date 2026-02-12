@@ -236,7 +236,7 @@ class MmapDataBackend(EchogramDataBackend):
 
     def get_column(self, ping_index: int) -> np.ndarray:
         """Get beam-averaged water column data for a single ping."""
-        return self._wci_mmap[ping_index, :].copy()
+        return self._wci_mmap[int(ping_index), :].copy()
 
     def get_raw_column(self, ping_index: int) -> np.ndarray:
         """Get raw water column data (same as get_column for mmap)."""
@@ -318,7 +318,9 @@ class MmapDataBackend(EchogramDataBackend):
             # Sample indices: shape (n_chunk, ny)
             sample_indices = np.rint(
                 a_chunk[:, np.newaxis] + b_chunk[:, np.newaxis] * y_coords
-            ).astype(np.int32)
+            )
+            nan_mask = np.isnan(sample_indices)
+            sample_indices = np.where(nan_mask, -1, sample_indices).astype(np.int32)
             
             # Bounds checking
             valid_samples = (

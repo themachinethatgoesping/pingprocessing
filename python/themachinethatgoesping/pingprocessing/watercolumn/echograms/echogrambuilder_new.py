@@ -830,7 +830,7 @@ class EchogramBuilder:
 
         wci_layers = {}
         for key, layer in self.layers.items():
-            wci_layers[key] = wci[layer.i0[nr]:layer.i1[nr]]
+            wci_layers[key] = wci[int(layer.i0[nr]):int(layer.i1[nr])]
 
         return wci_layers
 

@@ -2,6 +2,7 @@
 import numpy as np
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
+from themachinethatgoesping.navigation.navtools import compute_latlon_distance_m
 
 from themachinethatgoesping.echosounders import filetemplates
 I_Ping = filetemplates.I_Ping
@@ -54,4 +55,48 @@ def by_latlon(
     return filtered_pings
 
 
+def by_distance(
+    pings: list[I_Ping],
+    center_lat: float,
+    center_lon: float,
+    max_distance_m: float,
+    progress: bool = False,
+) -> list[I_Ping]:
+    """Filter pings by distance from a center coordinate.
+
+    Keeps only pings whose position is within *max_distance_m* metres
+    of the given (latitude, longitude) center.
+
+    Parameters
+    ----------
+    pings : list
+        List of pings to filter.
+    center_lat : float
+        Center latitude in degrees.
+    center_lon : float
+        Center longitude in degrees.
+    max_distance_m : float
+        Maximum distance from the center in metres.
+    progress : bool, optional
+        Whether to show a progress bar, by default False.
+
+    Returns
+    -------
+    list
+        Pings within *max_distance_m* of the center.
+    """
+    it = get_progress_iterator(
+        pings, progress, desc="Filter pings by distance"
+    )
+
+    filtered_pings = []
+    for ping in it:
+        g = ping.get_geolocation()
+        d = compute_latlon_distance_m(
+            center_lat, center_lon, g.latitude, g.longitude
+        )
+        if d <= max_distance_m:
+            filtered_pings.append(ping)
+
+    return filtered_pings
 

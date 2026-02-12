@@ -123,6 +123,32 @@ class TrackInfo:
     slot_idx: Optional[int] = None  # Index of the echogram viewer slot (for visible range)
 
 
+@dataclass
+class OverviewTrackInfo:
+    """Track backed by a PingOverview with zoom-adaptive downsampling.
+
+    Instead of static lat/lon arrays the track is refreshed from
+    ``overview.get_track_data()`` on every zoom change so that only a
+    bounded number of points are sent to the renderer.
+    """
+    name: str
+    overview: Any  # PingOverview instance
+    color: str
+    max_points: int = 50_000
+    line_width: float = 2.0
+    is_active: bool = False
+    visible: bool = True
+    slot_idx: Optional[int] = None
+    show_points: bool = False
+    point_size: float = 5.0
+    point_symbol: str = 'o'
+    point_outline: bool = True
+    # Cached arrays – refreshed by _refresh_overview_tracks()
+    latitudes: Optional[np.ndarray] = None
+    longitudes: Optional[np.ndarray] = None
+    indices: Optional[np.ndarray] = None
+
+
 class MapViewerPyQtGraph:
     """PyQtGraph-based map viewer for geospatial data.
     
@@ -238,8 +264,12 @@ class MapViewerPyQtGraph:
         
         # Track overlays
         self._tracks: Dict[str, TrackInfo] = {}
+        self._overview_tracks: Dict[str, OverviewTrackInfo] = {}
         self._track_plots: List[Any] = []
         self._active_track_name: Optional[str] = None
+        
+        # User marker overlays (always drawn above tracks)
+        self._user_markers: Dict[str, pg.ScatterPlotItem] = {}
         
         # Ping position marker
         self._ping_marker: Optional[pg.ScatterPlotItem] = None
@@ -1195,89 +1225,158 @@ class MapViewerPyQtGraph:
             self._plot.removeItem(plot)
         self._track_plots.clear()
         
+        # Refresh overview tracks for current view bounds
+        self._refresh_overview_tracks()
+        
         # Add tracks - use lat/lon directly as x/y (assuming lat/lon coord system)
         for name, track_info in self._tracks.items():
-            # Skip hidden tracks
-            if not track_info.visible:
+            self._render_track_info(track_info)
+
+        # Add overview tracks (already downsampled to view)
+        for name, ov_info in self._overview_tracks.items():
+            if not ov_info.visible or ov_info.latitudes is None or len(ov_info.latitudes) == 0:
                 continue
-            
-            # Use longitude as X, latitude as Y (standard lat/lon convention)
-            x = track_info.longitudes
-            y = track_info.latitudes
-            
-            # First, draw full track with darker/thinner line (background)
-            darker_color = self._darken_color(track_info.color, 0.5)
-            pen_full = pg.mkPen(color=darker_color, width=track_info.line_width * 0.5)
-            plot_full = self._plot.plot(x, y, pen=pen_full)
-            self._track_plots.append(plot_full)
-            
-            # Try to get visible ping range from echogram slot
-            visible_range = self._get_slot_visible_ping_range(track_info.slot_idx)
-            
-            if visible_range is not None:
-                # Draw visible portion with brighter color and thicker line
-                start_idx, end_idx = visible_range
-                # Clamp to valid indices
-                start_idx = max(0, int(start_idx))
-                end_idx = min(len(x), int(end_idx) + 1)
-                
-                if start_idx < end_idx:
-                    x_visible = x[start_idx:end_idx]
-                    y_visible = y[start_idx:end_idx]
-                    
-                    line_width = track_info.line_width * 2
-                    pen = pg.mkPen(color=track_info.color, width=line_width)
-                    plot_visible = self._plot.plot(x_visible, y_visible, pen=pen)
-                    self._track_plots.append(plot_visible)
-                    
-                    # Add markers along the visible portion of the track
-                    if len(x_visible) > 0:
-                        # Calculate marker interval - roughly 10 markers along visible track
-                        n_points = len(x_visible)
-                        marker_interval = max(1, n_points // 10)
-                        marker_indices = list(range(0, n_points, marker_interval))
-                        # Always include start and end
-                        if 0 not in marker_indices:
-                            marker_indices.insert(0, 0)
-                        if n_points - 1 not in marker_indices:
-                            marker_indices.append(n_points - 1)
-                        
-                        marker_x = [x_visible[i] for i in marker_indices]
-                        marker_y = [y_visible[i] for i in marker_indices]
-                        
-                        # Add circle markers along the visible track
-                        markers = pg.ScatterPlotItem(
-                            marker_x, marker_y,
-                            size=8, brush=pg.mkBrush(track_info.color),
-                            pen=pg.mkPen('w', width=1.5), symbol='o'
-                        )
-                        self._plot.addItem(markers)
-                        self._track_plots.append(markers)
-                        
-                        # Add larger triangle at start
-                        marker_start = pg.ScatterPlotItem(
-                            [x_visible[0]], [y_visible[0]],
-                            size=14, brush=pg.mkBrush(track_info.color),
-                            pen=pg.mkPen('w', width=2), symbol='t'
-                        )
-                        self._plot.addItem(marker_start)
-                        self._track_plots.append(marker_start)
-                        
-                        # Add larger square at end
-                        marker_end = pg.ScatterPlotItem(
-                            [x_visible[-1]], [y_visible[-1]],
-                            size=12, brush=pg.mkBrush(track_info.color),
-                            pen=pg.mkPen('w', width=2), symbol='s'
-                        )
-                        self._plot.addItem(marker_end)
-                        self._track_plots.append(marker_end)
-            elif track_info.is_active:
-                # Fallback: Use thicker line for active track if no visible range
-                line_width = track_info.line_width * 2
-                pen = pg.mkPen(color=track_info.color, width=line_width)
-                plot = self._plot.plot(x, y, pen=pen)
-                self._track_plots.append(plot)
-    
+            self._render_overview_track(ov_info)
+
+    def _render_track_info(self, track_info: TrackInfo):
+        """Render a single regular track (full static lat/lon arrays)."""
+        # Skip hidden tracks
+        if not track_info.visible:
+            return
+        
+        # Use longitude as X, latitude as Y (standard lat/lon convention)
+        x = track_info.longitudes
+        y = track_info.latitudes
+        
+        # First, draw full track with darker/thinner line (background)
+        darker_color = self._darken_color(track_info.color, 0.5)
+        pen_full = pg.mkPen(color=darker_color, width=track_info.line_width * 0.5)
+        plot_full = self._plot.plot(x, y, pen=pen_full)
+        self._track_plots.append(plot_full)
+        
+        # Try to get visible ping range from echogram slot
+        visible_range = self._get_slot_visible_ping_range(track_info.slot_idx)
+        
+        if visible_range is not None:
+            self._render_visible_range(x, y, visible_range, track_info)
+        elif track_info.is_active:
+            # Fallback: Use thicker line for active track if no visible range
+            line_width = track_info.line_width * 2
+            pen = pg.mkPen(color=track_info.color, width=line_width)
+            plot = self._plot.plot(x, y, pen=pen)
+            self._track_plots.append(plot)
+
+    def _render_overview_track(self, ov_info: OverviewTrackInfo):
+        """Render a single overview-backed track (downsampled to view)."""
+        x = ov_info.longitudes
+        y = ov_info.latitudes
+
+        # Draw downsampled track line
+        pen = pg.mkPen(color=ov_info.color, width=ov_info.line_width)
+        plot_line = self._plot.plot(x, y, pen=pen)
+        self._track_plots.append(plot_line)
+
+        # Optional per-point markers
+        if ov_info.show_points and len(x) > 0:
+            pt_pen = pg.mkPen('w', width=1) if ov_info.point_outline else pg.mkPen(None)
+            scatter = pg.ScatterPlotItem(
+                x, y,
+                size=ov_info.point_size,
+                brush=pg.mkBrush(ov_info.color),
+                pen=pt_pen,
+                symbol=ov_info.point_symbol,
+            )
+            self._plot.addItem(scatter)
+            self._track_plots.append(scatter)
+
+        # If there's an echogram slot, highlight the visible range.
+        # ov_info.indices maps downsampled positions → overview ping indices.
+        visible_range = self._get_slot_visible_ping_range(ov_info.slot_idx)
+        if visible_range is not None and ov_info.indices is not None:
+            start_ping, end_ping = visible_range
+            # Find which downsampled points fall inside the echogram range
+            mask = (ov_info.indices >= start_ping) & (ov_info.indices <= end_ping)
+            if np.any(mask):
+                x_vis = x[mask]
+                y_vis = y[mask]
+                pen_vis = pg.mkPen(color=ov_info.color, width=ov_info.line_width * 2)
+                plot_vis = self._plot.plot(x_vis, y_vis, pen=pen_vis)
+                self._track_plots.append(plot_vis)
+
+                # Markers along visible portion
+                self._add_track_markers(x_vis, y_vis, ov_info.color)
+        elif ov_info.is_active:
+            # Active but no echogram range — redraw thicker
+            pen_active = pg.mkPen(color=ov_info.color, width=ov_info.line_width * 2)
+            plot_active = self._plot.plot(x, y, pen=pen_active)
+            self._track_plots.append(plot_active)
+
+    def _render_visible_range(self, x, y, visible_range, track_info):
+        """Render the visible portion of a track with markers."""
+        start_idx, end_idx = visible_range
+        # Clamp to valid indices
+        start_idx = max(0, int(start_idx))
+        end_idx = min(len(x), int(end_idx) + 1)
+        
+        if start_idx >= end_idx:
+            return
+
+        x_visible = x[start_idx:end_idx]
+        y_visible = y[start_idx:end_idx]
+        
+        line_width = track_info.line_width * 2
+        pen = pg.mkPen(color=track_info.color, width=line_width)
+        plot_visible = self._plot.plot(x_visible, y_visible, pen=pen)
+        self._track_plots.append(plot_visible)
+        
+        # Add markers along the visible portion of the track
+        self._add_track_markers(x_visible, y_visible, track_info.color)
+
+    def _add_track_markers(self, x, y, color):
+        """Add circle markers + start/end markers to a track segment."""
+        if len(x) == 0:
+            return
+
+        # Calculate marker interval - roughly 10 markers along visible track
+        n_points = len(x)
+        marker_interval = max(1, n_points // 10)
+        marker_indices = list(range(0, n_points, marker_interval))
+        # Always include start and end
+        if 0 not in marker_indices:
+            marker_indices.insert(0, 0)
+        if n_points - 1 not in marker_indices:
+            marker_indices.append(n_points - 1)
+        
+        marker_x = [x[i] for i in marker_indices]
+        marker_y = [y[i] for i in marker_indices]
+        
+        # Add circle markers along the visible track
+        markers = pg.ScatterPlotItem(
+            marker_x, marker_y,
+            size=8, brush=pg.mkBrush(color),
+            pen=pg.mkPen('w', width=1.5), symbol='o'
+        )
+        self._plot.addItem(markers)
+        self._track_plots.append(markers)
+        
+        # Add larger triangle at start
+        marker_start = pg.ScatterPlotItem(
+            [x[0]], [y[0]],
+            size=14, brush=pg.mkBrush(color),
+            pen=pg.mkPen('w', width=2), symbol='t'
+        )
+        self._plot.addItem(marker_start)
+        self._track_plots.append(marker_start)
+        
+        # Add larger square at end
+        marker_end = pg.ScatterPlotItem(
+            [x[-1]], [y[-1]],
+            size=12, brush=pg.mkBrush(color),
+            pen=pg.mkPen('w', width=2), symbol='s'
+        )
+        self._plot.addItem(marker_end)
+        self._track_plots.append(marker_end)
+
     def _get_slot_visible_ping_range(self, slot_idx: Optional[int]) -> Optional[Tuple[int, int]]:
         """Get the visible ping index range for an echogram slot.
         
@@ -1544,6 +1643,12 @@ class MapViewerPyQtGraph:
         
         # If no builder, we're done (tiles are loading in background)
         if self._builder is None:
+            # Still update tracks (overview tracks need refresh on zoom)
+            if self._tracks or self._overview_tracks:
+                self._update_tracks()
+                self._update_ping_marker()
+                if hasattr(self.graphics, 'request_draw'):
+                    self.graphics.request_draw()
             return
         
         self._is_loading = True
@@ -1631,44 +1736,72 @@ class MapViewerPyQtGraph:
             bounds = self._builder.combined_bounds
         
         # If no data bounds, try to use track bounds
-        if bounds is None and self._tracks:
+        if bounds is None and (self._tracks or self._overview_tracks):
             self.zoom_to_track()
             return
         
         if bounds:
             self._ignore_range_changes = True
-            self._plot.setXRange(bounds.xmin, bounds.xmax, padding=0.05)
-            self._plot.setYRange(bounds.ymin, bounds.ymax, padding=0.05)
+            rect = QtCore.QRectF(
+                bounds.xmin, bounds.ymin,
+                bounds.width, bounds.height,
+            )
+            self._plot.getViewBox().setRange(rect, padding=0.05)
             self._ignore_range_changes = False
             self._current_bounds = bounds
             self._update_view()
     
     def zoom_to_track(self):
-        """Zoom to fit all navigation tracks."""
-        if not self._tracks:
+        """Zoom to fit all navigation tracks (regular and overview)."""
+        if not self._tracks and not self._overview_tracks:
             return
-        
-        # Import BoundingBox here to avoid circular imports
+
         from ..overview.map_builder.coordinate_system import BoundingBox
-        
-        # Combine all tracks - use lon as X, lat as Y
-        all_x = []
-        all_y = []
+
+        # Collect bounds from each track without copying huge arrays.
+        bboxes = []
         for track_info in self._tracks.values():
-            all_x.extend(track_info.longitudes)
-            all_y.extend(track_info.latitudes)
-        
-        if not all_x:
+            if len(track_info.latitudes) == 0:
+                continue
+            bboxes.append(BoundingBox(
+                xmin=float(np.nanmin(track_info.longitudes)),
+                ymin=float(np.nanmin(track_info.latitudes)),
+                xmax=float(np.nanmax(track_info.longitudes)),
+                ymax=float(np.nanmax(track_info.latitudes)),
+            ))
+        for ov_info in self._overview_tracks.values():
+            try:
+                ov_info.overview._ensure_latlon_arrays()
+                la = ov_info.overview._lat_arr
+                lo = ov_info.overview._lon_arr
+                if len(la) == 0:
+                    continue
+                bboxes.append(BoundingBox(
+                    xmin=float(np.nanmin(lo)),
+                    ymin=float(np.nanmin(la)),
+                    xmax=float(np.nanmax(lo)),
+                    ymax=float(np.nanmax(la)),
+                ))
+            except Exception:
+                pass
+
+        if not bboxes:
             return
-        
-        bounds = BoundingBox.from_points(np.array(all_x), np.array(all_y)).expand(1.1)
-        
+
+        bounds = bboxes[0]
+        for bb in bboxes[1:]:
+            bounds = bounds.union(bb)
+        bounds = bounds.expand(1.1)
+
         self._ignore_range_changes = True
-        self._plot.setXRange(bounds.xmin, bounds.xmax, padding=0)
-        self._plot.setYRange(bounds.ymin, bounds.ymax, padding=0)
+        rect = QtCore.QRectF(
+            bounds.xmin, bounds.ymin,
+            bounds.width, bounds.height,
+        )
+        self._plot.getViewBox().setRange(rect, padding=0.02)
         self._ignore_range_changes = False
         self._current_bounds = bounds
-        self._update_view()
+        self._trigger_high_res_update()
     
     def zoom_to_position(self, lat: float, lon: float, radius_deg: float = 0.01):
         """Zoom to center on a lat/lon position.
@@ -1767,6 +1900,130 @@ class MapViewerPyQtGraph:
             self.pan_to_position(lat, lon)
     
     # =========================================================================
+    # User marker overlays
+    # =========================================================================
+
+    def add_markers(
+        self,
+        latitudes,
+        longitudes,
+        name: str = "markers",
+        labels: Optional[List[str]] = None,
+        color: str = "white",
+        edge_color: str = "black",
+        size: float = 10,
+        symbol: str = "o",
+        edge_width: float = 1.5,
+        z_value: float = 100,
+        label_color: str = "black",
+        label_size: str = "9pt",
+    ) -> pg.ScatterPlotItem:
+        """Add persistent marker points that stay above tracks.
+
+        Args:
+            latitudes: Array of latitudes.
+            longitudes: Array of longitudes.
+            name: Unique key (replaces existing markers with same name).
+            labels: Optional list of per-point labels displayed next
+                    to each marker on the map.
+            color: Fill colour.
+            edge_color: Border colour.
+            size: Marker size in pixels.
+            symbol: PyQtGraph symbol ('o', 's', 't', 'd', '+', 'x', …).
+            edge_width: Border width.
+            z_value: Draw order (higher = on top). Default 100 is
+                     well above tracks.
+            label_color: Text colour for labels.
+            label_size: Font size for labels (e.g. '9pt').
+
+        Returns:
+            The ``ScatterPlotItem`` – can be used for further styling.
+        """
+        self.remove_markers(name)
+
+        lons = np.asarray(longitudes)
+        lats = np.asarray(latitudes)
+
+        scatter = pg.ScatterPlotItem(
+            lons, lats,
+            size=size,
+            brush=pg.mkBrush(color),
+            pen=pg.mkPen(edge_color, width=edge_width),
+            symbol=symbol,
+        )
+        scatter.setZValue(z_value)
+        self._plot.addItem(scatter)
+        self._user_markers[name] = scatter
+
+        # Add text labels next to each point
+        if labels is not None:
+            text_items = []
+            for lon, lat, lbl in zip(lons, lats, labels):
+                txt = pg.TextItem(
+                    lbl, color=label_color,
+                    fill=pg.mkBrush(255, 255, 255, 200),
+                    border=pg.mkPen(0, 0, 0, 150),
+                )
+                txt.setFont(pg.QtGui.QFont(
+                    "sans-serif",
+                    int(label_size.replace("pt", "")),
+                ))
+                txt.setPos(lon, lat)
+                txt.setZValue(z_value + 1)
+                self._plot.addItem(txt)
+                text_items.append(txt)
+            self._user_markers[f"{name}__labels"] = text_items
+
+        return scatter
+
+    def add_markers_tuples(
+        self,
+        positions,
+        name: str = "markers",
+        **kwargs,
+    ) -> pg.ScatterPlotItem:
+        """Add markers from ``(lat, lon)`` tuples.
+
+        Args:
+            positions: Iterable of ``(lat, lon)`` pairs.
+            name: Unique key (replaces existing markers with same name).
+            **kwargs: Forwarded to :meth:`add_markers` (color,
+                      edge_color, size, symbol, edge_width, z_value).
+
+        Returns:
+            The ``ScatterPlotItem``.
+        """
+        pts = list(positions)
+        lats = np.array([p[0] for p in pts])
+        lons = np.array([p[1] for p in pts])
+        return self.add_markers(lats, lons, name=name, **kwargs)
+
+    def remove_markers(self, name: str):
+        """Remove a named marker overlay (including labels)."""
+        if name in self._user_markers:
+            item = self._user_markers.pop(name)
+            if isinstance(item, list):
+                for sub in item:
+                    self._plot.removeItem(sub)
+            else:
+                self._plot.removeItem(item)
+        # Also remove companion label items
+        label_key = f"{name}__labels"
+        if label_key in self._user_markers:
+            for txt in self._user_markers.pop(label_key):
+                self._plot.removeItem(txt)
+
+    def clear_markers(self):
+        """Remove all user marker overlays."""
+        for item in self._user_markers.values():
+            if isinstance(item, list):
+                for sub in item:
+                    self._plot.removeItem(sub)
+            else:
+                self._plot.removeItem(item)
+        self._user_markers.clear()
+
+    # =========================================================================
     # Track management
     # =========================================================================
     
@@ -1810,6 +2067,99 @@ class MapViewerPyQtGraph:
         self._update_tracks()
         self._update_track_legend()
     
+    def add_overview_track(
+        self,
+        overview,
+        name: str = "Overview",
+        color: Optional[str] = None,
+        line_width: float = 2.0,
+        max_points: int = 50_000,
+        is_active: bool = False,
+        slot_idx: Optional[int] = None,
+        show_points: bool = False,
+        point_size: float = 5.0,
+        point_symbol: str = 'o',
+        point_outline: bool = True,
+    ):
+        """Add a navigation track backed by a :class:`PingOverview`.
+
+        Unlike :meth:`add_track`, the track data is **resampled on every
+        zoom change** via ``overview.get_track_data()`` so that only up
+        to *max_points* are rendered regardless of dataset size.
+
+        Args:
+            overview: A ``PingOverview`` instance with latitude/longitude.
+            name: Track name (used as key; must be unique across both
+                  regular and overview tracks).
+            color: Track colour.  If *None*, auto-assigned.
+            line_width: Base line width.
+            max_points: Maximum rendered points (default 50 000).
+            is_active: Whether this is the active/highlighted track.
+            slot_idx: Echogram viewer slot index for visible-range
+                      highlighting.
+            show_points: If *True*, draw a marker at every downsampled
+                         track point.
+            point_size: Marker diameter in pixels (default 5).
+            point_symbol: PyQtGraph symbol string (default ``'o'``).
+            point_outline: If *True* (default), markers get a white
+                           outline; set *False* for no outline.
+        """
+        n_all = len(self._tracks) + len(self._overview_tracks)
+        if color is None:
+            color = self.TRACK_COLORS[n_all % len(self.TRACK_COLORS)]
+
+        info = OverviewTrackInfo(
+            name=name,
+            overview=overview,
+            color=color,
+            max_points=max_points,
+            line_width=line_width,
+            is_active=is_active,
+            slot_idx=slot_idx,
+            show_points=show_points,
+            point_size=point_size,
+            point_symbol=point_symbol,
+            point_outline=point_outline,
+        )
+        self._overview_tracks[name] = info
+
+        if is_active:
+            self._active_track_name = name
+
+        # Initial refresh + draw
+        self._refresh_overview_tracks()
+        self._update_tracks()
+        self._update_track_legend()
+
+    def _refresh_overview_tracks(self):
+        """Re-query every overview track for the current view bounds."""
+        if not self._overview_tracks:
+            return
+
+        bounds = self._current_bounds
+        if bounds is not None:
+            min_lat, max_lat = bounds.ymin, bounds.ymax
+            min_lon, max_lon = bounds.xmin, bounds.xmax
+        else:
+            min_lat = max_lat = min_lon = max_lon = None
+
+        for info in self._overview_tracks.values():
+            if not info.visible:
+                continue
+            try:
+                lats, lons, idx = info.overview.get_track_data(
+                    min_lat=min_lat,
+                    max_lat=max_lat,
+                    min_lon=min_lon,
+                    max_lon=max_lon,
+                    max_points=info.max_points,
+                )
+                info.latitudes = lats
+                info.longitudes = lons
+                info.indices = idx
+            except Exception as e:
+                warnings.warn(f"Failed to refresh overview track '{info.name}': {e}")
+
     def set_active_track(self, name: str):
         """Set which track is the active/highlighted one.
         
@@ -1818,64 +2168,97 @@ class MapViewerPyQtGraph:
         """
         for track_name, track_info in self._tracks.items():
             track_info.is_active = (track_name == name)
+        for track_name, track_info in self._overview_tracks.items():
+            track_info.is_active = (track_name == name)
         
         self._active_track_name = name
         self._update_tracks()
     
     def clear_tracks(self):
-        """Remove all tracks."""
+        """Remove all tracks (regular and overview)."""
         self._tracks.clear()
+        self._overview_tracks.clear()
         for plot in self._track_plots:
             self._plot.removeItem(plot)
         self._track_plots.clear()
         self._update_track_legend()
     
+    def set_track_color(self, name: str, color: str):
+        """Change the colour of a track.
+
+        Args:
+            name: Track name.
+            color: New CSS colour (hex or named).
+        """
+        if name in self._tracks:
+            self._tracks[name].color = color
+        if name in self._overview_tracks:
+            self._overview_tracks[name].color = color
+        self._update_tracks()
+        self._update_track_legend()
+
     def _update_track_legend(self):
-        """Update the track legend with interactive checkboxes."""
+        """Update the track legend with interactive checkboxes and colour pickers."""
         if not hasattr(self, '_track_legend'):
             return
-        
-        if not self._tracks:
+
+        all_tracks = {**self._tracks, **self._overview_tracks}
+        if not all_tracks:
             self._track_legend.children = []
             return
-        
-        # Build checkbox widgets for each track
+
+        # Build checkbox + colour-picker widgets for each track
         checkbox_widgets = [self._track_legend_label]
         self._track_checkboxes.clear()
-        
-        for name, track in self._tracks.items():
-            # Create styled checkbox with track color indicator
+
+        for name, track in all_tracks.items():
+            # Visibility checkbox
             checkbox = ipywidgets.Checkbox(
                 value=track.visible,
                 description='',
                 indent=False,
                 layout=ipywidgets.Layout(width='20px'),
             )
-            # Create color indicator and name label
-            color_label = ipywidgets.HTML(
-                f'<span style="color:{track.color}; font-weight:bold;">●</span> {name}'
-            )
-            
-            # Create handler for this track (capture name in closure)
-            def make_handler(track_name):
+
+            def make_vis_handler(track_name):
                 def handler(change):
                     self._on_track_visibility_change(track_name, change['new'])
                 return handler
-            
-            checkbox.observe(make_handler(name), names='value')
+            checkbox.observe(make_vis_handler(name), names='value')
             self._track_checkboxes[name] = checkbox
-            
-            # Combine checkbox and label
-            row = ipywidgets.HBox([checkbox, color_label])
+
+            # Colour picker
+            color_picker = ipywidgets.ColorPicker(
+                value=track.color,
+                description='',
+                concise=True,
+                layout=ipywidgets.Layout(width='28px', height='24px'),
+            )
+
+            def make_color_handler(track_name):
+                def handler(change):
+                    self.set_track_color(track_name, change['new'])
+                return handler
+            color_picker.observe(make_color_handler(name), names='value')
+
+            # Name label
+            name_label = ipywidgets.HTML(f'{name}')
+
+            row = ipywidgets.HBox(
+                [checkbox, color_picker, name_label],
+                layout=ipywidgets.Layout(align_items='center'),
+            )
             checkbox_widgets.append(row)
-        
+
         self._track_legend.children = checkbox_widgets
     
     def _on_track_visibility_change(self, track_name: str, visible: bool):
         """Handle track visibility checkbox change."""
         if track_name in self._tracks:
             self._tracks[track_name].visible = visible
-            self._update_tracks()
+        if track_name in self._overview_tracks:
+            self._overview_tracks[track_name].visible = visible
+        self._update_tracks()
     
     # =========================================================================
     # Ping position

@@ -2035,6 +2035,28 @@ class EchogramViewerMultiChannel:
             return tuple(vb.viewRange())
         return None
     
+    def get_xlim(self) -> Optional[Tuple[float, float]]:
+        """Get the current visible X-axis limits of the viewport.
+        
+        Returns:
+            Tuple of (xmin, xmax) or None if no plot is available.
+        """
+        view_range = self._capture_current_view_range()
+        if view_range is not None:
+            return tuple(view_range[0])
+        return None
+
+    def get_ylim(self) -> Optional[Tuple[float, float]]:
+        """Get the current visible Y-axis limits of the viewport.
+        
+        Returns:
+            Tuple of (ymin, ymax) or None if no plot is available.
+        """
+        view_range = self._capture_current_view_range()
+        if view_range is not None:
+            return tuple(view_range[1])
+        return None
+
     def _restore_view_range(self, view_range: Tuple[Tuple[float, float], Tuple[float, float]]) -> None:
         """Restore view range to master plot."""
         master = self._get_master_plot()

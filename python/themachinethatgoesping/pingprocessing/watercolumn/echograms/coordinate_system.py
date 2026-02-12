@@ -167,7 +167,8 @@ class EchogramCoordinateSystem:
             f"range arrays must have length {self._n_pings}"
         self.min_ranges = np.asarray(min_ranges, dtype=np.float32)
         self.max_ranges = np.asarray(max_ranges, dtype=np.float32)
-        self.res_ranges = ((self.max_ranges - self.min_ranges) / self.max_number_of_samples).astype(np.float32)
+        denom = np.where(self.max_number_of_samples > 0, self.max_number_of_samples, 1.0)
+        self.res_ranges = ((self.max_ranges - self.min_ranges) / denom).astype(np.float32)
         self.has_ranges = True
         self._initialized = False
         # Precompute affine: range = a + b * sample_index
@@ -179,7 +180,8 @@ class EchogramCoordinateSystem:
             f"depth arrays must have length {self._n_pings}"
         self.min_depths = np.asarray(min_depths, dtype=np.float32)
         self.max_depths = np.asarray(max_depths, dtype=np.float32)
-        self.res_depths = ((self.max_depths - self.min_depths) / self.max_number_of_samples).astype(np.float32)
+        denom = np.where(self.max_number_of_samples > 0, self.max_number_of_samples, 1.0)
+        self.res_depths = ((self.max_depths - self.min_depths) / denom).astype(np.float32)
         self.has_depths = True
         self._initialized = False
         # Precompute affine: depth = a + b * sample_index
@@ -191,7 +193,8 @@ class EchogramCoordinateSystem:
             f"sample_nr arrays must have length {self._n_pings}"
         self.min_sample_nrs = np.asarray(min_sample_nrs, dtype=np.float32)
         self.max_sample_nrs = np.asarray(max_sample_nrs, dtype=np.float32)
-        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(np.float32)
+        denom = np.where(self.max_number_of_samples > 0, self.max_number_of_samples, 1.0)
+        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / denom).astype(np.float32)
         self.has_sample_nrs = True
         self._initialized = False
         # Precompute affine: sample_nr = a + b * sample_index

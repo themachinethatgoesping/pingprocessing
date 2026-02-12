@@ -34,6 +34,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/filter_pings/by_region.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_time.py',
   'themachinethatgoesping/pingprocessing/filter_pings/by_time_list.py',
+  'themachinethatgoesping/pingprocessing/filter_pings/by_time_ranges.py',
   'themachinethatgoesping/pingprocessing/split_pings/__init__.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_channel_id.py',
   'themachinethatgoesping/pingprocessing/split_pings/by_distance.py',

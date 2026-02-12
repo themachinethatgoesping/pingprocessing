@@ -95,8 +95,11 @@ class EchoLayer:
         # sample_index = a_inv + b_inv * y_coord (inverse of y = a + b * sample)
         if cs._affine_y_to_sample is not None:
             a_inv, b_inv = cs._affine_y_to_sample
-            i0 = np.round(a_inv + b_inv * vec_min_y).astype(int)
-            i1 = np.round(a_inv + b_inv * vec_max_y).astype(int) + 1
+            raw_i0 = np.round(a_inv + b_inv * vec_min_y)
+            raw_i1 = np.round(a_inv + b_inv * vec_max_y)
+            # Replace NaN with 0 before casting to avoid warnings
+            i0 = np.where(np.isfinite(raw_i0), raw_i0, 0).astype(int)
+            i1 = np.where(np.isfinite(raw_i1), raw_i1, 0).astype(int) + 1
         else:
             # Fallback if affine not set
             i0 = np.zeros(n_pings, dtype=int)
@@ -301,7 +304,7 @@ class PingData:
             nr: Ping index.
         """
         self.echodata = echodata
-        self.nr = nr
+        self.nr = int(nr)
 
     @property
     def _cs(self) -> "EchogramCoordinateSystem":
@@ -328,7 +331,7 @@ class PingData:
 
     def get_ping_time(self) -> float:
         """Get ping timestamp."""
-        return self._cs.feature_mapper.index_to_feature(self.nr)
+        return self._cs.feature_mapper.index_to_feature("Ping time", self.nr)
 
     def get_datetime(self) -> dt.datetime:
         """Get ping datetime."""
