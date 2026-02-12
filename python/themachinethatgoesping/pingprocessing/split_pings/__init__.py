@@ -9,4 +9,5 @@ from .by_time_blocks import by_time_blocks
 from .into_time_blocks import into_time_blocks
 from .into_ping_blocks import into_ping_blocks
 from .by_course import by_course
+from .by_heading import by_heading
 from .by_turn import by_turn, by_turn_segments
