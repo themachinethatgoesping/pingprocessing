@@ -87,6 +87,11 @@ class EchogramBuilder:
         
         # Value offset (applied to all data values)
         self._offset = 0.0
+        
+        # Oversampling settings
+        self._x_oversampling = 1
+        self._y_oversampling = 1
+        self._oversampling_mode = "linear_mean"  # "linear_mean" or "db_mean"
 
     def _init_ping_params_from_backend(self):
         """Initialize ping parameters from backend's pre-computed values."""
@@ -675,6 +680,103 @@ class EchogramBuilder:
         return self._backend.get_column(nr)
 
     # =========================================================================
+    # Oversampling configuration
+    # =========================================================================
+
+    def set_oversampling(self, x_oversampling=1, y_oversampling=1, mode="linear_mean"):
+        """Configure oversampling for image building.
+        
+        When oversampling > 1, build_image() will request a higher-resolution
+        image from the backend (max_steps * oversampling) and then block-average
+        it down to the original output resolution. This reduces aliasing artifacts
+        from nearest-neighbor sampling.
+        
+        Args:
+            x_oversampling: Integer oversampling factor for X axis (pings). Default 1.
+            y_oversampling: Integer oversampling factor for Y axis (samples). Default 1.
+            mode: Averaging mode for block downsampling.
+                - 'linear_mean': Convert dB to linear (power(10, 0.1*v)), average,
+                  convert back (10*log10). Correct for dB-domain data.
+                - 'db_mean': Average directly in dB domain (geometric mean in
+                  linear domain). Faster but less physically correct.
+        """
+        if x_oversampling < 1 or y_oversampling < 1:
+            raise ValueError("Oversampling factors must be >= 1")
+        if mode not in ("linear_mean", "db_mean"):
+            raise ValueError(f"Invalid oversampling mode '{mode}'. Use 'linear_mean' or 'db_mean'.")
+        
+        self._x_oversampling = int(x_oversampling)
+        self._y_oversampling = int(y_oversampling)
+        self._oversampling_mode = mode
+        # Force reinit so coordinate system recomputes with new oversampling
+        self._coord_system._initialized = False
+
+    @property
+    def _has_oversampling(self):
+        """Whether any oversampling is active."""
+        return self._x_oversampling > 1 or self._y_oversampling > 1
+
+    def _downsample_image(self, oversampled_image, target_nx, target_ny):
+        """Block-average an oversampled image down to target resolution.
+        
+        Computes block sizes dynamically from the actual oversampled image
+        shape vs target shape. This handles cases where the oversampled grid
+        was clamped to native resolution (fewer pixels than requested).
+        
+        Args:
+            oversampled_image: Array of shape (os_nx, os_ny) with oversampled data.
+            target_nx: Desired number of X pixels in output.
+            target_ny: Desired number of Y pixels in output.
+            
+        Returns:
+            Array of shape (target_nx, target_ny) with block-averaged data.
+        """
+        os_nx, os_ny = oversampled_image.shape
+        
+        # If oversampled image is same size as target, no averaging needed
+        if os_nx == target_nx and os_ny == target_ny:
+            return oversampled_image
+        
+        # Compute actual block sizes from image dimensions
+        bx = os_nx // target_nx
+        by = os_ny // target_ny
+        
+        # Clamp to at least 1
+        bx = max(bx, 1)
+        by = max(by, 1)
+        
+        # Usable pixels = target * block_size (trim remainder)
+        actual_nx = min(target_nx, os_nx // bx)
+        actual_ny = min(target_ny, os_ny // by)
+        
+        if actual_nx == 0 or actual_ny == 0:
+            return np.full((target_nx, target_ny), np.nan, dtype=np.float32)
+        
+        # Reshape into blocks: (actual_nx, bx, actual_ny, by)
+        blocked = oversampled_image[:actual_nx * bx, :actual_ny * by].reshape(
+            actual_nx, bx, actual_ny, by
+        )
+        
+        if self._oversampling_mode == "linear_mean":
+            # dB → linear → nanmean → dB
+            # Use float64 for precision in power conversion
+            with np.errstate(invalid='ignore'):
+                linear = np.power(10.0, np.float64(blocked) * 0.1)
+                mean_linear = np.nanmean(linear, axis=(1, 3))
+                result = (10.0 * np.log10(mean_linear)).astype(np.float32)
+        else:
+            # db_mean: average directly in dB domain
+            result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
+        
+        # If target is larger than what we computed (edge case), pad with NaN
+        if actual_nx < target_nx or actual_ny < target_ny:
+            padded = np.full((target_nx, target_ny), np.nan, dtype=np.float32)
+            padded[:actual_nx, :actual_ny] = result
+            return padded
+        
+        return result
+
+    # =========================================================================
     # Image building
     # =========================================================================
 
@@ -683,6 +785,9 @@ class EchogramBuilder:
         
         Uses the backend's get_image() method with affine indexing for efficiency.
         Backends can override get_image() for vectorized implementations (e.g., Zarr/Dask).
+        
+        When oversampling is configured (via set_oversampling()), requests a higher-
+        resolution image and block-averages it down for anti-aliasing.
         
         Args:
             progress: Optional progress bar or None (not currently used).
@@ -694,16 +799,29 @@ class EchogramBuilder:
         self.reinit()
         cs = self._coord_system
         
-        # Create image request with affine parameters
-        request = cs.make_image_request()
-        
-        # Use backend's get_image() method (may be overridden for Dask/Zarr)
-        # Backend returns (nx, ny) - ping, sample
-        image = self._backend.get_image(request)
-        
-        # Apply offset if set
-        if self._offset != 0.0:
-            image = image + self._offset
+        if self._has_oversampling:
+            # Oversampled path: request larger image, then block-average down
+            target_nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+            target_ny = len(cs.y_coordinates)
+            
+            request = cs.make_oversampled_image_request(
+                x_oversampling=self._x_oversampling,
+                y_oversampling=self._y_oversampling,
+            )
+            oversampled_image = self._backend.get_image(request)
+            
+            # Apply offset before averaging (offset is additive, order doesn't matter)
+            if self._offset != 0.0:
+                oversampled_image = oversampled_image + self._offset
+            
+            image = self._downsample_image(oversampled_image, target_nx, target_ny)
+        else:
+            # Standard path: no oversampling
+            request = cs.make_image_request()
+            image = self._backend.get_image(request)
+            
+            if self._offset != 0.0:
+                image = image + self._offset
         
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -716,6 +834,9 @@ class EchogramBuilder:
         Uses fast vectorized get_image() for the main echogram when no main_layer
         is set. Falls back to per-column iteration only for layer processing.
         
+        Note: Oversampling is applied to the main echogram image only.
+        Layer images are built at native resolution (per-column iteration).
+        
         Returns:
             Tuple of (image, layer_image, extent).
         """
@@ -726,10 +847,23 @@ class EchogramBuilder:
 
         # Fast path: use vectorized get_image for main echogram if no main_layer
         if self.main_layer is None:
-            request = cs.make_image_request()
-            image = self._backend.get_image(request)
+            if self._has_oversampling:
+                request = cs.make_oversampled_image_request(
+                    x_oversampling=self._x_oversampling,
+                    y_oversampling=self._y_oversampling,
+                )
+                oversampled_image = self._backend.get_image(request)
+                if self._offset != 0.0:
+                    oversampled_image = oversampled_image + self._offset
+                image = self._downsample_image(oversampled_image, nx, ny)
+            else:
+                request = cs.make_image_request()
+                image = self._backend.get_image(request)
+                if self._offset != 0.0:
+                    image = image + self._offset
         else:
             # Slow path: need per-column iteration for main_layer
+            # (oversampling not supported for main_layer path)
             image = np.full((nx, ny), np.nan, dtype=np.float32)
             image_indices, wci_indices = self.get_x_indices()
             for image_index, wci_index in zip(image_indices, wci_indices):
@@ -738,8 +872,10 @@ class EchogramBuilder:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
+            if self._offset != 0.0:
+                image = image + self._offset
 
-        # Build layer image (requires per-column iteration)
+        # Build layer image (requires per-column iteration, no oversampling)
         layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
         if len(self.layers) > 0:
             image_indices, wci_indices = self.get_x_indices()
@@ -753,9 +889,7 @@ class EchogramBuilder:
                         if y1_layer is not None and len(y1_layer) > 0:
                             layer_image[image_index, y1_layer] = wci[y2_layer]
 
-        # Apply offset if set
         if self._offset != 0.0:
-            image = image + self._offset
             layer_image = layer_image + self._offset
 
         extent = deepcopy(cs.x_extent)
@@ -769,6 +903,9 @@ class EchogramBuilder:
         Uses fast vectorized get_image() for the main echogram when no main_layer
         is set. Falls back to per-column iteration only for layer processing.
         
+        Note: Oversampling is applied to the main echogram image only.
+        Layer images are built at native resolution (per-column iteration).
+        
         Returns:
             Tuple of (image, layer_images_dict, extent).
         """
@@ -779,10 +916,23 @@ class EchogramBuilder:
 
         # Fast path: use vectorized get_image for main echogram if no main_layer
         if self.main_layer is None:
-            request = cs.make_image_request()
-            image = self._backend.get_image(request)
+            if self._has_oversampling:
+                request = cs.make_oversampled_image_request(
+                    x_oversampling=self._x_oversampling,
+                    y_oversampling=self._y_oversampling,
+                )
+                oversampled_image = self._backend.get_image(request)
+                if self._offset != 0.0:
+                    oversampled_image = oversampled_image + self._offset
+                image = self._downsample_image(oversampled_image, nx, ny)
+            else:
+                request = cs.make_image_request()
+                image = self._backend.get_image(request)
+                if self._offset != 0.0:
+                    image = image + self._offset
         else:
             # Slow path: need per-column iteration for main_layer
+            # (oversampling not supported for main_layer path)
             image = np.full((nx, ny), np.nan, dtype=np.float32)
             image_indices, wci_indices = self.get_x_indices()
             for image_index, wci_index in zip(image_indices, wci_indices):
@@ -791,8 +941,10 @@ class EchogramBuilder:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
+            if self._offset != 0.0:
+                image = image + self._offset
 
-        # Build layer images (requires per-column iteration)
+        # Build layer images (requires per-column iteration, no oversampling)
         layer_images = {}
         for key in self.layers.keys():
             layer_images[key] = np.full((nx, ny), np.nan, dtype=np.float32)
@@ -809,9 +961,7 @@ class EchogramBuilder:
                         if y1_layer is not None and len(y1_layer) > 0:
                             layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
-        # Apply offset if set
         if self._offset != 0.0:
-            image = image + self._offset
             for key in layer_images:
                 layer_images[key] = layer_images[key] + self._offset
 

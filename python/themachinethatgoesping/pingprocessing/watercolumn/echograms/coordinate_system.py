@@ -950,3 +950,93 @@ class EchogramCoordinateSystem:
             max_sample_indices=max_sample_idx,
             fill_value=np.nan,
         )
+
+    def make_oversampled_image_request(
+        self, x_oversampling: int = 1, y_oversampling: int = 1
+    ) -> "EchogramImageRequest":
+        """Create an oversampled image request for anti-aliased downsampling.
+        
+        Generates a request with x_oversampling × y_oversampling more pixels
+        than the current coordinate system grid. The oversampled grid spans
+        the same physical extent, so block-averaging the result back to the
+        original resolution produces anti-aliased output.
+        
+        The oversampled Y coordinates are computed by subdividing each original
+        Y pixel into y_oversampling sub-pixels. Similarly for X.
+        
+        Args:
+            x_oversampling: Integer factor for X axis oversampling.
+            y_oversampling: Integer factor for Y axis oversampling.
+            
+        Returns:
+            EchogramImageRequest with oversampled dimensions.
+        """
+        self.reinit()
+        
+        # --- Y oversampling ---
+        y_coords = np.asarray(self.y_coordinates, dtype=np.float32)
+        ny_target = len(y_coords)
+        
+        if y_oversampling > 1:
+            # Clamp: don't oversample beyond the native sample resolution.
+            # The maximum useful ny is the largest sample count across all pings.
+            # Beyond that, multiple oversampled Y pixels map to the same sample
+            # via nearest-neighbor rounding — redundant reads with no benefit.
+            max_native_ny = int(np.nanmax(self.max_number_of_samples))
+            ny_os = min(ny_target * y_oversampling, max(max_native_ny, ny_target))
+            # Ensure ny_os is a multiple of ny_target for clean block averaging
+            ny_os = max(ny_target, (ny_os // ny_target) * ny_target)
+            y_min = float(y_coords[0])
+            y_max = float(y_coords[-1])
+            y_coords_os = np.linspace(y_min, y_max, ny_os, dtype=np.float32)
+        else:
+            y_coords_os = y_coords
+            ny_os = ny_target
+        
+        # --- X oversampling ---
+        x_coords = np.array(self.feature_mapper.get_feature_values("X coordinate"))
+        nx_target = len(x_coords)
+        
+        if x_oversampling > 1:
+            # Clamp: don't create more X grid points than source pings.
+            # Beyond n_pings, adjacent oversampled pixels map to the same ping.
+            nx_os = min(nx_target * x_oversampling, max(self._n_pings, nx_target))
+            # Ensure nx_os is a multiple of nx_target for clean block averaging
+            nx_os = max(nx_target, (nx_os // nx_target) * nx_target)
+            x_min = float(x_coords[0])
+            x_max = float(x_coords[-1])
+            x_coords_os = np.linspace(x_min, x_max, nx_os)
+        else:
+            x_coords_os = x_coords
+            nx_os = nx_target
+        
+        # --- Build ping indexer for oversampled X grid ---
+        vec_x_val = np.array(self.feature_mapper.get_feature_values(self.x_axis_name))
+        
+        # Map oversampled x coords to nearest feature value
+        wci_index_os = self.feature_mapper.feature_to_index(
+            self.x_axis_name, x_coords_os,
+            mp_cores=self.mp_cores
+        )
+        
+        # Validity check: distance to nearest source ping
+        delta_x_os = np.abs(vec_x_val[wci_index_os] - x_coords_os)
+        
+        ping_indexer_os = np.full(nx_os, -1, dtype=np.int64)
+        valid_os = delta_x_os < self.x_interpolation_limit
+        ping_indexer_os[valid_os] = np.asarray(wci_index_os, dtype=np.int64)[valid_os]
+        
+        # --- Affine params (per-ping, unchanged) ---
+        affine_a, affine_b = self._estimate_affine_y_to_sample()
+        max_sample_idx = self.max_number_of_samples.astype(np.int64) + 1
+        
+        return EchogramImageRequest(
+            nx=nx_os,
+            ny=ny_os,
+            y_coordinates=y_coords_os,
+            ping_indexer=ping_indexer_os,
+            affine_a=affine_a,
+            affine_b=affine_b,
+            max_sample_indices=max_sample_idx,
+            fill_value=np.nan,
+        )
