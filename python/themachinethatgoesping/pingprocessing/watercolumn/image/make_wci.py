@@ -12,6 +12,62 @@ from themachinethatgoesping.pingprocessing.core.progress import get_progress_ite
 # themachinethatgoesping.pingtools/watercolumn imports
 import themachinethatgoesping.pingprocessing.watercolumn.helper as wchelper
 
+
+def downsample_wci(wci, extent, factor, mode="linear_mean"):
+    """Downsample a WCI image by block averaging.
+    
+    Reduces the resolution of a water column image by averaging blocks of
+    pixels. Useful as a post-processing step after building an oversampled
+    image (with higher horizontal_pixels) for anti-aliasing.
+    
+    Args:
+        wci: 2D numpy array of shape (ny, nz) with dB values.
+        extent: Tuple/list of (ymin, ymax, zmax, zmin) — physical bounds.
+        factor: Integer downsampling factor (same for both axes).
+            The image dimensions are divided by this factor.
+        mode: Averaging mode.
+            - 'linear_mean': Convert dB to linear power (10^(0.1*v)),
+              average, convert back (10*log10). Correct for dB data.
+            - 'db_mean': Average directly in dB domain. Faster.
+        
+    Returns:
+        Tuple of (downsampled_wci, extent). Extent is unchanged since
+        the physical bounds remain the same.
+    """
+    factor = int(factor)
+    if factor <= 1:
+        return wci, tuple(extent)
+    
+    if mode not in ("linear_mean", "db_mean"):
+        raise ValueError(f"Invalid mode '{mode}'. Use 'linear_mean' or 'db_mean'.")
+    
+    ny, nz = wci.shape
+    
+    # If image is smaller than one block, return as-is
+    if ny < factor or nz < factor:
+        return wci, tuple(extent)
+    
+    # Trim to exact multiple of factor
+    usable_ny = (ny // factor) * factor
+    usable_nz = (nz // factor) * factor
+    trimmed = wci[:usable_ny, :usable_nz]
+    
+    target_ny = usable_ny // factor
+    target_nz = usable_nz // factor
+    
+    # Reshape into blocks: (target_ny, factor, target_nz, factor)
+    blocked = trimmed.reshape(target_ny, factor, target_nz, factor)
+    
+    if mode == "linear_mean":
+        with np.errstate(invalid='ignore'):
+            linear = np.power(10.0, np.float64(blocked) * 0.1)
+            mean_linear = np.nanmean(linear, axis=(1, 3))
+            result = (10.0 * np.log10(mean_linear)).astype(np.float32)
+    else:
+        result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
+    
+    return result, tuple(extent)
+
 def is_iterable(obj):
     try:
         iter(obj)

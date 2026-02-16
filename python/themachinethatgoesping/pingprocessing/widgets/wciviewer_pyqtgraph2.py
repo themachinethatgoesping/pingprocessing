@@ -514,11 +514,23 @@ class WCIViewerMultiChannel:
             value=self.args_imagebuilder["horizontal_pixels"],
             layout=ipywidgets.Layout(width='200px'),
         )
+        self.w_oversampling = ipywidgets.Dropdown(
+            description="oversample",
+            options=[1, 2, 3, 4],
+            value=1,
+            layout=ipywidgets.Layout(width='140px'),
+        )
+        self.w_oversampling_mode = ipywidgets.Dropdown(
+            description="avg",
+            options=["linear_mean", "db_mean"],
+            value="linear_mean",
+            layout=ipywidgets.Layout(width='170px'),
+        )
         
         # Observe global controls for rebuild
         for widget in [self.w_stack, self.w_stack_step, self.w_mp_cores,
                        self.w_stack_linear, self.w_wci_value, self.w_wci_render,
-                       self.w_horizontal_pixels]:
+                       self.w_horizontal_pixels, self.w_oversampling, self.w_oversampling_mode]:
             widget.observe(self._on_global_param_change, names="value")
         
         # Fix/unfix view buttons
@@ -600,10 +612,21 @@ class WCIViewerMultiChannel:
         )
         self.w_video_format = ipywidgets.Dropdown(
             description="format",
-            options=["mp4", "gif", "webm", "avi"],
+            options=["mp4", "gif", "avif", "webm", "avi"],
             value="mp4",
             layout=ipywidgets.Layout(width='130px'),
         )
+        self.w_video_quality = ipywidgets.IntSlider(
+            value=50,
+            min=1,
+            max=100,
+            step=1,
+            description="quality",
+            tooltip="Compression quality for AVIF (1=smallest, 100=best)",
+            layout=ipywidgets.Layout(width='200px'),
+        )
+        self.w_video_quality.layout.display = 'none'  # hidden unless avif selected
+        self.w_video_format.observe(self._on_video_format_change, names='value')
         self.w_video_filename = ipywidgets.Text(
             value="wci_video",
             description="filename",
@@ -760,7 +783,7 @@ class WCIViewerMultiChannel:
         tab_render = ipywidgets.VBox([
             ipywidgets.HBox([self.w_vmin, self.w_vmax]),
             ipywidgets.HBox([self.w_wci_value, self.w_wci_render]),
-            ipywidgets.HBox([self.w_horizontal_pixels]),
+            ipywidgets.HBox([self.w_horizontal_pixels, self.w_oversampling, self.w_oversampling_mode]),
             ipywidgets.HBox([self.w_time_sync, self.w_crosshair, self.w_time_warning]),
         ])
         
@@ -780,7 +803,7 @@ class WCIViewerMultiChannel:
         
         # Tab 5: Video export
         tab_video = ipywidgets.VBox([
-            ipywidgets.HBox([self.w_video_frames, self.w_video_fps, self.w_video_format]),
+            ipywidgets.HBox([self.w_video_frames, self.w_video_fps, self.w_video_format, self.w_video_quality]),
             ipywidgets.HBox([self.w_video_filename, self.w_video_ping_time, self.w_video_live, self.w_export_video]),
             self.w_video_status,
         ])
@@ -821,6 +844,13 @@ class WCIViewerMultiChannel:
             self.output,
         ])
     
+    def _on_video_format_change(self, change: Dict[str, Any]) -> None:
+        """Show/hide the quality slider based on selected format."""
+        if change['new'] == 'avif':
+            self.w_video_quality.layout.display = None
+        else:
+            self.w_video_quality.layout.display = 'none'
+
     def _on_layout_change(self, change: Dict[str, Any]) -> None:
         """Handle grid layout change."""
         new_rows, new_cols = change['new']
@@ -1099,6 +1129,8 @@ class WCIViewerMultiChannel:
         self.args_imagebuilder["wci_render"] = self.w_wci_render.value
         self.args_imagebuilder["horizontal_pixels"] = self.w_horizontal_pixels.value
         self.args_imagebuilder["mp_cores"] = self.w_mp_cores.value
+        self.args_imagebuilder["oversampling"] = self.w_oversampling.value
+        self.args_imagebuilder["oversampling_mode"] = self.w_oversampling_mode.value
         
         # Update all slot imagebuilders
         for slot in self.slots:
@@ -1413,6 +1445,36 @@ class WCIViewerMultiChannel:
                         imageio.mimsave(filename, frames, duration=durations)
                     else:
                         imageio.mimsave(filename, frames, duration=1.0/video_fps)
+            elif fmt == "avif":
+                # Use pillow-avif-plugin for animated AVIF export
+                try:
+                    import pillow_avif  # noqa: F401 – registers .avif with Pillow
+                except ImportError:
+                    self.w_video_status.value = "Error: pip install pillow-avif-plugin"
+                    return
+                try:
+                    from PIL import Image
+                    pil_frames = [Image.fromarray(f) for f in frames]
+                    quality = self.w_video_quality.value
+
+                    if use_ping_time and durations:
+                        duration_ms = [int(d * 1000) for d in durations]
+                        while len(duration_ms) < len(pil_frames):
+                            duration_ms.append(int(1000 / video_fps))
+                    else:
+                        duration_ms = int(1000 / video_fps)
+
+                    pil_frames[0].save(
+                        filename,
+                        save_all=True,
+                        append_images=pil_frames[1:],
+                        duration=duration_ms,
+                        loop=0,
+                        quality=quality,
+                    )
+                except Exception as e:
+                    self.w_video_status.value = f"AVIF error: {e}"
+                    return
             else:
                 # For video formats (mp4, avi, webm), use imageio with ffmpeg plugin
                 try:
