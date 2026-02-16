@@ -27,6 +27,16 @@ from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
 import themachinethatgoesping as theping
 from . import pyqtgraph_helpers as pgh
 
+# Suppress Qt QColorSpace warnings about invalid ICC profile primaries
+_original_qt_msg_handler = QtCore.qInstallMessageHandler(None)  # get default
+def _qt_message_filter(msg_type, context, message):
+    if "QColorSpace" in message:
+        return  # silently drop
+    # Forward everything else to the default handler (or stderr)
+    if _original_qt_msg_handler is not None:
+        _original_qt_msg_handler(msg_type, context, message)
+QtCore.qInstallMessageHandler(_qt_message_filter)
+
 
 def _get_axis_names(echogram):
     """Get x_axis_name and y_axis_name from echogram (old or new builder)."""
@@ -318,7 +328,12 @@ class EchogramViewerMultiChannel:
         # Vertical offsets per echogram
         self.voffsets: Dict[str, float] = {}
         if voffsets is not None:
-            self.voffsets = dict(voffsets)
+            if isinstance(voffsets, dict):
+                self.voffsets = dict(voffsets)
+            else:
+                # List/tuple of offsets – zip with echogram names
+                for name, off in zip(self.echogram_names, voffsets):
+                    self.voffsets[name] = float(off)
         for name in self.echogram_names:
             if name not in self.voffsets:
                 self.voffsets[name] = 0.0
@@ -1907,7 +1922,13 @@ class EchogramViewerMultiChannel:
         if image_item is None:
             return
         
-        array = data.transpose()
+        # Apply per-echogram amplitude offset to bring different instruments
+        # to the same level (e.g. dB offset between MBES and SBES)
+        offset = self.voffsets.get(slot.echogram_key, 0.0) if slot.echogram_key else 0.0
+        if offset != 0.0:
+            array = (data + offset).transpose()
+        else:
+            array = data.transpose()
         image_item.setImage(array, autoLevels=False)
         
         x0, x1, y0, y1 = self._numeric_extent(extent)
@@ -1937,9 +1958,8 @@ class EchogramViewerMultiChannel:
             vmin, vmax = slot.colorbar.levels()
         else:
             # Fallback to global sliders
-            offset = self.voffsets.get(slot.echogram_key, 0.0) if slot.echogram_key else 0.0
-            vmin = float(self.w_vmin.value + offset)
-            vmax = float(self.w_vmax.value + offset)
+            vmin = float(self.w_vmin.value)
+            vmax = float(self.w_vmax.value)
         
         image_item.setLevels((vmin, vmax))
         image_item.show()

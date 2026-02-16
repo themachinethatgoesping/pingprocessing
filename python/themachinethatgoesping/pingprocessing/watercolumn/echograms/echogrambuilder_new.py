@@ -99,6 +99,33 @@ class EchogramBuilder:
         for name, (y_reference, (times, values)) in ping_params.items():
             self._coord_system.add_ping_param(name, "Ping time", y_reference, times, values)
 
+    def _get_all_ping_params(self):
+        """Collect all ping parameters from backend and coordinate system.
+        
+        Returns all params in the backend format:
+            {name: (y_reference, (timestamps, values))}
+        
+        Backend params are included first, then any additional params from
+        the coordinate system that were added via add_ping_param() after
+        construction are appended using ping_times as their timestamps.
+        """
+        # Start with backend params
+        result = dict(self._backend.get_ping_params())
+        
+        # Add coord system params not already in backend
+        for name, param_data in self._coord_system.param.items():
+            if name not in result:
+                y_reference, dense_values = param_data
+                # dense_values may be a tuple (sparse format) or ndarray (dense)
+                if isinstance(dense_values, tuple) and len(dense_values) == 2:
+                    # Already in sparse (timestamps, values) format
+                    result[name] = (y_reference, dense_values)
+                else:
+                    # Dense format: one value per ping -> use ping_times as x
+                    result[name] = (y_reference, (self._backend.ping_times, np.asarray(dense_values, dtype=np.float64)))
+        
+        return result
+
     def _update_layers(self):
         """Update all layers after coordinate system change."""
         if self.main_layer is not None:
@@ -536,6 +563,68 @@ class EchogramBuilder:
         elif x_axis_name in ("Ping index", None):
             self.set_x_axis_ping_index()
 
+    def _save_layers_to_dir(self, output_path: Path, metadata: dict):
+        """Save layer boundary arrays to a directory and update metadata dict.
+        
+        Stores per-ping vec_min_y/vec_max_y for each named layer and the
+        main layer (if set) as .npy files. Adds layer_names and has_main_layer
+        to the metadata dict.
+        
+        Args:
+            output_path: Directory to write .npy files into.
+            metadata: Metadata dict to update with layer info.
+        """
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y.astype(np.float32))
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y.astype(np.float32))
+        if self.main_layer is not None:
+            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y.astype(np.float32))
+            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y.astype(np.float32))
+        metadata["layer_names"] = layer_names
+        metadata["has_main_layer"] = self.main_layer is not None
+
+    def _restore_layers_from_store(self, layer_names_json, has_main_layer, get_array):
+        """Restore layers from stored boundary arrays.
+        
+        Reconstructs EchoLayer objects from saved vec_min_y/vec_max_y arrays
+        using ping times as x-coordinates.
+        
+        Args:
+            layer_names_json: JSON string of layer name list, or a list.
+            has_main_layer: Whether a main layer was stored.
+            get_array: Callable(name) -> np.ndarray or None. Retrieves a stored
+                       array by name (e.g. "layer_bottom_min_y").
+        """
+        import json as json_mod
+        
+        if isinstance(layer_names_json, str):
+            layer_names = json_mod.loads(layer_names_json)
+        else:
+            layer_names = list(layer_names_json)
+        
+        ping_times = self._backend.ping_times
+        
+        for name in layer_names:
+            min_y = get_array(f"layer_{name}_min_y")
+            max_y = get_array(f"layer_{name}_max_y")
+            if min_y is not None and max_y is not None:
+                try:
+                    self.add_layer(name, ping_times, min_y, max_y)
+                except Exception:
+                    pass  # Skip layers that fail to reconstruct
+        
+        if has_main_layer:
+            min_y = get_array("layer_main_min_y")
+            max_y = get_array("layer_main_max_y")
+            if min_y is not None and max_y is not None:
+                try:
+                    layer = EchoLayer(self, ping_times, min_y, max_y)
+                    self._set_layer("main", layer)
+                except Exception:
+                    pass  # Skip main layer if it fails to reconstruct
+
     # =========================================================================
     # Coordinate system methods (delegating to coord_system)
     # =========================================================================
@@ -543,6 +632,12 @@ class EchogramBuilder:
     def reinit(self):
         """Reinitialize coordinate systems if needed."""
         self._coord_system.reinit()
+
+    def get_x_axis_name(self):
+        return self._coord_system.x_axis_name
+
+    def get_y_axis_name(self):
+        return self._coord_system.y_axis_name
 
     def get_x_kwargs(self):
         return self._coord_system.get_x_kwargs()
@@ -1188,6 +1283,259 @@ class EchogramBuilder:
         return raw_column[sample_start:sample_end], (sample_start, sample_end)
 
     # =========================================================================
+    # Update store metadata (no WCI data rewrite)
+    # =========================================================================
+
+    def update_store(self, path: str = None):
+        """Write current axis, oversampling, ping-param and layer settings to
+        an existing store **and** synchronise the in-memory backend state.
+        
+        Only the metadata of the mmap / zarr store is touched — the
+        (potentially huge) WCI data array is left untouched.  Call this after
+        changing view settings on a loaded echogram, e.g.::
+        
+            builder = EchogramBuilder.from_mmap("my_store.mmap")
+            builder.set_y_axis_depth()
+            builder.set_oversampling(x_oversampling=2, y_oversampling=2)
+            builder.add_ping_param("my_line", "Ping time", "Depth (m)", ts, vals)
+            builder.add_layer_from_static_layer("roi", 10, 50)
+            builder.update_store()          # writes back to the same store
+            
+            # …or save to a *different* store's metadata
+            builder.update_store("other_store.mmap")
+        
+        After the on-disk store is updated the backend's cached data
+        structures are refreshed so that subsequent calls to e.g.
+        ``backend.get_ping_params()`` return the new values.
+        
+        Args:
+            path: Path to the store directory / zarr group.  If *None*, writes
+                back to the store the current backend was loaded from
+                (requires a backend with a ``store_path`` attribute).
+                
+        Raises:
+            ValueError: If *path* is None and the backend has no ``store_path``.
+            FileNotFoundError: If the target path does not exist.
+        """
+        import json
+        from pathlib import Path as _Path
+        
+        # Resolve target path
+        if path is None:
+            if not hasattr(self._backend, "store_path") or self._backend.store_path is None:
+                raise ValueError(
+                    "Cannot infer store path from backend. "
+                    "Pass the path explicitly: update_store('/path/to/store')"
+                )
+            path = self._backend.store_path
+        
+        target = _Path(path)
+        
+        if not target.exists():
+            raise FileNotFoundError(f"Store path does not exist: {target}")
+        
+        # Detect store type
+        is_zarr = (target / ".zgroup").exists() or (target / "zarr.json").exists() or (target / ".zmetadata").exists()
+        is_mmap = (target / "metadata.json").exists() and (target / "wci_data.bin").exists()
+        
+        if is_zarr:
+            self._save_settings_zarr(target)
+        elif is_mmap:
+            self._save_settings_mmap(target)
+        else:
+            raise ValueError(
+                f"Cannot determine store type at '{target}'. "
+                "Expected a zarr store or mmap directory."
+            )
+        
+        # Keep the in-memory backend in sync with what we just wrote
+        self._sync_backend_state()
+
+    def _sync_backend_state(self):
+        """Refresh the backend's in-memory caches to match current settings.
+        
+        Called automatically at the end of :meth:`update_store` so that
+        ``backend.get_ping_params()`` and similar accessors reflect any
+        additions made via :meth:`add_ping_param`, :meth:`add_layer*`, etc.
+        """
+        from .backends.mmap_backend import MmapDataBackend
+        from .backends.zarr_backend import ZarrDataBackend
+        
+        ping_params = self._get_all_ping_params()
+        
+        if isinstance(self._backend, MmapDataBackend):
+            # MmapDataBackend stores params in
+            #   _metadata["ping_params"][name] = {y_reference, timestamps, values}
+            mmap_params = {}
+            param_names = []
+            params_meta = {}
+            for name, (y_ref, (times, values)) in ping_params.items():
+                param_names.append(name)
+                params_meta[name] = y_ref
+                mmap_params[name] = {
+                    "y_reference": y_ref,
+                    "timestamps": np.asarray(times, dtype=np.float64),
+                    "values": np.asarray(values, dtype=np.float32),
+                }
+            self._backend._metadata["ping_params"] = mmap_params
+            self._backend._metadata["ping_param_names"] = param_names
+            self._backend._metadata["ping_params_meta"] = params_meta
+        
+        elif isinstance(self._backend, ZarrDataBackend):
+            # ZarrDataBackend caches params in
+            #   _ping_params[name] = (y_ref, (times, values))
+            self._backend._ping_params = {
+                name: (y_ref, (np.asarray(times, dtype=np.float64),
+                               np.asarray(values, dtype=np.float32)))
+                for name, (y_ref, (times, values)) in ping_params.items()
+            }
+
+    def _save_settings_zarr(self, target):
+        """Write metadata-only update to an existing Zarr store."""
+        import zarr
+        import json
+        
+        store = zarr.open_group(str(target), mode="r+")
+        
+        # Axis settings
+        store.attrs["x_axis_name"] = self._coord_system.x_axis_name
+        store.attrs["y_axis_name"] = self._coord_system.y_axis_name
+        
+        # Oversampling
+        store.attrs["x_oversampling"] = self._x_oversampling
+        store.attrs["y_oversampling"] = self._y_oversampling
+        store.attrs["oversampling_mode"] = self._oversampling_mode
+        
+        # Ping parameters – remove old ones, write all current ones
+        old_params_meta = store.attrs.get("ping_params_meta", "{}")
+        if isinstance(old_params_meta, str):
+            old_params_meta = json.loads(old_params_meta)
+        for old_name in old_params_meta:
+            for suffix in ("_times", "_values"):
+                arr_name = f"ping_param_{old_name}{suffix}"
+                if arr_name in store:
+                    del store[arr_name]
+        
+        ping_params = self._get_all_ping_params()
+        params_meta = {}
+        for name, (y_ref, (times, values)) in ping_params.items():
+            params_meta[name] = y_ref
+            store.create_array(
+                f"ping_param_{name}_times",
+                data=np.asarray(times, dtype=np.float64),
+                dimension_names=[f"param_{name}"],
+                overwrite=True,
+            )
+            store.create_array(
+                f"ping_param_{name}_values",
+                data=np.asarray(values, dtype=np.float32),
+                dimension_names=[f"param_{name}"],
+                overwrite=True,
+            )
+        store.attrs["ping_params_meta"] = json.dumps(params_meta)
+        
+        # Layers – remove old ones, write all current ones
+        old_layer_names = store.attrs.get("layer_names", "[]")
+        if isinstance(old_layer_names, str):
+            old_layer_names = json.loads(old_layer_names)
+        for old_name in old_layer_names:
+            for suffix in ("_min_y", "_max_y"):
+                arr_name = f"layer_{old_name}{suffix}"
+                if arr_name in store:
+                    del store[arr_name]
+        for suffix in ("_min_y", "_max_y"):
+            arr_name = f"layer_main{suffix}"
+            if arr_name in store:
+                del store[arr_name]
+        
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            store.create_array(
+                f"layer_{layer_name}_min_y",
+                data=layer.vec_min_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+            store.create_array(
+                f"layer_{layer_name}_max_y",
+                data=layer.vec_max_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+        if self.main_layer is not None:
+            store.create_array(
+                "layer_main_min_y",
+                data=self.main_layer.vec_min_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+            store.create_array(
+                "layer_main_max_y",
+                data=self.main_layer.vec_max_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+        store.attrs["layer_names"] = json.dumps(layer_names)
+        store.attrs["has_main_layer"] = self.main_layer is not None
+        
+        # Re-consolidate metadata
+        zarr.consolidate_metadata(str(target))
+
+    def _save_settings_mmap(self, target):
+        """Write metadata-only update to an existing mmap store."""
+        import json
+        from pathlib import Path as _Path
+        
+        metadata_file = target / "metadata.json"
+        with open(metadata_file, "r") as f:
+            metadata = json.load(f)
+        
+        # Axis settings
+        metadata["x_axis_name"] = self._coord_system.x_axis_name
+        metadata["y_axis_name"] = self._coord_system.y_axis_name
+        
+        # Oversampling
+        metadata["x_oversampling"] = self._x_oversampling
+        metadata["y_oversampling"] = self._y_oversampling
+        metadata["oversampling_mode"] = self._oversampling_mode
+        
+        # Ping parameters – remove old .npy files, write all current ones
+        for old_name in metadata.get("ping_param_names", []):
+            for suffix in ("_times", "_values"):
+                f = target / f"ping_param_{old_name}{suffix}.npy"
+                if f.exists():
+                    f.unlink()
+        
+        ping_params = self._get_all_ping_params()
+        ping_param_names = []
+        ping_params_meta = {}
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            np.save(target / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(target / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        metadata["ping_param_names"] = ping_param_names
+        metadata["ping_params_meta"] = ping_params_meta
+        
+        # Layers – remove old .npy files, write all current ones
+        for old_name in metadata.get("layer_names", []):
+            for suffix in ("_min_y", "_max_y"):
+                f = target / f"layer_{old_name}{suffix}.npy"
+                if f.exists():
+                    f.unlink()
+        for suffix in ("_min_y", "_max_y"):
+            f = target / f"layer_main{suffix}.npy"
+            if f.exists():
+                f.unlink()
+        
+        self._save_layers_to_dir(target, metadata)
+        
+        # Write updated metadata
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f)
+
+    # =========================================================================
     # Zarr export
     # =========================================================================
 
@@ -1433,7 +1781,7 @@ class EchogramBuilder:
                 store.create_array("longitudes", data=self._backend.longitudes.astype(np.float64), dimension_names=["ping"])
         
         # Ping parameters (these are per-param, not per-ping, so use different dim name)
-        ping_params = self._backend.get_ping_params()
+        ping_params = self._get_all_ping_params()
         params_meta = {}
         for name, (y_ref, (times, values)) in ping_params.items():
             # Update y_ref to match the new coordinate system if transformed
@@ -1475,6 +1823,22 @@ class EchogramBuilder:
         # View axis settings (type only, not zoom level)
         store.attrs["x_axis_name"] = saved_x_axis_name
         store.attrs["y_axis_name"] = saved_y_axis_name
+        # Oversampling settings
+        store.attrs["x_oversampling"] = self._x_oversampling
+        store.attrs["y_oversampling"] = self._y_oversampling
+        store.attrs["oversampling_mode"] = self._oversampling_mode
+        
+        # Layer data
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            store.create_array(f"layer_{layer_name}_min_y", data=layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
+            store.create_array(f"layer_{layer_name}_max_y", data=layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
+        if self.main_layer is not None:
+            store.create_array("layer_main_min_y", data=self.main_layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
+            store.create_array("layer_main_max_y", data=self.main_layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
+        store.attrs["layer_names"] = json.dumps(layer_names)
+        store.attrs["has_main_layer"] = self.main_layer is not None
         
         # Consolidate metadata for faster reads (single file instead of many)
         zarr.consolidate_metadata(path)
@@ -1500,12 +1864,13 @@ class EchogramBuilder:
             EchogramBuilder with ZarrDataBackend.
         """
         import zarr
+        import json as json_mod
         from .backends import ZarrDataBackend
         
         backend = ZarrDataBackend.from_zarr(path, chunks=chunks)
         builder = cls(backend)
         
-        # Restore axis settings from zarr attributes
+        # Restore axis settings, oversampling, and layers from zarr attributes
         try:
             store = zarr.open_group(path, mode="r")
             x_axis_name = store.attrs.get("x_axis_name")
@@ -1513,8 +1878,20 @@ class EchogramBuilder:
             
             if x_axis_name or y_axis_name:
                 builder._apply_axis_type(x_axis_name, y_axis_name)
+            
+            # Restore oversampling settings
+            builder._x_oversampling = int(store.attrs.get("x_oversampling", 1))
+            builder._y_oversampling = int(store.attrs.get("y_oversampling", 1))
+            builder._oversampling_mode = store.attrs.get("oversampling_mode", "linear_mean")
+            
+            # Restore layers
+            builder._restore_layers_from_store(
+                layer_names_json=store.attrs.get("layer_names", "[]"),
+                has_main_layer=store.attrs.get("has_main_layer", False),
+                get_array=lambda name: store[name][:] if name in store else None,
+            )
         except Exception:
-            pass  # Ignore errors loading axis settings from older files
+            pass  # Ignore errors loading settings from older files
         
         return builder
 
@@ -1710,7 +2087,7 @@ class EchogramBuilder:
             np.save(output_path / "longitudes.npy", self._backend.longitudes.astype(np.float64))
         
         # Ping parameters (binary .npy files)
-        ping_params = self._backend.get_ping_params()
+        ping_params = self._get_all_ping_params()
         ping_params_meta = {}  # y_reference for each param (stored in JSON)
         ping_param_names = []
         for name, (y_ref, (timestamps, values)) in ping_params.items():
@@ -1734,7 +2111,14 @@ class EchogramBuilder:
             # View axis settings (type only, not zoom level)
             "x_axis_name": self._coord_system.x_axis_name,
             "y_axis_name": self._coord_system.y_axis_name,
+            # Oversampling settings
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
         }
+        
+        # Save layer data as .npy files
+        self._save_layers_to_dir(output_path, metadata)
         
         # Write small JSON metadata
         metadata_file = output_path / "metadata.json"
@@ -1889,7 +2273,7 @@ class EchogramBuilder:
             np.save(output_path / "longitudes.npy", new_lons.astype(np.float64))
         
         # Ping parameters - interpolate to new ping times
-        ping_params = self._backend.get_ping_params()
+        ping_params = self._get_all_ping_params()
         ping_params_meta = {}
         ping_param_names = []
         for name, (y_ref, (timestamps, values)) in ping_params.items():
@@ -1931,7 +2315,14 @@ class EchogramBuilder:
             "storage_mode": storage_mode.to_dict(),
             "x_axis_name": x_axis_name,
             "y_axis_name": y_axis_name,
+            # Oversampling settings
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
         }
+        
+        # Save layer data as .npy files
+        self._save_layers_to_dir(output_path, metadata)
         
         metadata_file = output_path / "metadata.json"
         with open(metadata_file, "w") as f:
@@ -2313,7 +2704,7 @@ class EchogramBuilder:
         backend = MmapDataBackend.from_path(path)
         builder = cls(backend)
         
-        # Restore axis settings from metadata
+        # Restore axis settings, oversampling, and layers from metadata
         metadata_file = Path(path) / "metadata.json"
         if metadata_file.exists():
             with open(metadata_file, "r") as f:
@@ -2324,6 +2715,19 @@ class EchogramBuilder:
             
             # Apply saved axis type (without specific zoom parameters)
             builder._apply_axis_type(x_axis_name, y_axis_name)
+            
+            # Restore oversampling settings
+            builder._x_oversampling = int(metadata.get("x_oversampling", 1))
+            builder._y_oversampling = int(metadata.get("y_oversampling", 1))
+            builder._oversampling_mode = metadata.get("oversampling_mode", "linear_mean")
+            
+            # Restore layers
+            store_path = Path(path)
+            builder._restore_layers_from_store(
+                layer_names_json=json.dumps(metadata.get("layer_names", [])),
+                has_main_layer=metadata.get("has_main_layer", False),
+                get_array=lambda name: np.load(store_path / f"{name}.npy") if (store_path / f"{name}.npy").exists() else None,
+            )
         
         return builder
 

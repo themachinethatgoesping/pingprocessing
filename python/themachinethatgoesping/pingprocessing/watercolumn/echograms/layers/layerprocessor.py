@@ -478,7 +478,7 @@ class LayerProcessor:
                 while True:
                     if t_min.iloc[ti] <= pt < t_max.iloc[ti]:
                         times_.append(pt)
-                        for k, v in pi.get_wci_layers_range_stack().items():
+                        for k, v in pi.get_wci_layers().items():
                             vals_[k].extend(v)
                         break
 
@@ -590,14 +590,25 @@ class LayerProcessor:
             return new_data
 
     @staticmethod
+    def _get_ping_times(echogram):
+        """Get ping_times from an echogram (supports new backend-based builder)."""
+        if hasattr(echogram, '_backend'):
+            return echogram._backend.ping_times
+        return echogram.ping_times
+
+    @staticmethod
     def __make_timeblocks_dataframe__(echograms, deltaT="1min"):
         deltaT = pytimeparse2.parse(deltaT, as_timedelta=False)
 
         t0 = np.nanmin(
-            [datetime.datetime.fromtimestamp(echogram.ping_times[0], datetime.timezone.utc) for echogram in echograms]
+            [datetime.datetime.fromtimestamp(
+                LayerProcessor._get_ping_times(echogram)[0], datetime.timezone.utc
+            ) for echogram in echograms]
         )
         t1 = np.nanmax(
-            [datetime.datetime.fromtimestamp(echogram.ping_times[-1], datetime.timezone.utc) for echogram in echograms]
+            [datetime.datetime.fromtimestamp(
+                LayerProcessor._get_ping_times(echogram)[-1], datetime.timezone.utc
+            ) for echogram in echograms]
         )
 
         t0 = (t0.replace(minute=0, second=0, microsecond=0)).timestamp()
