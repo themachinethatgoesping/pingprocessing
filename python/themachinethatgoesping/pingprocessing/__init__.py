@@ -19,7 +19,10 @@ from . import split_pings
 from . import group_pings
 from . import overview
 from . import watercolumn #as watercolumn_ext  # flake8: noqa
-from . import widgets
+try:
+    from . import widgets
+except ImportError:
+    pass
 from . import testing
 
 # overwrite watercolumn module using the loaded python extension
