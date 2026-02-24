@@ -1093,15 +1093,15 @@ class EchogramBuilder:
 
                 case "Sample number":
                     assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
-                    extents[key] = cs.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_sample_nr, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case "Depth (m)":
                     assert cs.has_depths, "ERROR: Depths values not initialized"
-                    extents[key] = cs.y_indice_to_depth_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_depth, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case "Range (m)":
                     assert cs.has_ranges, "ERROR: Ranges values not initialized"
-                    extents[key] = cs.y_indice_to_range_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_range, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case _:
                     raise RuntimeError(f"Invalid axis_name '{axis_name}'")
@@ -1122,15 +1122,15 @@ class EchogramBuilder:
 
                 case "Sample number":
                     assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
-                    extents[key] = cs.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_sample_nr, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case "Depth (m)":
                     assert cs.has_depths, "ERROR: Depths values not initialized"
-                    extents[key] = cs.y_indice_to_depth_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_depth, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case "Range (m)":
                     assert cs.has_ranges, "ERROR: Ranges values not initialized"
-                    extents[key] = cs.y_indice_to_range_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_range, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case _:
                     raise RuntimeError(f"Invalid axis_name '{axis_name}'")

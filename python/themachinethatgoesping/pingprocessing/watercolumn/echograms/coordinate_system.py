@@ -104,6 +104,20 @@ class EchogramCoordinateSystem:
         """Whether coordinate system is fully initialized."""
         return self._initialized
 
+    def _affine_eval(self, affine: Tuple[np.ndarray, np.ndarray], nr: int, indices) -> np.ndarray:
+        """Evaluate affine transform for a given ping at sample indices.
+        
+        Args:
+            affine: Tuple of (a, b) arrays from _compute_affine_coefficients.
+            nr: Ping index.
+            indices: Sample index or array of sample indices.
+            
+        Returns:
+            Coordinate values: a[nr] + b[nr] * indices
+        """
+        a, b = affine
+        return a[nr] + b[nr] * np.asarray(indices, dtype=np.float32)
+
     def _compute_affine_coefficients(self, min_vals: np.ndarray, max_vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Compute affine coefficients for: value = a + b * sample_index.
         
