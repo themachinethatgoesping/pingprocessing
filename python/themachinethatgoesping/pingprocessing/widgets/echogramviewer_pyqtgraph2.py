@@ -2008,11 +2008,85 @@ class EchogramViewerMultiChannel:
         return None
     
     # =========================================================================
+    # Export / Scene Access
+    # =========================================================================
+    
+    def get_scene(self) -> QtWidgets.QGraphicsScene:
+        """Return the QGraphicsScene backing the viewer.
+        
+        Returns
+        -------
+        QGraphicsScene
+            The scene that contains all plot items.
+        """
+        return self.graphics.gfxView.scene()
+    
+    def save_scene(self, filename: str = "scene.svg") -> None:
+        """Export the current scene to an SVG file.
+        
+        Parameters
+        ----------
+        filename : str
+            Output file path (should end in .svg).
+        """
+        import pyqtgraph.exporters
+        exporter = pg.exporters.SVGExporter(self.get_scene())
+        exporter.export(filename)
+    
+    def get_matplotlib(
+        self,
+        dpi: int = 150,
+    ):
+        """Render the current scene to a matplotlib Figure.
+        
+        Parameters
+        ----------
+        dpi : int
+            Resolution of the rasterised image.
+        
+        Returns
+        -------
+        matplotlib.figure.Figure
+            A matplotlib figure showing the current viewer state.
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.image as mpimg
+        import io
+        
+        # Render scene to QImage
+        scene = self.get_scene()
+        rect = scene.sceneRect()
+        w = int(rect.width())
+        h = int(rect.height())
+        if w == 0 or h == 0:
+            w, h = self.widget_width_px, self.widget_height_px
+        
+        image = QtGui.QImage(w, h, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtCore.Qt.GlobalColor.white)
+        painter = QtGui.QPainter(image)
+        scene.render(painter)
+        painter.end()
+        
+        # Convert QImage -> numpy array
+        ptr = image.bits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(h * w * 4)
+        arr = np.frombuffer(ptr, np.uint8).reshape((h, w, 4)).copy()
+        # BGRA -> RGBA
+        arr = arr[..., [2, 1, 0, 3]]
+        
+        fig, ax = plt.subplots(dpi=dpi)
+        ax.imshow(arr)
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+        return fig
+    
+    # =========================================================================
     # UI Event Handlers
     # =========================================================================
     
     def _on_layout_change(self, change: Dict[str, Any]) -> None:
-        """Handle grid layout change."""
+        """Handle grid layout change.""
         new_rows, new_cols = change['new']
         
         # Skip if no actual change

@@ -25,6 +25,7 @@ import themachinethatgoesping.pingprocessing.watercolumn.image as mi
 from themachinethatgoesping.pingprocessing.widgets import TqdmWidget
 
 from . import pyqtgraph_helpers as pgh
+from .videoframes import VideoFrames
 
 WCI_VALUE_CHOICES = [
     "sv/av/pv/rv",
@@ -312,6 +313,9 @@ class WCIViewerMultiChannel:
         # Progress widget
         self.progress = progress or TqdmWidget()
         self.display_progress = progress is None
+        
+        # Captured video frames (populated by _export_video / Capture button)
+        self.frames: VideoFrames = VideoFrames()
         
         # Time synchronization
         self.time_sync_enabled = time_sync_enabled
@@ -618,12 +622,12 @@ class WCIViewerMultiChannel:
         )
         self.w_video_format = ipywidgets.Dropdown(
             description="format",
-            options=["mp4", "gif", "avif", "webm", "avi"],
-            value="mp4",
-            layout=ipywidgets.Layout(width='130px'),
+            options=["avif", "mp4", "frames"],
+            value="avif",
+            layout=ipywidgets.Layout(width='140px'),
         )
         self.w_video_quality = ipywidgets.IntSlider(
-            value=50,
+            value=75,
             min=1,
             max=100,
             step=1,
@@ -638,9 +642,10 @@ class WCIViewerMultiChannel:
             description="filename",
             layout=ipywidgets.Layout(width='200px'),
         )
+        self.w_video_filename.layout.display = 'none'  # hidden when 'frames' selected
         self.w_export_video = ipywidgets.Button(
-            description="Export Video",
-            tooltip="Export video from current position",
+            description="Capture",
+            tooltip="Capture frames (and optionally export)",
             layout=ipywidgets.Layout(width='120px'),
         )
         self.w_export_video.on_click(self._export_video)
@@ -850,11 +855,92 @@ class WCIViewerMultiChannel:
             self.output,
         ])
     
+    # =========================================================================
+    # Export / Scene Access
+    # =========================================================================
+    
+    def get_scene(self) -> QtWidgets.QGraphicsScene:
+        """Return the QGraphicsScene backing the viewer.
+        
+        Returns
+        -------
+        QGraphicsScene
+            The scene that contains all plot items.
+        """
+        return self.graphics.gfxView.scene()
+    
+    def save_scene(self, filename: str = "scene.svg") -> None:
+        """Export the current scene to an SVG file.
+        
+        Parameters
+        ----------
+        filename : str
+            Output file path (should end in .svg).
+        """
+        import pyqtgraph.exporters
+        exporter = pg.exporters.SVGExporter(self.get_scene())
+        exporter.export(filename)
+    
+    def get_matplotlib(
+        self,
+        dpi: int = 150,
+    ):
+        """Render the current scene to a matplotlib Figure.
+        
+        Parameters
+        ----------
+        dpi : int
+            Resolution of the rasterised image.
+        
+        Returns
+        -------
+        matplotlib.figure.Figure
+            A matplotlib figure showing the current viewer state.
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.image as mpimg
+        import io
+        
+        # Render scene to QImage
+        scene = self.get_scene()
+        rect = scene.sceneRect()
+        w = int(rect.width())
+        h = int(rect.height())
+        if w == 0 or h == 0:
+            w, h = self.widget_width_px, self.widget_height_px
+        
+        image = QtGui.QImage(w, h, QtGui.QImage.Format.Format_ARGB32)
+        image.fill(QtCore.Qt.GlobalColor.white)
+        painter = QtGui.QPainter(image)
+        scene.render(painter)
+        painter.end()
+        
+        # Convert QImage -> numpy array
+        ptr = image.bits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(h * w * 4)
+        arr = np.frombuffer(ptr, np.uint8).reshape((h, w, 4)).copy()
+        # BGRA -> RGBA
+        arr = arr[..., [2, 1, 0, 3]]
+        
+        fig, ax = plt.subplots(dpi=dpi)
+        ax.imshow(arr)
+        ax.set_axis_off()
+        fig.tight_layout(pad=0)
+        return fig
+    
     def _on_video_format_change(self, change: Dict[str, Any]) -> None:
-        """Show/hide the quality slider based on selected format."""
-        if change['new'] == 'avif':
+        """Show/hide widgets based on selected format."""
+        fmt = change['new']
+        if fmt == 'frames':
+            # No file output – hide filename and quality
+            self.w_video_filename.layout.display = 'none'
+            self.w_video_quality.layout.display = 'none'
+        elif fmt == 'avif':
+            self.w_video_filename.layout.display = None
             self.w_video_quality.layout.display = None
         else:
+            self.w_video_filename.layout.display = None
             self.w_video_quality.layout.display = 'none'
 
     def _on_layout_change(self, change: Dict[str, Any]) -> None:
@@ -1278,20 +1364,13 @@ class WCIViewerMultiChannel:
             slider.step = new_step
     
     def _export_video(self, _event: Any = None) -> None:
-        """Export video from current position.
+        """Capture frames and optionally export as video.
         
-        Captures frames by stepping through pings and saves as video file.
-        Requires imageio (and imageio-ffmpeg for mp4/avi/webm).
+        Always stores captured frames in ``self.frames`` (a VideoFrames
+        instance).  When format is ``"frames"`` only the capture is
+        performed.  For ``"avif"`` or ``"mp4"`` the frames are also
+        written to disk automatically using the UI parameters.
         """
-        try:
-            import imageio.v3 as iio
-        except ImportError:
-            try:
-                import imageio as iio
-            except ImportError:
-                self.w_video_status.value = "Error: pip install imageio imageio-ffmpeg"
-                return
-        
         slot = self.slots[0]
         pings = slot.get_pings()
         if not pings:
@@ -1303,47 +1382,35 @@ class WCIViewerMultiChannel:
         if num_frames <= 0:
             num_frames = len(pings)
         
-        video_fps = max(1, self.w_video_fps.value)  # fps or speed multiplier
+        video_fps = max(1, self.w_video_fps.value)
         step = max(1, self.w_ping_step.value)
         fmt = self.w_video_format.value
-        filename = self.w_video_filename.value.strip()
+        filename = self.w_video_filename.value.strip() or "wci_video"
         use_ping_time = self.w_video_ping_time.value
-        
-        if not filename:
-            filename = "wci_video"
-        
-        # Ensure proper extension
-        if not filename.endswith(f".{fmt}"):
-            filename = f"{filename}.{fmt}"
         
         start_idx = self.ping_sliders[0].value
         max_idx = len(pings) - 1
         
         # Limit frames to avoid hanging
         actual_frames = min(num_frames, (max_idx - start_idx) // step + 1)
-        self.w_video_status.value = f"Exporting {actual_frames} frames..."
+        self.w_video_status.value = f"Capturing {actual_frames} frames..."
         
         try:
-            # Use pyqtgraph's Qt bindings
-            from pyqtgraph.Qt import QtGui
+            from pyqtgraph.Qt import QtGui  # noqa: F811
             
-            # Get view reference
             if not hasattr(self.graphics, 'gfxView'):
                 self.w_video_status.value = "Error: No graphics view available"
                 return
             view = self.graphics.gfxView
             
-            # Capture frames and durations
-            frames = []
-            durations = []  # Duration for each frame (in seconds)
-            current_idx = start_idx
-            prev_timestamp = None
+            # Reset frame store
+            self.frames.clear()
             
-            # Option: show live preview during capture
+            current_idx = start_idx
+            
             show_live = getattr(self, 'w_video_live', None)
             show_live = show_live.value if show_live else False
             
-            # Disable syncing for faster capture unless showing live
             old_syncing = self._syncing
             if not show_live:
                 self._syncing = True
@@ -1353,15 +1420,10 @@ class WCIViewerMultiChannel:
             for i in range(actual_frames):
                 t0 = time_module.time()
                 
-                # Get timestamp for duration calculation
-                if use_ping_time:
-                    current_ts = slot.get_timestamp(current_idx)
-                    if prev_timestamp is not None and current_ts is not None:
-                        dt = abs(current_ts - prev_timestamp) / video_fps
-                        durations.append(max(0.01, dt))
-                    prev_timestamp = current_ts
+                # Get timestamp for this ping
+                current_ts = slot.get_timestamp(current_idx)
                 
-                # Update ALL visible slots, not just the first one
+                # Update ALL visible slots
                 for slot_i, s in enumerate(self.slots):
                     if s.is_visible and s.get_pings():
                         s.ping_index = current_idx
@@ -1369,15 +1431,13 @@ class WCIViewerMultiChannel:
                         if slot_i < len(self.ping_sliders):
                             self.ping_sliders[slot_i].value = current_idx
                 
-                # Process Qt events so the display updates
                 self._process_qt_events()
                 
-                # Capture the viewport directly using grab() - this captures exactly what's visible
+                # Capture frame
                 try:
                     pixmap = view.grab()
                     image = pixmap.toImage()
                     
-                    # Convert QImage to numpy array (PySide6 compatible)
                     width = image.width()
                     height = image.height()
                     ptr = image.bits()
@@ -1391,117 +1451,71 @@ class WCIViewerMultiChannel:
                         ptr.setsize(nbytes)
                         arr = np.array(ptr, dtype=np.uint8)
                     arr = arr.reshape(height, width, 4)
-                    # Convert BGRA to RGB
+                    # BGRA -> RGB
                     frame = arr[:, :, [2, 1, 0]].copy()
-                    frames.append(frame)
+                    self.frames.append(frame, timestamp=current_ts)
                 except Exception as e:
                     self._syncing = old_syncing
                     self.w_video_status.value = f"Frame capture error: {e}"
                     return
                 
-                # Step to next ping
                 current_idx += step
                 if current_idx > max_idx:
                     break
                 
-                # Show progress with timing info
                 t1 = time_module.time()
                 fps_current = 1.0 / (t1 - t0) if (t1 - t0) > 0 else 0
                 elapsed = t1 - t_start
                 remaining = (actual_frames - i - 1) * (elapsed / (i + 1)) if i > 0 else 0
-                self.w_video_status.value = f"Frame {i+1}/{actual_frames} ({fps_current:.1f} fps, ~{remaining:.0f}s left)"
+                self.w_video_status.value = (
+                    f"Frame {i+1}/{actual_frames} "
+                    f"({fps_current:.1f} fps, ~{remaining:.0f}s left)"
+                )
             
-            # Restore syncing
             self._syncing = old_syncing
             
-            if not frames:
+            if len(self.frames) == 0:
                 self.w_video_status.value = "Error: No frames captured"
                 return
             
-            # Write video
-            self.w_video_status.value = f"Writing {filename} ({len(frames)} frames)..."
-            self._process_qt_events()
-            
-            if fmt == "gif":
-                # Use Pillow for GIF - much faster than imageio
-                try:
-                    from PIL import Image
-                    pil_frames = [Image.fromarray(f) for f in frames]
-                    
-                    if use_ping_time and durations:
-                        # Convert durations to milliseconds
-                        duration_ms = [int(d * 1000) for d in durations]
-                        # Pad durations if needed
-                        while len(duration_ms) < len(pil_frames):
-                            duration_ms.append(int(1000 / video_fps))
-                    else:
-                        duration_ms = int(1000 / video_fps)
-                    
-                    pil_frames[0].save(
-                        filename,
-                        save_all=True,
-                        append_images=pil_frames[1:],
-                        duration=duration_ms,
-                        loop=0
-                    )
-                except ImportError:
-                    # Fall back to imageio legacy API
-                    import imageio
-                    if use_ping_time and durations:
-                        imageio.mimsave(filename, frames, duration=durations)
-                    else:
-                        imageio.mimsave(filename, frames, duration=1.0/video_fps)
+            # --- export if format is not "frames" ---
+            if fmt == "frames":
+                self.w_video_status.value = (
+                    f"Captured {len(self.frames)} frames "
+                    f"(use viewer.frames.export_avif() / .export_mp4())"
+                )
             elif fmt == "avif":
-                # Use pillow-avif-plugin for animated AVIF export
+                if not filename.endswith(".avif"):
+                    filename = f"{filename}.avif"
+                self.w_video_status.value = f"Writing {filename}..."
+                self._process_qt_events()
                 try:
-                    import pillow_avif  # noqa: F401 – registers .avif with Pillow
-                except ImportError:
-                    self.w_video_status.value = "Error: pip install pillow-avif-plugin"
-                    return
-                try:
-                    from PIL import Image
-                    pil_frames = [Image.fromarray(f) for f in frames]
-                    quality = self.w_video_quality.value
-
-                    if use_ping_time and durations:
-                        duration_ms = [int(d * 1000) for d in durations]
-                        while len(duration_ms) < len(pil_frames):
-                            duration_ms.append(int(1000 / video_fps))
+                    kwargs: Dict[str, Any] = {"quality": self.w_video_quality.value}
+                    if use_ping_time:
+                        kwargs["ping_time_speed"] = video_fps
                     else:
-                        duration_ms = int(1000 / video_fps)
-
-                    pil_frames[0].save(
-                        filename,
-                        save_all=True,
-                        append_images=pil_frames[1:],
-                        duration=duration_ms,
-                        loop=0,
-                        quality=quality,
-                    )
+                        kwargs["fps"] = video_fps
+                    self.frames.export_avif(filename, **kwargs)
+                    self.w_video_status.value = f"Saved: {filename} ({len(self.frames)} frames)"
                 except Exception as e:
                     self.w_video_status.value = f"AVIF error: {e}"
                     return
-            else:
-                # For video formats (mp4, avi, webm), use imageio with ffmpeg plugin
+            else:  # mp4
+                if not filename.endswith(".mp4"):
+                    filename = f"{filename}.mp4"
+                self.w_video_status.value = f"Writing {filename}..."
+                self._process_qt_events()
                 try:
-                    import imageio_ffmpeg
-                    import imageio
-                    if use_ping_time and durations:
-                        avg_duration = sum(durations) / len(durations) if durations else 1.0/video_fps
-                        avg_fps = 1.0 / avg_duration if avg_duration > 0 else video_fps
+                    kwargs_mp4: Dict[str, Any] = {}
+                    if use_ping_time:
+                        kwargs_mp4["ping_time_speed"] = video_fps
                     else:
-                        avg_fps = video_fps
-                    
-                    # Use imageio with ffmpeg writer explicitly
-                    writer = imageio.get_writer(filename, fps=avg_fps, codec='libx264', quality=8)
-                    for frame in frames:
-                        writer.append_data(frame)
-                    writer.close()
-                except ImportError:
-                    self.w_video_status.value = "Error: pip install imageio-ffmpeg for mp4/avi/webm"
+                        kwargs_mp4["fps"] = video_fps
+                    self.frames.export_mp4(filename, **kwargs_mp4)
+                    self.w_video_status.value = f"Saved: {filename} ({len(self.frames)} frames)"
+                except Exception as e:
+                    self.w_video_status.value = f"MP4 error: {e}"
                     return
-            
-            self.w_video_status.value = f"Saved: {filename} ({len(frames)} frames)"
             
             # Restore original position
             self.ping_sliders[0].value = start_idx
