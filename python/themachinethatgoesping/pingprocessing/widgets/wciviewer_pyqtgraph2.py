@@ -276,7 +276,7 @@ class WCIViewerMultiChannel:
             self.channel_names = list(channels.keys())
         elif hasattr(channels, '__iter__') and not isinstance(channels, (str, bytes)):
             channels_list = list(channels)
-            # Check if this is a single ping list or a list of ping lists
+            # Check if this is a single ping list or a list of ping lists/dicts
             if len(channels_list) > 0:
                 first_item = channels_list[0]
                 # If first item looks like a ping (has get_timestamp), treat as single channel
@@ -284,8 +284,14 @@ class WCIViewerMultiChannel:
                     # Single ping list - wrap in dict with "default" key
                     self.channel_names = ["default"]
                     self.channels = {"default": channels_list}
+                elif isinstance(first_item, dict):
+                    # List of dicts (e.g. dual_head output: List[Dict[str, Ping]])
+                    # Treat as a single channel; ImageBuilder handles
+                    # dict-per-ping entries (overlays heads automatically)
+                    self.channel_names = ["default"]
+                    self.channels = {"default": channels_list}
                 else:
-                    # List of ping lists
+                    # List of ping lists / containers
                     if names is not None:
                         self.channel_names = [str(n) if n else f"Channel {i}" for i, n in enumerate(names)]
                     else:
