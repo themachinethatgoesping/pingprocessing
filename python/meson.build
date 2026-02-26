@@ -12,6 +12,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/widgets/mapviewer_pyqtgraph.py',
   'themachinethatgoesping/pingprocessing/widgets/pyqtgraph_helpers.py',
   'themachinethatgoesping/pingprocessing/widgets/tqdmwidget.py',
+  'themachinethatgoesping/pingprocessing/widgets/videoframes.py',
   'themachinethatgoesping/pingprocessing/widgets/wciviewer.py',
   'themachinethatgoesping/pingprocessing/widgets/wciviewer_pyqtgraph.py',
   'themachinethatgoesping/pingprocessing/widgets/wciviewer_pyqtgraph2.py',
