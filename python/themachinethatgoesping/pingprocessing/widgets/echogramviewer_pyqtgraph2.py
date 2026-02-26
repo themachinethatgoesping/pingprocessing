@@ -2086,7 +2086,7 @@ class EchogramViewerMultiChannel:
     # =========================================================================
     
     def _on_layout_change(self, change: Dict[str, Any]) -> None:
-        """Handle grid layout change.""
+        """Handle grid layout change."""
         new_rows, new_cols = change['new']
         
         # Skip if no actual change
