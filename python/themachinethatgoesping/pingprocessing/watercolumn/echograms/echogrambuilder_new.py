@@ -722,6 +722,36 @@ class EchogramBuilder:
             **kwargs
         )
 
+    def set_x_axis_custom(self, axis_name, per_ping_coordinates,
+                          min_value=np.nan, max_value=np.nan,
+                          resolution=np.nan, interpolation_limit=np.nan,
+                          max_steps=4096, axis_format=None, **kwargs):
+        """Set X axis to custom per-ping coordinates.
+
+        Args:
+            axis_name: Display name for the axis (e.g. "Distance (m)").
+            per_ping_coordinates: 1-D array of length n_pings, monotonically
+                increasing. May contain timedelta objects.
+            min_value: Minimum coordinate to display (nan = auto).
+            max_value: Maximum coordinate to display (nan = auto).
+            resolution: Grid resolution (nan = auto from data).
+            interpolation_limit: Max gap for interpolation (nan = auto).
+            max_steps: Maximum number of X pixels.
+            axis_format: Optional format hint ("timedelta" for adaptive time
+                formatting). Auto-detected when passing timedelta input.
+        """
+        self._coord_system.set_x_axis_custom(
+            axis_name=axis_name,
+            per_ping_coordinates=per_ping_coordinates,
+            min_value=min_value,
+            max_value=max_value,
+            resolution=resolution,
+            interpolation_limit=interpolation_limit,
+            max_steps=max_steps,
+            axis_format=axis_format,
+            **kwargs
+        )
+
     def copy_xy_axis(self, other: "EchogramBuilder"):
         """Copy X/Y axis settings to another EchogramBuilder."""
         self._coord_system.copy_xy_axis_to(other._coord_system)

@@ -94,6 +94,11 @@ class EchogramCoordinateSystem:
         self._affine_sample_to_y = None  # (a, b) arrays for current y-axis
         self._affine_y_to_sample = None  # (a, b) arrays for inverse
 
+        # Custom x-axis state (stored for copy_xy_axis_to)
+        self._custom_x_per_ping = None  # per-ping coordinates registered with feature mapper
+        self._custom_x_axis_name = None  # display name for custom axis
+        self._custom_x_format = None  # optional format hint (e.g. "timedelta")
+
     @property
     def n_pings(self) -> int:
         """Number of pings."""
@@ -224,12 +229,16 @@ class EchogramCoordinateSystem:
         
         Args:
             name: Parameter name (e.g., 'bottom', 'minslant').
-            x_reference: X reference type ('Ping index', 'Ping time', 'Date time').
+            x_reference: X reference type ('Ping index', 'Ping time', 'Date time',
+                or a custom axis name matching the registered custom axis).
             y_reference: Y reference type ('Y indice', 'Sample number', 'Depth (m)', 'Range (m)').
-            vec_x_val: X values (timestamps or indices).
+            vec_x_val: X values (timestamps, indices, or custom coordinates).
             vec_y_val: Y values (depths, ranges, etc.).
         """
-        assert_valid_argument("add_ping_param", x_reference, ["Ping index", "Ping time", "Date time"])
+        valid_x_refs = ["Ping index", "Ping time", "Date time"]
+        if self._custom_x_axis_name is not None:
+            valid_x_refs.append(self._custom_x_axis_name)
+        assert_valid_argument("add_ping_param", x_reference, valid_x_refs)
         assert_valid_argument("add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"])
 
         # convert datetimes to timestamps
@@ -256,6 +265,8 @@ class EchogramCoordinateSystem:
                 comp_vec_x_val = self.ping_numbers
             case "Ping time" | "Date time":
                 comp_vec_x_val = self.ping_times
+            case _ if self._custom_x_per_ping is not None and x_reference == self._custom_x_axis_name:
+                comp_vec_x_val = self._custom_x_per_ping
 
         # average vec_y_val for all duplicate vec_x_vals using vectorized numpy
         unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
@@ -814,6 +825,133 @@ class EchogramCoordinateSystem:
         self._x_axis_function = self.set_x_axis_date_time
         self._x_kwargs = x_kwargs
 
+    def set_x_axis_custom(
+        self,
+        axis_name: str,
+        per_ping_coordinates: np.ndarray,
+        min_value: float = np.nan,
+        max_value: float = np.nan,
+        resolution: float = np.nan,
+        interpolation_limit: float = np.nan,
+        max_steps: int = 4096,
+        axis_format: Optional[str] = None,
+        **kwargs,
+    ):
+        """Set X axis to custom per-ping coordinates.
+
+        The coordinates must be monotonically increasing (one value per ping,
+        sorted in ascending order). This enables efficient nearest-neighbor
+        lookup via the feature mapper.
+
+        When *resolution* or *interpolation_limit* are not given (nan), they
+        are auto-computed from consecutive differences (5th and 95th
+        percentiles respectively), following the same strategy as
+        ``set_x_axis_ping_time``.
+
+        Accepts ``datetime.timedelta`` arrays — they are converted to float
+        seconds automatically and ``axis_format`` defaults to ``"timedelta"``.
+
+        Args:
+            axis_name: Display name for the axis (e.g. "Distance (m)").
+            per_ping_coordinates: 1-D array of length n_pings, monotonically
+                increasing. May contain timedelta objects.
+            min_value: Minimum coordinate to display (nan = auto).
+            max_value: Maximum coordinate to display (nan = auto).
+            resolution: Grid resolution (nan = auto from data).
+            interpolation_limit: Max gap for interpolation (nan = auto).
+            max_steps: Maximum number of X pixels.
+            axis_format: Optional format hint for the viewer axis ticks.
+                ``"timedelta"`` enables adaptive time formatting.
+                ``None`` uses plain numeric formatting (or auto-detects
+                from timedelta input).
+        """
+        per_ping_coordinates = np.asarray(per_ping_coordinates)
+
+        # Auto-convert timedelta input to float seconds
+        if per_ping_coordinates.dtype.kind == 'm':  # numpy timedelta64
+            per_ping_coordinates = per_ping_coordinates / np.timedelta64(1, 's')
+            if axis_format is None:
+                axis_format = "timedelta"
+        elif len(per_ping_coordinates) > 0 and isinstance(per_ping_coordinates.flat[0], dt.timedelta):
+            per_ping_coordinates = np.array([td.total_seconds() for td in per_ping_coordinates])
+            if axis_format is None:
+                axis_format = "timedelta"
+
+        per_ping_coordinates = per_ping_coordinates.astype(np.float64)
+        if len(per_ping_coordinates) != self._n_pings:
+            raise ValueError(
+                f"per_ping_coordinates length ({len(per_ping_coordinates)}) "
+                f"must match n_pings ({self._n_pings})"
+            )
+
+        x_kwargs = {
+            "axis_name": axis_name,
+            "per_ping_coordinates": per_ping_coordinates,
+            "min_value": min_value,
+            "max_value": max_value,
+            "resolution": resolution,
+            "interpolation_limit": interpolation_limit,
+            "max_steps": max_steps,
+            "axis_format": axis_format,
+        }
+
+        self._x_axis_function = self.set_x_axis_custom
+
+        # Skip early-return dict comparison — kwargs contain numpy arrays
+        # whose element-wise == cannot be reduced to a single bool.
+        self._x_kwargs = x_kwargs
+
+        # Validate monotonically increasing
+        deltas = np.diff(per_ping_coordinates)
+        if np.any(deltas < 0):
+            raise ValueError("per_ping_coordinates must be monotonically increasing")
+
+        # Nudge exact duplicates so the feature mapper can distinguish them
+        zero_diff = np.where(np.abs(deltas) < 1e-12)[0]
+        while len(zero_diff) > 0:
+            per_ping_coordinates[zero_diff + 1] += 1e-9
+            deltas = np.diff(per_ping_coordinates)
+            zero_diff = np.where(np.abs(deltas) < 1e-12)[0]
+
+        # Store for copy_xy_axis_to
+        self._custom_x_per_ping = per_ping_coordinates
+        self._custom_x_axis_name = axis_name
+        self._custom_x_format = axis_format
+
+        # Register as a feature so get_x_indices can map against it
+        self.feature_mapper.set_feature(axis_name, per_ping_coordinates)
+
+        # Auto-compute limits
+        if not np.isfinite(min_value):
+            min_value = per_ping_coordinates[0]
+        if not np.isfinite(max_value):
+            max_value = per_ping_coordinates[-1]
+
+        # Auto-compute resolution & interpolation limit from deltas
+        if not np.isfinite(resolution):
+            resolution = np.nanquantile(deltas, 0.05)
+        if not np.isfinite(interpolation_limit):
+            interpolation_limit = np.nanquantile(deltas, 0.95)
+
+        # Build uniform grid
+        try:
+            use_linspace = False
+            if (max_value + resolution - min_value) / resolution + 1 <= max_steps:
+                x_coordinates = np.arange(min_value, max_value + resolution, resolution)
+            else:
+                use_linspace = True
+
+            if use_linspace or len(x_coordinates) > max_steps:
+                x_coordinates = np.linspace(min_value, max_value, max_steps)
+        except Exception as e:
+            raise RuntimeError(
+                f"{e}\n -min_value: {min_value}\n -max_value: {max_value}"
+                f"\n -resolution: {resolution}\n -max_steps: {max_steps}"
+            )
+
+        self._set_x_coordinates(axis_name, x_coordinates, interpolation_limit)
+        self._initialized = True
+
     # =========================================================================
     # Index mapping
     # =========================================================================
@@ -883,6 +1021,8 @@ class EchogramCoordinateSystem:
                 other.set_x_axis_ping_time(**self._x_kwargs)
             case "Ping index":
                 other.set_x_axis_ping_index(**self._x_kwargs)
+            case _ if self._custom_x_axis_name == self.x_axis_name:
+                other.set_x_axis_custom(**self._x_kwargs)
             case _:
                 raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
 

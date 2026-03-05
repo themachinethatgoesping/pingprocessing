@@ -347,6 +347,17 @@ class EchogramViewerMultiChannel:
             self.y_axis_name = "Depth (m)"
         self._x_axis_is_datetime = self.x_axis_name == "Date time"
         
+        # Detect custom x-axis format hint (e.g. "timedelta")
+        self._x_axis_format = None
+        self._x_axis_max_seconds = 60.0
+        if self.echograms:
+            first_eg = next(iter(self.echograms.values()))
+            if hasattr(first_eg, '_coord_system'):
+                self._x_axis_format = getattr(first_eg._coord_system, '_custom_x_format', None)
+                ppc = getattr(first_eg._coord_system, '_custom_x_per_ping', None)
+                if ppc is not None and len(ppc) > 0:
+                    self._x_axis_max_seconds = float(ppc[-1] - ppc[0])
+        
         # Progress widget
         self.progress = progress or theping.pingprocessing.widgets.TqdmWidget()
         self.display_progress = progress is None
@@ -857,6 +868,8 @@ class EchogramViewerMultiChannel:
                     all_view_x = all_ping_times / 86400.0  # unix seconds to days
                 elif cs.x_axis_name == "Ping time":
                     all_view_x = all_ping_times  # already in seconds
+                elif cs._custom_x_per_ping is not None and cs._custom_x_axis_name == cs.x_axis_name:
+                    all_view_x = np.asarray(cs._custom_x_per_ping, dtype=np.float64)
                 else:
                     # Ping index - need to interpolate
                     all_view_x = np.arange(len(all_ping_times), dtype=np.float64)
@@ -1106,6 +1119,8 @@ class EchogramViewerMultiChannel:
                     all_view_x = all_ping_times / 86400.0  # unix seconds to days
                 elif cs.x_axis_name == "Ping time":
                     all_view_x = all_ping_times  # already in seconds
+                elif cs._custom_x_per_ping is not None and cs._custom_x_axis_name == cs.x_axis_name:
+                    all_view_x = np.asarray(cs._custom_x_per_ping, dtype=np.float64)
                 else:
                     # Ping index
                     all_view_x = np.arange(len(all_ping_times), dtype=np.float64)
@@ -1672,6 +1687,8 @@ class EchogramViewerMultiChannel:
             axis_items = None
             if self._x_axis_is_datetime:
                 axis_items = {"bottom": pgh.MatplotlibDateAxis(self._mpl_num_to_datetime, orientation="bottom")}
+            elif self._x_axis_format == "timedelta":
+                axis_items = {"bottom": pgh.TimedeltaAxis(max_seconds=self._x_axis_max_seconds, orientation="bottom")}
             
             plot: pg.PlotItem = self.graphics.addPlot(row=row, col=col * 2, axisItems=axis_items)
             slot.plot_item = plot
@@ -2767,6 +2784,15 @@ class EchogramViewerMultiChannel:
                         self._set_pingviewer_index(max(0, idx - 1))
                         return
                 self._set_pingviewer_index(len(pings) - 1)
+            case _:
+                # Custom axis: find nearest ping via custom per-ping coordinates
+                first_eg = next(iter(self.echograms.values()), None)
+                if first_eg is not None and hasattr(first_eg, '_coord_system'):
+                    cs = first_eg._coord_system
+                    if cs._custom_x_per_ping is not None:
+                        idx = int(np.searchsorted(cs._custom_x_per_ping, coord))
+                        idx = max(0, min(idx, len(pings) - 1))
+                        self._set_pingviewer_index(idx)
     
     def _set_pingviewer_index(self, idx: int) -> None:
         """Set ping index on pingviewer."""
@@ -2974,6 +3000,11 @@ class EchogramViewerMultiChannel:
                 x_kwargs["min_timestamp"] = xmin
                 x_kwargs["max_timestamp"] = xmax
                 echogram.set_x_axis_ping_time(**x_kwargs)
+            case _:
+                # Custom axis: update min/max values and re-apply
+                x_kwargs["min_value"] = xmin
+                x_kwargs["max_value"] = xmax
+                echogram.set_x_axis_custom(**x_kwargs)
         
         match self.y_axis_name:
             case "Depth (m)":
@@ -3072,6 +3103,8 @@ class EchogramViewerMultiChannel:
             case "Ping index":
                 return f"{coord:0.0f}"
             case _:
+                if self._x_axis_format == "timedelta":
+                    return pgh.TimedeltaAxis._format_seconds(coord, self._x_axis_max_seconds)
                 return f"{coord:0.2f}"
     
     def _numeric_extent(self, extent: Tuple[Any, Any, Any, Any]) -> Tuple[float, float, float, float]:
@@ -3203,9 +3236,8 @@ class EchogramViewerMultiChannel:
             elif self.x_axis_name == "Ping time":
                 return time_value.timestamp()
             else:
-                # For ping number/index axes, we can't directly convert datetime
-                # Would need to find the ping index at this time
-                return self._find_ping_index_for_time(time_value.timestamp())
+                # For ping number/index or custom axes, interpolate via timestamps
+                return self._timestamp_to_x_coord(time_value.timestamp())
         
         # Check if it's a numeric value (unix timestamp)
         elif isinstance(time_value, (int, float)):
@@ -3216,10 +3248,30 @@ class EchogramViewerMultiChannel:
             elif self.x_axis_name == "Ping time":
                 return float(time_value)
             else:
-                # For ping number/index axes
-                return self._find_ping_index_for_time(time_value)
+                # For ping number/index or custom axes, interpolate via timestamps
+                return self._timestamp_to_x_coord(time_value)
         
         return None
+    
+    def _timestamp_to_x_coord(self, timestamp: float) -> Optional[float]:
+        """Convert a unix timestamp to the current x-axis coordinate.
+        
+        For custom axes, interpolates from ping timestamps to custom per-ping coordinates.
+        For ping index axes, finds the nearest ping index.
+        """
+        if not self.echograms:
+            return None
+        
+        first_echogram = next(iter(self.echograms.values()))
+        if hasattr(first_echogram, '_coord_system'):
+            cs = first_echogram._coord_system
+            if cs._custom_x_per_ping is not None and cs._custom_x_axis_name == cs.x_axis_name:
+                # Interpolate: timestamp → custom coordinate
+                ping_times = np.asarray(cs.ping_times, dtype=np.float64)
+                custom_x = np.asarray(cs._custom_x_per_ping, dtype=np.float64)
+                return float(np.interp(timestamp, ping_times, custom_x))
+        
+        return self._find_ping_index_for_time(timestamp)
     
     def _find_ping_index_for_time(self, timestamp: float) -> Optional[float]:
         """Find the ping index closest to a given unix timestamp."""

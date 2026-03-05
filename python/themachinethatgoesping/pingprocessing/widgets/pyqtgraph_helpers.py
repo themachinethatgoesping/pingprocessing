@@ -11,6 +11,7 @@ from pyqtgraph.Qt import QtWidgets
 
 __all__ = [
     "MatplotlibDateAxis",
+    "TimedeltaAxis",
     "ensure_qapp",
     "resolve_colormap",
     "list_colormaps",
@@ -34,6 +35,56 @@ class MatplotlibDateAxis(pg.AxisItem):
             except Exception:  # pragma: no cover - formatting failure should not crash UI
                 labels.append("")
         return labels
+
+
+class TimedeltaAxis(pg.AxisItem):
+    """AxisItem that formats seconds as human-readable time strings.
+
+    The format is chosen once based on *max_seconds* (the overall data range)
+    and stays fixed regardless of zoom level:
+
+    - < 1 s:  "0.123 s"
+    - < 60 s: "12.3 s"
+    - < 1 h:  "05:23"  (mm:ss)
+    - < 24 h: "1:05:23" (h:mm:ss)
+    - >= 24 h: "2d 03:15" (Nd hh:mm)
+    """
+
+    def __init__(self, max_seconds: float = 60.0, orientation: str = "bottom") -> None:
+        super().__init__(orientation=orientation)
+        self._max_seconds = abs(max_seconds)
+
+    def tickStrings(self, values: List[float], scale: float, spacing: float) -> List[str]:  # noqa: N802
+        if not values:
+            return []
+        return [self._format_seconds(float(v), self._max_seconds) for v in values]
+
+    @staticmethod
+    def _format_seconds(total_seconds: float, max_seconds: float) -> str:
+        negative = total_seconds < 0
+        s = abs(total_seconds)
+        prefix = "-" if negative else ""
+
+        if max_seconds < 1:
+            return f"{prefix}{s:.3f} s"
+        if max_seconds < 60:
+            return f"{prefix}{s:.1f} s"
+
+        days = int(s // 86400)
+        remainder = s - days * 86400
+        hours = int(remainder // 3600)
+        remainder -= hours * 3600
+        minutes = int(remainder // 60)
+        secs = int(remainder - minutes * 60)
+
+        if max_seconds >= 86400 or days > 0:
+            return f"{prefix}{days}d {hours:02d}:{minutes:02d}"
+        if max_seconds >= 3600:
+            return f"{prefix}{hours}:{minutes:02d}:{secs:02d}"
+        # Minute-level
+        total_min = int(s // 60)
+        secs = int(s - total_min * 60)
+        return f"{prefix}{total_min}:{secs:02d}"
 
 
 def ensure_qapp() -> None:
