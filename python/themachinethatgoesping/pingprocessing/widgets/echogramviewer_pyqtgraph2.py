@@ -101,6 +101,135 @@ class DraggableScatterPlotItem(pg.ScatterPlotItem):
             ev.ignore()
 
 
+class StationOverlayItem(pg.GraphicsObject):
+    """Lightweight graphics item that draws station markers in one paint().
+
+    Uses a *draw_mode* to control what is rendered:
+      - ``'background'``: translucent region fills only (behind echogram).
+      - ``'foreground'``: vertical lines and text labels (above echogram).
+
+    Two instances per slot (one per mode) give correct z-ordering while
+    still batching all stations into just two paint() calls.
+    """
+
+    def __init__(self, draw_mode: str = 'foreground', parent=None):
+        super().__init__(parent)
+        self._draw_mode = draw_mode  # 'background' or 'foreground'
+        self._stations: List[dict] = []
+        self.setFlag(self.GraphicsItemFlag.ItemHasNoContents, False)
+
+    # -- public API -----------------------------------------------------------
+
+    def add_station(
+        self,
+        name: str,
+        start_x: float,
+        end_x: float,
+        pen: QtGui.QPen,
+        brush: QtGui.QBrush,
+        label_color: QtGui.QColor,
+        font: QtGui.QFont,
+        label_position: str,
+    ) -> None:
+        self._stations.append({
+            'name': name,
+            'start_x': start_x,
+            'end_x': end_x,
+            'pen': pen,
+            'brush': brush,
+            'label_color': label_color,
+            'font': font,
+            'label_position': label_position,
+        })
+        self._picture = None  # invalidate cache
+        self.prepareGeometryChange()
+        self.update()
+
+    def remove_station(self, name: str) -> None:
+        self._stations = [s for s in self._stations if s['name'] != name]
+        self._picture = None
+        self.prepareGeometryChange()
+        self.update()
+
+    def clear_stations(self) -> None:
+        self._stations.clear()
+        self._picture = None
+        self.prepareGeometryChange()
+        self.update()
+
+    def station_names(self) -> List[str]:
+        return [s['name'] for s in self._stations]
+
+    # -- Qt overrides ---------------------------------------------------------
+
+    def boundingRect(self) -> QtCore.QRectF:
+        # boundingRect must cover the full view so paint() is always called.
+        vb = self.getViewBox()
+        if vb is None:
+            return QtCore.QRectF()
+        return vb.viewRect()
+
+    def paint(self, painter: QtGui.QPainter, option, widget=None) -> None:
+        if not self._stations:
+            return
+
+        vb = self.getViewBox()
+        if vb is None:
+            return
+
+        view_rect = vb.viewRect()
+        y_min = view_rect.top()
+        y_max = view_rect.bottom()
+        if y_min > y_max:
+            y_min, y_max = y_max, y_min
+        y_span = y_max - y_min
+
+        for s in self._stations:
+            sx, ex = s['start_x'], s['end_x']
+
+            # Cull stations completely outside the x-range
+            if ex < view_rect.left() or sx > view_rect.right():
+                continue
+
+            if self._draw_mode == 'background':
+                # --- region fill only ---
+                painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                painter.setBrush(s['brush'])
+                painter.drawRect(QtCore.QRectF(sx, y_min, ex - sx, y_span))
+            else:
+                # --- vertical lines ---
+                painter.setPen(s['pen'])
+                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                painter.drawLine(QtCore.QLineF(sx, y_min, sx, y_max))
+                painter.drawLine(QtCore.QLineF(ex, y_min, ex, y_max))
+
+                # --- label ---
+                center_x = (sx + ex) / 2.0
+                if s['label_position'] == 'top':
+                    label_y = y_min + y_span * 0.15
+                else:
+                    label_y = y_max - y_span * 0.15
+
+                device_transform = painter.deviceTransform()
+                px = device_transform.map(QtCore.QPointF(center_x, label_y))
+
+                painter.save()
+                painter.resetTransform()
+                painter.setPen(pg.mkPen(s['label_color']))
+                painter.setFont(s['font'])
+                painter.translate(px)
+                painter.rotate(-45)
+                fm = QtGui.QFontMetrics(s['font'])
+                text_rect = fm.boundingRect(s['name'])
+                painter.drawText(-text_rect.width() // 2, fm.ascent() // 2, s['name'])
+                painter.restore()
+
+    def viewRangeChanged(self):
+        """Called by pyqtgraph when the view range changes."""
+        self.prepareGeometryChange()
+        self.update()
+
+
 class SafePolyLineROI(pg.PolyLineROI):
     """PolyLineROI subclass that disables right-click context menu on handles.
     
@@ -178,8 +307,9 @@ class EchogramSlot:
         self.crosshair_h: Optional[pg.InfiniteLine] = None
         self.pingline: Optional[pg.InfiniteLine] = None
         
-        # Station time markers (dict of station_name -> {'start_line', 'end_line', 'region', 'label'})
-        self.station_markers: Dict[str, Dict[str, Any]] = {}
+        # Station overlay items (background regions + foreground lines/labels)
+        self.station_overlay_bg: Optional[StationOverlayItem] = None
+        self.station_overlay_fg: Optional[StationOverlayItem] = None
     
     def mark_dirty(self):
         """Mark that data needs refresh when shown."""
@@ -422,7 +552,8 @@ class EchogramViewerMultiChannel:
         self.pingviewer = None
         
         # Station time markers storage (for recreation after layout changes)
-        self._station_data: Optional[Dict[str, Any]] = None
+        # List of dicts, one per add_station_times() call, to support accumulation
+        self._station_data_list: List[Dict[str, Any]] = []
         
         # Parameter editor state
         self._param_edit_state = {
@@ -1753,8 +1884,9 @@ class EchogramViewerMultiChannel:
             # Reset pingline (will be recreated when _update_ping_lines is called)
             slot.pingline = None
             
-            # Clear station markers (will be recreated by _recreate_station_markers)
-            slot.station_markers = {}
+            # Clear station overlays (will be recreated by _recreate_station_markers)
+            slot.station_overlay_bg = None
+            slot.station_overlay_fg = None
             
             # Link axes to master
             if master_plot is None:
@@ -3155,8 +3287,9 @@ class EchogramViewerMultiChannel:
     ) -> None:
         """Add station time markers to all visible echograms.
         
-        Draws vertical lines at station start/end times with a semi-transparent
-        region between them and a label showing the station name.
+        Successive calls accumulate markers so you can compare station times
+        from different sources (use different colors per source).  Call
+        ``clear_station_times()`` to remove all markers.
         
         Args:
             stations: Dict mapping station names to (start_time, end_time) tuples.
@@ -3176,12 +3309,13 @@ class EchogramViewerMultiChannel:
             ...     'Station A': (datetime(2024, 1, 1, 10, 0), datetime(2024, 1, 1, 10, 30)),
             ...     'Station B': (1704110400.0, 1704112200.0),  # unix timestamps
             ... })
+            >>> # Add a second source with a different colour
+            >>> viewer.add_station_times({
+            ...     'Station A (alt)': (datetime(2024, 1, 1, 10, 2), datetime(2024, 1, 1, 10, 28)),
+            ... }, line_color='red')
         """
-        # Clear existing stations first
-        self.clear_station_times()
-        
-        # Store station data for recreation after layout changes
-        self._station_data = {
+        # Append station data for recreation after layout changes
+        self._station_data_list.append({
             'stations': stations,
             'line_color': line_color,
             'line_width': line_width,
@@ -3191,7 +3325,7 @@ class EchogramViewerMultiChannel:
             'label_color': label_color,
             'label_size': label_size,
             'label_position': label_position,
-        }
+        })
         
         # Convert line style to Qt pen style
         style_map = {
@@ -3290,6 +3424,20 @@ class EchogramViewerMultiChannel:
         
         return None
     
+    def _ensure_station_overlay(self, slot: EchogramSlot) -> Tuple[StationOverlayItem, StationOverlayItem]:
+        """Lazily create the background & foreground StationOverlayItems for *slot*."""
+        if slot.station_overlay_bg is None and slot.plot_item is not None:
+            bg = StationOverlayItem(draw_mode='background')
+            bg.setZValue(-100)  # behind echogram images
+            slot.plot_item.addItem(bg)
+            slot.station_overlay_bg = bg
+
+            fg = StationOverlayItem(draw_mode='foreground')
+            fg.setZValue(200)   # above echogram images
+            slot.plot_item.addItem(fg)
+            slot.station_overlay_fg = fg
+        return slot.station_overlay_bg, slot.station_overlay_fg
+
     def _add_station_marker_to_slot(
         self,
         slot: EchogramSlot,
@@ -3305,99 +3453,40 @@ class EchogramViewerMultiChannel:
         label_size: str,
         label_position: str,
     ) -> None:
-        """Add station markers to a single slot."""
+        """Add a station to the slot's overlay items."""
         if slot.plot_item is None:
             return
-        
-        # Create pen for lines
+
+        bg, fg = self._ensure_station_overlay(slot)
+        if bg is None or fg is None:
+            return
+
         pen = pg.mkPen(color=line_color, width=line_width, style=pen_style)
-        
-        # Create start line
-        start_line = pg.InfiniteLine(pos=start_x, angle=90, pen=pen)
-        slot.plot_item.addItem(start_line)
-        
-        # Create end line
-        end_line = pg.InfiniteLine(pos=end_x, angle=90, pen=pen)
-        slot.plot_item.addItem(end_line)
-        
-        # Create region between lines
+
+        from pyqtgraph.Qt.QtGui import QColor
         if region_color is None:
-            # Parse line_color and apply alpha
-            from pyqtgraph.Qt.QtGui import QColor
             qcolor = QColor(line_color)
-            qcolor.setAlphaF(region_alpha)
-            brush = pg.mkBrush(qcolor)
         else:
-            from pyqtgraph.Qt.QtGui import QColor
             qcolor = QColor(region_color)
-            qcolor.setAlphaF(region_alpha)
-            brush = pg.mkBrush(qcolor)
-        
-        region = pg.LinearRegionItem(
-            values=(start_x, end_x),
-            orientation='vertical',
+        qcolor.setAlphaF(region_alpha)
+        brush = pg.mkBrush(qcolor)
+
+        font = pg.QtGui.QFont('Arial', int(label_size.replace('pt', '')))
+        lbl_qcolor = QColor(label_color)
+
+        station_data = dict(
+            name=station_name,
+            start_x=start_x,
+            end_x=end_x,
+            pen=pen,
             brush=brush,
-            pen=pg.mkPen(None),  # No border (we have lines)
-            movable=False,
+            label_color=lbl_qcolor,
+            font=font,
+            label_position=label_position,
         )
-        # Insert region behind images but in front of background
-        slot.plot_item.addItem(region)
-        region.setZValue(-100)  # Behind images
-        
-        # Create label
-        label = pg.TextItem(
-            text=station_name,
-            color=label_color,
-            anchor=(0.5, 1.0 if label_position == 'top' else 0.0),
-        )
-        label.setFont(pg.QtGui.QFont('Arial', int(label_size.replace('pt', ''))))
-        slot.plot_item.addItem(label)
-        
-        # Position label at center of region
-        center_x = (start_x + end_x) / 2
-        self._update_label_position(slot, label, center_x, label_position)
-        
-        # Store references for cleanup and updates
-        slot.station_markers[station_name] = {
-            'start_line': start_line,
-            'end_line': end_line,
-            'region': region,
-            'label': label,
-            'label_position': label_position,
-            'center_x': center_x,
-        }
-        
-        # Connect to view range changes to update label position
-        vb = slot.plot_item.getViewBox()
-        vb.sigRangeChanged.connect(
-            lambda *args, s=slot, lbl=label, cx=center_x, pos=label_position: 
-            self._update_label_position(s, lbl, cx, pos)
-        )
-    
-    def _update_label_position(
-        self, 
-        slot: EchogramSlot, 
-        label: pg.TextItem, 
-        center_x: float,
-        label_position: str
-    ) -> None:
-        """Update label position based on current view range."""
-        if slot.plot_item is None:
-            return
-        
-        vb = slot.plot_item.getViewBox()
-        y_range = vb.viewRange()[1]
-        
-        # Position at top or bottom of view
-        if label_position == 'top':
-            # Near top with small margin
-            y_pos = y_range[0] + (y_range[1] - y_range[0]) * 0.02
-        else:
-            # Near bottom with small margin  
-            y_pos = y_range[1] - (y_range[1] - y_range[0]) * 0.02
-        
-        label.setPos(center_x, y_pos)
-    
+        bg.add_station(**station_data)
+        fg.add_station(**station_data)
+
     def clear_station_times(self, station_name: Optional[str] = None) -> None:
         """Remove station time markers.
         
@@ -3406,44 +3495,36 @@ class EchogramViewerMultiChannel:
                          If None, remove all station markers.
         """
         for slot in self.slots:
+            if slot.station_overlay_bg is None:
+                continue
             if station_name is not None:
-                # Remove specific station
-                if station_name in slot.station_markers:
-                    self._remove_station_marker_from_slot(slot, station_name)
+                slot.station_overlay_bg.remove_station(station_name)
+                slot.station_overlay_fg.remove_station(station_name)
             else:
-                # Remove all stations
-                for name in list(slot.station_markers.keys()):
-                    self._remove_station_marker_from_slot(slot, name)
+                slot.station_overlay_bg.clear_stations()
+                slot.station_overlay_fg.clear_stations()
         
-        # Clear stored data if clearing all
+        # Update stored data
         if station_name is None:
-            self._station_data = None
+            self._station_data_list.clear()
+        else:
+            for data in self._station_data_list:
+                data['stations'].pop(station_name, None)
+            self._station_data_list = [
+                d for d in self._station_data_list if d['stations']
+            ]
         
         self._request_remote_draw()
     
-    def _remove_station_marker_from_slot(self, slot: EchogramSlot, station_name: str) -> None:
-        """Remove a station marker from a slot."""
-        if station_name not in slot.station_markers:
-            return
-        
-        marker = slot.station_markers[station_name]
-        if slot.plot_item is not None:
-            for item_key in ['start_line', 'end_line', 'region', 'label']:
-                item = marker.get(item_key)
-                if item is not None:
-                    try:
-                        slot.plot_item.removeItem(item)
-                    except Exception:
-                        pass
-        
-        del slot.station_markers[station_name]
-    
     def _recreate_station_markers(self) -> None:
         """Recreate station markers after layout change."""
-        if hasattr(self, '_station_data') and self._station_data is not None:
-            data = self._station_data
-            # Temporarily clear the data to avoid clearing in add_station_times
-            self._station_data = None
+        if not getattr(self, '_station_data_list', None):
+            return
+        # Take a snapshot and clear, then re-add so that add_station_times
+        # appends cleanly without duplicating the stored list.
+        saved = list(self._station_data_list)
+        self._station_data_list.clear()
+        for data in saved:
             self.add_station_times(
                 data['stations'],
                 line_color=data['line_color'],
