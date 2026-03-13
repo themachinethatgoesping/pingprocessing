@@ -11,6 +11,9 @@ from .wciviewer_pyqtgraph2 import WCIViewerMultiChannel
 from .wciviewer_jupyter import WCIViewerJupyter
 from .wciviewer_qt import WCIViewerQt
 from .wciviewer_core import WCICore
+from .echogramviewer_jupyter import EchogramViewerJupyter
+from .echogramviewer_qt import EchogramViewerQt
+from .echogramviewer_core import EchogramCore
 from .videoframes import VideoFrames
 from .mapviewer_pyqtgraph import MapViewerPyQtGraph
 from . import tools

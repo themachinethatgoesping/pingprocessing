@@ -163,6 +163,14 @@ class ControlHandle:
         pass
 
     @property
+    def disabled(self) -> bool:
+        return False
+
+    @disabled.setter
+    def disabled(self, v: bool) -> None:
+        pass
+
+    @property
     def options(self) -> Any:
         raise NotImplementedError
 
@@ -307,5 +315,85 @@ WCI_TAB_LAYOUT: Dict[str, List[List[str]]] = {
         ["video_frames", "video_fps", "video_format", "video_quality"],
         ["video_filename", "video_ping_time", "video_live", "export_video"],
         ["continuous_capture", "video_status"],
+    ],
+}
+
+
+# =========================================================================
+# Echogram viewer control definitions (shared across backends)
+# =========================================================================
+
+# -- Render / color controls --
+ECHO_RENDER_SPECS: List[ControlSpecType] = [
+    FloatSliderSpec("vmin", "vmin (all)", min=-150, max=100, step=5, value=-100, width="250px"),
+    FloatSliderSpec("vmax", "vmax (all)", min=-150, max=100, step=5, value=-25, width="250px"),
+    DropdownSpec("colorbar_layer", "Colorbar:",
+                 options=[("Background", "background"), ("Layer", "layer")],
+                 value="background", width="180px"),
+    CheckboxSpec("auto_update", "Auto-update", value=True),
+    CheckboxSpec("crosshair", "Sync crosshair", value=True),
+]
+
+# -- Navigation / action controls --
+ECHO_NAV_SPECS: List[ControlSpecType] = [
+    ButtonSpec("btn_update", "Update", tooltip="Force update visible echograms", width="80px"),
+    ButtonSpec("btn_reset", "Reset View", tooltip="Reset to full extent", width="80px"),
+    CheckboxSpec("auto_follow", "Follow ping",
+                 tooltip="Automatically keep pingline in view", value=False),
+    ButtonSpec("btn_goto_pingline", "→ Ping",
+               tooltip="Jump to current ping line position", width="70px"),
+    ButtonSpec("btn_nav_left", "◀", width="35px"),
+    ButtonSpec("btn_nav_right", "▶", width="35px"),
+    ButtonSpec("btn_nav_up", "▲", width="35px"),
+    ButtonSpec("btn_nav_down", "▼", width="35px"),
+]
+
+# -- Misc / hover --
+ECHO_MISC_SPECS: List[ControlSpecType] = [
+    HTMLSpec("hover_label", "&nbsp;"),
+]
+
+# -- Parameter editor controls --
+ECHO_PARAM_SPECS: List[ControlSpecType] = [
+    DropdownSpec("param_master", "Master:", options=[], value=None, width="150px"),
+    DropdownSpec("param_select", "Param:", options=[("(none)", None)], value=None, width="150px"),
+    ButtonSpec("btn_refresh_params", "↻", tooltip="Refresh master and parameter lists", width="35px"),
+    ButtonSpec("btn_new_param", "New", tooltip="Create a new empty parameter", width="50px"),
+    TextSpec("new_param_name", "", value="", width="100px"),
+    ButtonSpec("btn_copy_param", "Copy", tooltip="Copy selected parameter with new name", width="50px"),
+    ButtonSpec("btn_copy_to_all", "→All",
+               tooltip="Copy this parameter from master to all other echograms", width="50px"),
+    CheckboxSpec("param_sync", "Sync",
+                 tooltip="Sync edits across all echograms", value=False),
+    ButtonSpec("btn_apply_param", "Apply", tooltip="Save changes to echogram(s)", width="60px"),
+    ButtonSpec("btn_discard_param", "Discard", tooltip="Discard unsaved changes", width="60px"),
+    ButtonSpec("btn_add_point", "+Point",
+               tooltip="Add a point at the current crosshair position", width="60px"),
+    ButtonSpec("btn_del_point", "-Point",
+               tooltip="Delete the selected point", width="60px"),
+    HTMLSpec("param_status", ""),
+    HTMLSpec("param_help",
+             "<small>Drag handles to move | <b>Click plot, then A</b>=add point | "
+             "<b>Del/Backspace</b>=delete nearest point | Buttons: +Point/-Point</small>"),
+]
+
+# Echogram tab layout (used by Qt dock-based viewer for settings tabs;
+# Jupyter viewer uses flat rows instead and does not use this layout.)
+ECHO_TAB_LAYOUT: Dict[str, List[List[str]]] = {
+    "Render": [
+        ["vmin", "vmax"],
+        ["colorbar_layer", "auto_update", "crosshair"],
+    ],
+    "Navigation": [
+        ["btn_update", "btn_reset", "auto_follow", "btn_goto_pingline"],
+        ["btn_nav_left", "btn_nav_up", "btn_nav_down", "btn_nav_right"],
+    ],
+    "Param Editor": [
+        ["param_master", "param_select", "btn_refresh_params"],
+        ["new_param_name", "btn_new_param", "btn_copy_param", "btn_copy_to_all"],
+        ["btn_add_point", "btn_del_point", "param_sync",
+         "btn_apply_param", "btn_discard_param"],
+        ["param_status"],
+        ["param_help"],
     ],
 }

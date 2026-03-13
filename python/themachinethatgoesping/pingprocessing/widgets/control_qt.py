@@ -132,6 +132,14 @@ class QtControlHandle(ControlHandle):
             w.setText(v)
 
     @property
+    def disabled(self) -> bool:
+        return not self._inner.isEnabled()
+
+    @disabled.setter
+    def disabled(self, v: bool) -> None:
+        self._inner.setEnabled(not v)
+
+    @property
     def options(self) -> Any:
         w = self._inner
         if isinstance(w, QtWidgets.QComboBox):

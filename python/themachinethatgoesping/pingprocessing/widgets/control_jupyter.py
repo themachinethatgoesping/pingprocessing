@@ -92,6 +92,15 @@ class JupyterControlHandle(ControlHandle):
             self._widget.description = v
 
     @property
+    def disabled(self) -> bool:
+        return getattr(self._widget, "disabled", False)
+
+    @disabled.setter
+    def disabled(self, v: bool) -> None:
+        if hasattr(self._widget, "disabled"):
+            self._widget.disabled = v
+
+    @property
     def options(self) -> Any:
         return getattr(self._widget, "options", None)
 
