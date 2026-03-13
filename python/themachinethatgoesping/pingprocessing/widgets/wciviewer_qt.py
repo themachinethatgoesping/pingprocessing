@@ -37,30 +37,90 @@ from .control_spec import (
     DropdownSpec,
     IntSliderSpec,
 )
-from .control_qt import QtControlPanel, QtControlHandle, create_qt_control
+from .control_qt import QtControlPanel, QtControlHandle, create_qt_control, _SLIDER_STYLE
 from .wciviewer_core import WCICore, normalise_channels, auto_select_grid
 from .videoframes import VideoFrames
 
 
-class _QtProgressLabel:
-    """Minimal Qt progress/status label compatible with TqdmWidget interface."""
+class _QtProgressBar:
+    """Qt progress widget with a real QProgressBar, it/s and ETA like tqdm.
+
+    Compatible with the TqdmWidget interface used by WCICore and ImageBuilder:
+    ``set_description(str)``, callable-as-iterator ``progress(iterable)``,
+    and ``close()``.
+    """
 
     def __init__(self):
+        import time as _time
+        self._time = _time
+
+        self._container = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(self._container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(1)
+
+        self._bar = QtWidgets.QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setMinimumHeight(14)
+        self._bar.setMaximumHeight(14)
+        self._bar.setStyleSheet(
+            "QProgressBar {"
+            "  border: 1px solid #bbb; border-radius: 4px;"
+            "  background: #e8e8e8;"
+            "}"
+            "QProgressBar::chunk {"
+            "  background: #5b9bd5; border-radius: 3px;"
+            "}"
+        )
+
         self._label = QtWidgets.QLabel("Idle")
-        self._label.setStyleSheet("color: #555; padding: 2px 4px;")
+        self._label.setStyleSheet("color: #444; font-size: 11px; padding: 0 2px;")
+        self._label.setMaximumHeight(16)
+
+        lay.addWidget(self._bar)
+        lay.addWidget(self._label)
+
+        self._total: int = 0
+        self._idx: int = 0
+        self._t_start: float = 0.0
+        self._items: list = []
 
     @property
-    def widget(self) -> QtWidgets.QLabel:
-        return self._label
+    def widget(self) -> QtWidgets.QWidget:
+        return self._container
+
+    def _refresh(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+    def _format_stats(self) -> str:
+        elapsed = self._time.time() - self._t_start
+        if self._idx > 0 and elapsed > 0:
+            it_s = self._idx / elapsed
+            remaining = (self._total - self._idx) / it_s if it_s > 0 else 0
+            return (
+                f"{self._idx}/{self._total}"
+                f"  [{elapsed:.1f}s < {remaining:.1f}s, {it_s:.1f} it/s]"
+            )
+        return f"{self._idx}/{self._total}"
 
     def set_description(self, desc: str) -> None:
         self._label.setText(desc)
+        self._refresh()
 
     def __call__(self, list_like, **kwargs):
         self._items = list(list_like)
         self._idx = 0
         self._total = len(self._items)
-        self.set_description(f"0/{self._total}")
+        self._t_start = self._time.time()
+        self._bar.setRange(0, self._total)
+        self._bar.setValue(0)
+        desc = kwargs.get("desc", "")
+        self._label.setText(f"{desc}  0/{self._total}" if desc else f"0/{self._total}")
+        self._refresh()
         return self
 
     def __iter__(self):
@@ -68,15 +128,24 @@ class _QtProgressLabel:
 
     def __next__(self):
         if self._idx >= self._total:
-            self.set_description("Idle")
+            self._bar.setValue(self._total)
+            self._label.setText("Idle")
+            self._refresh()
             raise StopIteration
         item = self._items[self._idx]
         self._idx += 1
-        self.set_description(f"{self._idx}/{self._total}")
+        self._bar.setValue(self._idx)
+        self._label.setText(self._format_stats())
+        self._refresh()
         return item
 
+    def __len__(self):
+        return self._total
+
     def close(self):
-        self.set_description("Idle")
+        self._bar.setValue(0)
+        self._label.setText("Idle")
+        self._refresh()
 
 
 class WCIViewerQt(QtWidgets.QMainWindow):
@@ -113,7 +182,7 @@ class WCIViewerQt(QtWidgets.QMainWindow):
         # -- normalise channels --
         self.channels, self.channel_names = normalise_channels(channels, names)
 
-        self.progress = progress or _QtProgressLabel()
+        self.progress = progress or _QtProgressBar()
         self.display_progress = progress is None
         n_ch = len(self.channel_names)
 
@@ -169,6 +238,8 @@ class WCIViewerQt(QtWidgets.QMainWindow):
             slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             slider.setRange(0, 0)
             slider.setValue(0)
+            slider.setMinimumHeight(24)
+            slider.setStyleSheet(_SLIDER_STYLE)
 
             spin = QtWidgets.QSpinBox()
             spin.setRange(0, 0)
@@ -384,7 +455,7 @@ class WCIViewerQt(QtWidgets.QMainWindow):
         slot_layout.addLayout(timing_row)
 
         # Progress / status label
-        if self.display_progress and hasattr(self.progress, "widget"):
+        if hasattr(self.progress, "widget"):
             slot_layout.addWidget(self.progress.widget)
 
         slot_layout.addStretch()

@@ -155,6 +155,35 @@ class QtControlHandle(ControlHandle):
 
 
 # ---------------------------------------------------------------------------
+# Slider stylesheet
+# ---------------------------------------------------------------------------
+
+_SLIDER_STYLE = """
+QSlider::groove:horizontal {
+    border: 1px solid #bbb;
+    background: #e0e0e0;
+    height: 8px;
+    border-radius: 4px;
+}
+QSlider::handle:horizontal {
+    background: #5b9bd5;
+    border: 1px solid #4a8bc2;
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #4a8bc2;
+}
+QSlider::sub-page:horizontal {
+    background: #5b9bd5;
+    border-radius: 4px;
+}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Labelled widget helper
 # ---------------------------------------------------------------------------
 
@@ -186,9 +215,10 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
         w.setRange(spec.min, spec.max)
         w.setSingleStep(spec.step)
         w.setValue(spec.value)
+        w.setKeyboardTracking(False)
         container = _labelled(w, spec.description)
         return QtControlHandle(
-            container, w.value, w.setValue, w.valueChanged, inner=w,
+            container, w.value, w.setValue, w.editingFinished, inner=w,
         )
 
     if isinstance(spec, IntSliderSpec):
@@ -197,6 +227,8 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
         slider.setRange(spec.min, spec.max)
         slider.setSingleStep(spec.step)
         slider.setValue(spec.value)
+        slider.setMinimumHeight(24)
+        slider.setStyleSheet(_SLIDER_STYLE)
 
         spin = QtWidgets.QSpinBox()
         spin.setRange(spec.min, spec.max)
@@ -256,9 +288,10 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
         w = QtWidgets.QSpinBox()
         w.setRange(-999999, 999999)
         w.setValue(spec.value)
+        w.setKeyboardTracking(False)
         container = _labelled(w, spec.description)
         return QtControlHandle(
-            container, w.value, w.setValue, w.valueChanged, inner=w,
+            container, w.value, w.setValue, w.editingFinished, inner=w,
         )
 
     if isinstance(spec, FloatTextSpec):
@@ -266,9 +299,10 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
         w.setRange(-1e9, 1e9)
         w.setDecimals(3)
         w.setValue(spec.value)
+        w.setKeyboardTracking(False)
         container = _labelled(w, spec.description)
         return QtControlHandle(
-            container, w.value, w.setValue, w.valueChanged, inner=w,
+            container, w.value, w.setValue, w.editingFinished, inner=w,
         )
 
     if isinstance(spec, ButtonSpec):

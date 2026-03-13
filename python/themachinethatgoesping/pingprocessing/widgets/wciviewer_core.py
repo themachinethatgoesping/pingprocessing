@@ -1049,7 +1049,7 @@ class WCICore:
         self._continuous_capture_active = True
         self.frames.clear()
         self.panel["continuous_capture"].description = "Stop Capture"
-        self.panel["video_status"].value = "Continuous capture started..."
+        self.panel["video_status"].value = "Capturing — use arrow keys or Play to advance pings"
         # capture first frame immediately
         self._capture_current_frame()
 
