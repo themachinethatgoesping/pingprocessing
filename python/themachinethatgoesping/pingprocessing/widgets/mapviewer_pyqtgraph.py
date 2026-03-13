@@ -865,6 +865,102 @@ class MapViewerPyQtGraph:
         return list(TILE_SOURCES.keys())
     
     # =========================================================================
+    # Add layers after construction
+    # =========================================================================
+    
+    def add_geotiff(
+        self,
+        path: str,
+        name: Optional[str] = None,
+        band: int = 1,
+        **kwargs,
+    ) -> "MapViewerPyQtGraph":
+        """Add a GeoTiff layer to the viewer after construction.
+
+        Creates a MapBuilder internally if one was not provided at init time.
+
+        Args:
+            path: Path to the GeoTiff file.
+            name: Display name (default: inferred from filename).
+            band: Band number to read (1-indexed).
+            **kwargs: Additional arguments forwarded to ``MapBuilder.add_layer``.
+
+        Returns:
+            Self for method chaining.
+        """
+        from ..overview.map_builder import MapBuilder
+
+        if self._builder is None:
+            self._builder = MapBuilder()
+
+        self._builder.add_geotiff(path, name=name, band=band, **kwargs)
+
+        # Resolve the actual name that was used
+        added_layer = self._builder.layers[-1]
+        if added_layer.name not in self._layer_render_settings:
+            self._layer_render_settings[added_layer.name] = LayerRenderSettings()
+
+        # Rebuild controls & re-render
+        self._rebuild_controls()
+        self._current_bounds = None  # reset so _update_view picks up new extent
+        self._update_view()
+        return self
+
+    def add_layer(
+        self,
+        backend: Any,
+        name: Optional[str] = None,
+        visible: bool = True,
+        z_order: Optional[int] = None,
+    ) -> "MapViewerPyQtGraph":
+        """Add a data layer to the viewer after construction.
+
+        Creates a MapBuilder internally if one was not provided at init time.
+
+        Args:
+            backend: A MapDataBackend instance.
+            name: Display name.
+            visible: Whether layer is initially visible.
+            z_order: Render order.
+
+        Returns:
+            Self for method chaining.
+        """
+        from ..overview.map_builder import MapBuilder
+
+        if self._builder is None:
+            self._builder = MapBuilder()
+
+        self._builder.add_layer(backend, name=name, visible=visible, z_order=z_order)
+
+        added_layer = self._builder.layers[-1]
+        if added_layer.name not in self._layer_render_settings:
+            self._layer_render_settings[added_layer.name] = LayerRenderSettings()
+
+        self._rebuild_controls()
+        self._current_bounds = None
+        self._update_view()
+        return self
+
+    def _rebuild_controls(self):
+        """Rebuild UI controls to reflect the current set of layers."""
+        if not self._show_controls:
+            return
+
+        old_controls = self._controls
+        self._build_controls()
+
+        # If already displayed, hot-swap control children in the layout
+        if hasattr(self, 'layout') and self.layout is not None and old_controls is not None:
+            new_children = []
+            for child in self.layout.children:
+                if child is old_controls:
+                    new_children.append(self._controls)
+                else:
+                    new_children.append(child)
+            self.layout.children = tuple(new_children)
+
+    # =========================================================================
     # Rendering
     # =========================================================================
     
@@ -1425,11 +1521,9 @@ class MapViewerPyQtGraph:
     
     def _update_ping_marker(self):
         """Update the current ping position marker - larger point for WCI visibility."""
-        if self._ping_marker is not None:
-            self._plot.removeItem(self._ping_marker)
-            self._ping_marker = None
-        
         if self._current_ping_latlon is None:
+            if self._ping_marker is not None:
+                self._ping_marker.hide()
             return
         
         lat, lon = self._current_ping_latlon
@@ -1437,15 +1531,19 @@ class MapViewerPyQtGraph:
         # Use longitude as X, latitude as Y (assuming lat/lon coord system)
         x, y = lon, lat
         
-        # Create larger ping marker (size=20 for better visibility)
-        self._ping_marker = pg.ScatterPlotItem(
-            [x], [y],
-            size=20,  # Larger size for better visibility
-            brush=pg.mkBrush('#FF00FF'),
-            pen=pg.mkPen('#000000', width=2),  # Black outline
-            symbol='o',
-        )
-        self._plot.addItem(self._ping_marker)
+        # Reuse existing marker — just update data instead of remove/recreate
+        if self._ping_marker is None:
+            self._ping_marker = pg.ScatterPlotItem(
+                [x], [y],
+                size=20,
+                brush=pg.mkBrush('#FF00FF'),
+                pen=pg.mkPen('#000000', width=2),
+                symbol='o',
+            )
+            self._plot.addItem(self._ping_marker)
+        else:
+            self._ping_marker.setData([x], [y])
+            self._ping_marker.show()
     
     # =========================================================================
     # User interaction
@@ -2273,6 +2371,12 @@ class MapViewerPyQtGraph:
         """
         self._current_ping_latlon = (lat, lon)
         self._update_ping_marker()
+        
+        # Throttle: skip heavy map work if called faster than 100ms
+        now = time.time()
+        if now - getattr(self, '_last_ping_update_time', 0) < 0.1:
+            return
+        self._last_ping_update_time = now
         
         # Auto-center if enabled (only pan if position is near edge)
         if getattr(self, '_auto_center_wci', False):

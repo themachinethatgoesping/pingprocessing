@@ -1330,6 +1330,10 @@ class WCIViewerMultiChannel:
                     # Update slider value (triggers redraw via observer)
                     self.ping_sliders[0].value = new_idx
                 
+                # Measure how long the update took
+                elapsed = time_module.time() - t0
+                remaining = interval - elapsed
+                
                 # Calculate real fps
                 if self._autoplay_last_time is not None:
                     real_interval = t0 - self._autoplay_last_time
@@ -1338,7 +1342,12 @@ class WCIViewerMultiChannel:
                         self.w_real_fps.value = f"real: {real_fps:.1f}"
                 self._autoplay_last_time = t0
                 
-                await asyncio.sleep(max(0.01, interval))
+                # Always sleep at least a small amount so the event loop
+                # (and thus the UI / frame buffer) can catch up.  When the
+                # viewer is slower than the requested fps the playback simply
+                # runs at the maximum rate the viewer can sustain — no frames
+                # are skipped.
+                await asyncio.sleep(max(0.005, remaining))
         
         # Get or create event loop and schedule the coroutine
         try:

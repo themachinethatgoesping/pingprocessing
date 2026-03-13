@@ -160,6 +160,10 @@ class StationOverlayItem(pg.GraphicsObject):
     def station_names(self) -> List[str]:
         return [s['name'] for s in self._stations]
 
+    def stations_at_x(self, x: float) -> List[str]:
+        """Return names of all stations whose range contains *x*."""
+        return [s['name'] for s in self._stations if s['start_x'] <= x <= s['end_x']]
+
     # -- Qt overrides ---------------------------------------------------------
 
     def boundingRect(self) -> QtCore.QRectF:
@@ -2623,9 +2627,32 @@ class EchogramViewerMultiChannel:
         y_text = f"{y:0.2f}"
         value_text = f"{value:0.2f}" if value is not None else "--"
         name_text = f" [{name}]" if name else ""
+
+        # Find stations under cursor
+        station_names = self._stations_at_x(x)
+        if station_names:
+            stations_text = " | <b>stations</b>: " + ", ".join(station_names)
+        else:
+            stations_text = ""
+
         self.hover_label.value = (
-            f"<b>x</b>: {x_text} | <b>y</b>: {y_text} | <b>value</b>: {value_text}{name_text}"
+            f"<b>x</b>: {x_text} | <b>y</b>: {y_text} | <b>value</b>: {value_text}{name_text}{stations_text}"
         )
+
+    def _stations_at_x(self, x: float) -> List[str]:
+        """Return names of all stations whose x-range contains *x*."""
+        names: List[str] = []
+        seen = set()
+        for slot in self._get_visible_slots():
+            overlay = slot.station_overlay_fg
+            if overlay is None:
+                continue
+            for n in overlay.stations_at_x(x):
+                if n not in seen:
+                    seen.add(n)
+                    names.append(n)
+            break  # all slots share the same station data
+        return names
     
     # =========================================================================
     # Background Loading
