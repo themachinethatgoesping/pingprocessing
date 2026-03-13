@@ -397,3 +397,43 @@ ECHO_TAB_LAYOUT: Dict[str, List[List[str]]] = {
         ["param_help"],
     ],
 }
+
+
+# =========================================================================
+# Map viewer control definitions (shared across backends)
+# =========================================================================
+
+# Available colormaps for map layers
+MAP_COLORMAPS = [
+    "viridis", "terrain", "gray", "plasma", "inferno", "magma",
+    "cividis", "coolwarm", "RdBu", "Blues", "Greens", "ocean",
+]
+
+# -- Navigation / action controls --
+MAP_NAV_SPECS: List[ControlSpecType] = [
+    ButtonSpec("btn_zoom_fit", "Fit All", tooltip="Zoom to fit all layers", width="70px"),
+    ButtonSpec("btn_zoom_track", "Fit Track", tooltip="Zoom to fit tracks", width="70px"),
+    ButtonSpec("btn_zoom_wci", "Go to WCI", tooltip="Pan to current WCI position", width="80px"),
+    ButtonSpec("btn_refresh_tracks", "Refresh", tooltip="Refresh tracks from connected viewers", width="70px"),
+    CheckboxSpec("auto_update", "Auto-update map", value=True),
+    CheckboxSpec("auto_center_wci", "Follow WCI position", value=False),
+]
+
+# -- Misc / hover --
+MAP_MISC_SPECS: List[ControlSpecType] = [
+    LabelSpec("lbl_coords", "Lat: --, Lon: --", width="300px"),
+]
+
+# -- Colorbar controls --
+MAP_COLORBAR_SPECS: List[ControlSpecType] = [
+    DropdownSpec("colorbar_layer", "Colorbar:",
+                 options=[("None", None)], value=None, width="200px"),
+]
+
+# Map tab layout for Qt dock-based viewer
+MAP_TAB_LAYOUT: Dict[str, List[List[str]]] = {
+    "Navigation": [
+        ["btn_zoom_fit", "btn_zoom_track", "btn_zoom_wci", "btn_refresh_tracks"],
+        ["auto_update", "auto_center_wci"],
+    ],
+}

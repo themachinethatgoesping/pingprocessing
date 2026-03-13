@@ -16,4 +16,7 @@ from .echogramviewer_qt import EchogramViewerQt
 from .echogramviewer_core import EchogramCore
 from .videoframes import VideoFrames
 from .mapviewer_pyqtgraph import MapViewerPyQtGraph
+from .mapviewer_core import MapCore
+from .mapviewer_jupyter import MapViewerJupyter
+from .mapviewer_qt import MapViewerQt
 from . import tools
