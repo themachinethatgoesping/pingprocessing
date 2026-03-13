@@ -1045,12 +1045,13 @@ class MapCore:
     def update_ping_position(self, lat: float, lon: float) -> None:
         """Update the current ping position marker."""
         self._current_ping_latlon = (lat, lon)
-        self._update_ping_marker()
 
         now = time.time()
-        if now - self._last_ping_update_time < 0.1:
+        if now - self._last_ping_update_time < 0.05:
             return
         self._last_ping_update_time = now
+
+        self._update_ping_marker()
 
         if self._panel and "auto_center_wci" in self._panel:
             if self._panel["auto_center_wci"].value:
@@ -1144,7 +1145,8 @@ class MapCore:
         self._plot.setYRange(bounds.ymin, bounds.ymax, padding=0)
         self._ignore_range_changes = False
         self._current_bounds = bounds
-        self.update_view()
+        if self._schedule_update:
+            self._schedule_update()
 
     def pan_to_wci_position(self) -> None:
         if self._current_ping_latlon is None:
@@ -1164,7 +1166,11 @@ class MapCore:
         self._plot.setXRange(lon - width / 2, lon + width / 2, padding=0)
         self._plot.setYRange(lat - height / 2, lat + height / 2, padding=0)
         self._ignore_range_changes = False
-        self.update_view()
+        # Don't call update_view() synchronously — existing items pan with
+        # the viewbox automatically.  Let the adapter's debounce timer
+        # handle the expensive tile/layer refresh.
+        if self._schedule_update:
+            self._schedule_update()
 
     def is_position_near_edge(self, lat: float, lon: float, edge_fraction: float = 0.2) -> bool:
         view_range = self._plot.viewRange()
