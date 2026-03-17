@@ -164,6 +164,7 @@ class WCIViewerQt(QtWidgets.QMainWindow):
         progress: Optional[Any] = None,
         cmap: str = "YlGnBu_r",
         show: bool = True,
+        embedded: bool = False,
         widget_height_px: int = 800,
         widget_width_px: int = 1200,
         initial_grid: Tuple[int, int] = (2, 2),
@@ -303,11 +304,14 @@ class WCIViewerQt(QtWidgets.QMainWindow):
             play_callback=self._toggle_play_qt,
         )
 
-        # -- assemble DockArea layout --
-        self._build_dock_layout()
+        self._embedded = embedded
 
-        if show:
-            self.show()
+        # -- assemble DockArea layout (skip in embedded mode) --
+        if not embedded:
+            self._build_dock_layout()
+
+            if show:
+                self.show()
 
     # =====================================================================
     # Dynamic control callbacks
@@ -477,6 +481,64 @@ class WCIViewerQt(QtWidgets.QMainWindow):
         area.addDock(d_settings, "right", d_slots)
 
         self._dock_area = area
+
+    # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> QtWidgets.QWidget:
+        """Return all controls as a single embeddable QWidget.
+
+        Used by the combined viewer to embed this viewer's controls in a
+        shared tab widget.  The viewer must have been created with
+        ``show=False`` (or ``embedded=True``).
+        """
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # -- Channel selectors + ping sliders --
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(self.panel["layout"].widget)
+        for ch_name in self.channel_names:
+            btn = QtWidgets.QPushButton(str(ch_name)[:15])
+            btn.clicked.connect(lambda _, n=ch_name: self.core.show_single(n))
+            top_row.addWidget(btn)
+        layout.addLayout(top_row)
+
+        n_visible = self.core.grid_rows * self.core.grid_cols
+        for i in range(n_visible):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self._slot_selectors[i])
+            row.addWidget(self._ping_sliders[i], 1)
+            row.addWidget(self._ping_spins[i])
+            layout.addLayout(row)
+
+        ref_row = QtWidgets.QHBoxLayout()
+        for n in ("ref_time", "fix_xy", "unfix_xy"):
+            if n in self.panel:
+                ref_row.addWidget(self.panel[n].widget)
+        layout.addLayout(ref_row)
+
+        timing_row = QtWidgets.QHBoxLayout()
+        for n in ("proctime", "procrate"):
+            if n in self.panel:
+                timing_row.addWidget(self.panel[n].widget)
+        layout.addLayout(timing_row)
+
+        if hasattr(self.progress, "widget"):
+            layout.addWidget(self.progress.widget)
+
+        # -- Settings tabs --
+        settings_tabs = self.panel.build_tab_widget(WCI_TAB_LAYOUT)
+        layout.addWidget(settings_tabs)
+
+        # -- Hover label --
+        if "hover_label" in self.panel:
+            layout.addWidget(self.panel["hover_label"].widget)
+
+        layout.addStretch()
+        return container
 
     # =====================================================================
     # Public API

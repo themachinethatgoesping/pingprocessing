@@ -219,6 +219,7 @@ GRID_LAYOUTS: List[Tuple[int, int, str]] = [
     (1, 2, "1×2"),
     (2, 1, "2×1"),
     (2, 2, "2×2"),
+    (1, 3, "1×3"),
     (3, 2, "3×2"),
     (4, 2, "4×2"),
 ]
@@ -338,6 +339,8 @@ ECHO_RENDER_SPECS: List[ControlSpecType] = [
 ECHO_NAV_SPECS: List[ControlSpecType] = [
     ButtonSpec("btn_update", "Update", tooltip="Force update visible echograms", width="80px"),
     ButtonSpec("btn_reset", "Reset View", tooltip="Reset to full extent", width="80px"),
+    ButtonSpec("btn_autoscale_y", "AutoY",
+               tooltip="Scale Y axis to fit visible data in current X range", width="60px"),
     CheckboxSpec("auto_follow", "Follow ping",
                  tooltip="Automatically keep pingline in view", value=False),
     ButtonSpec("btn_goto_pingline", "→ Ping",
@@ -346,6 +349,10 @@ ECHO_NAV_SPECS: List[ControlSpecType] = [
     ButtonSpec("btn_nav_right", "▶", width="35px"),
     ButtonSpec("btn_nav_up", "▲", width="35px"),
     ButtonSpec("btn_nav_down", "▼", width="35px"),
+    TextSpec("x_interval", "X interval:",
+             value="", width="100px"),
+    ButtonSpec("btn_set_x_interval", "Set",
+               tooltip="Apply the X interval width", width="40px"),
 ]
 
 # -- Misc / hover --
@@ -385,8 +392,9 @@ ECHO_TAB_LAYOUT: Dict[str, List[List[str]]] = {
         ["colorbar_layer", "auto_update", "crosshair"],
     ],
     "Navigation": [
-        ["btn_update", "btn_reset", "auto_follow", "btn_goto_pingline"],
+        ["btn_update", "btn_reset", "btn_autoscale_y", "auto_follow", "btn_goto_pingline"],
         ["btn_nav_left", "btn_nav_up", "btn_nav_down", "btn_nav_right"],
+        ["x_interval", "btn_set_x_interval"],
     ],
     "Param Editor": [
         ["param_master", "param_select", "btn_refresh_params"],

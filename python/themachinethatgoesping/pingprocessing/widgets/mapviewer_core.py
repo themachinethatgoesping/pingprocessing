@@ -177,9 +177,15 @@ class MapCore:
 
         # Ignore range changes flag (used during programmatic pan/zoom)
         self._ignore_range_changes = False
+        # Timestamp until which deferred sigRangeChanged should be ignored
+        self._ignore_range_until: float = 0.0
 
         # Throttle ping update
         self._last_ping_update_time: float = 0.0
+
+        # Throttle track re-rendering
+        self._last_track_update_time: float = 0.0
+        self._track_update_pending: bool = False
 
         # Initialize default render settings
         self._init_layer_render_settings()
@@ -440,7 +446,7 @@ class MapCore:
             for layer in self._builder.visible_layers:
                 self._render_layer(layer)
 
-        self._update_tracks()
+        self._update_tracks(force=True)
         self._update_ping_marker()
 
     def render_tiles(self) -> None:
@@ -644,8 +650,20 @@ class MapCore:
     # Tracks
     # =====================================================================
 
-    def _update_tracks(self) -> None:
-        """Update track overlays."""
+    def _update_tracks(self, force: bool = False) -> None:
+        """Update track overlays.
+
+        Throttled to at most once every 200 ms unless *force* is True
+        to avoid tearing down / recreating all PlotDataItems on every
+        ping callback when connected viewers trigger frequent updates.
+        """
+        now = time.time()
+        if not force and now - self._last_track_update_time < 0.2:
+            self._track_update_pending = True
+            return
+        self._last_track_update_time = now
+        self._track_update_pending = False
+
         for plot in self._track_plots:
             self._plot.removeItem(plot)
         self._track_plots.clear()
@@ -1078,6 +1096,9 @@ class MapCore:
             )
             self._plot.getViewBox().setRange(rect, padding=0.05)
             self._ignore_range_changes = False
+            # Grace period: aspect-locked ViewBox may emit deferred
+            # sigRangeChanged events after the range is set.
+            self._ignore_range_until = time.time() + 0.5
             self._current_bounds = bounds
             self.update_view()
 
@@ -1128,6 +1149,9 @@ class MapCore:
         )
         self._plot.getViewBox().setRange(rect, padding=0.02)
         self._ignore_range_changes = False
+        # Grace period: aspect-locked ViewBox may emit deferred
+        # sigRangeChanged events after the range is set.
+        self._ignore_range_until = time.time() + 0.5
         self._current_bounds = bounds
         if self._schedule_update:
             self._schedule_update()
@@ -1140,10 +1164,13 @@ class MapCore:
             xmax=lon + radius_deg, ymax=lat + radius_deg,
         )
 
+        rect = QtCore.QRectF(
+            bounds.xmin, bounds.ymin, bounds.width, bounds.height
+        )
         self._ignore_range_changes = True
-        self._plot.setXRange(bounds.xmin, bounds.xmax, padding=0)
-        self._plot.setYRange(bounds.ymin, bounds.ymax, padding=0)
+        self._plot.getViewBox().setRange(rect, padding=0)
         self._ignore_range_changes = False
+        self._ignore_range_until = time.time() + 0.15
         self._current_bounds = bounds
         if self._schedule_update:
             self._schedule_update()
@@ -1162,10 +1189,18 @@ class MapCore:
         width = x_range[1] - x_range[0]
         height = y_range[1] - y_range[0]
 
+        # Use a single setRange call so aspect-locked ViewBox doesn't
+        # expand one axis between two separate setXRange / setYRange
+        # calls, which was causing progressive zoom-out.
+        rect = QtCore.QRectF(
+            lon - width / 2, lat - height / 2, width, height
+        )
         self._ignore_range_changes = True
-        self._plot.setXRange(lon - width / 2, lon + width / 2, padding=0)
-        self._plot.setYRange(lat - height / 2, lat + height / 2, padding=0)
+        self._plot.getViewBox().setRange(rect, padding=0)
         self._ignore_range_changes = False
+        # Grace period: Qt may deliver sigRangeChanged asynchronously
+        # after _ignore_range_changes is already False.
+        self._ignore_range_until = time.time() + 0.15
         # Don't call update_view() synchronously — existing items pan with
         # the viewbox automatically.  Let the adapter's debounce timer
         # handle the expensive tile/layer refresh.
@@ -1211,6 +1246,9 @@ class MapCore:
 
     def _on_view_changed(self) -> None:
         if self._ignore_range_changes:
+            return
+        # Ignore deferred signals that arrive after a programmatic pan/zoom
+        if time.time() < self._ignore_range_until:
             return
 
         vb = self._plot.vb
@@ -1389,7 +1427,7 @@ class MapCore:
                 layer_data['data'],
                 layer_data['cs'],
             )
-        self._update_tracks()
+        self._update_tracks(force=True)
         self._update_ping_marker()
         self._do_request_draw()
 

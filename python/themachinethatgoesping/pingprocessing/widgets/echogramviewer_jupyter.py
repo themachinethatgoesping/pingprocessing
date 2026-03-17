@@ -60,6 +60,7 @@ class EchogramViewerJupyter:
         auto_update: bool = True,
         auto_update_delay_ms: int = 300,
         initial_grid: Tuple[int, int] = (2, 2),
+        embedded: bool = False,
         **kwargs: Any,
     ) -> None:
         pgh.ensure_qapp()
@@ -171,6 +172,8 @@ class EchogramViewerJupyter:
         self.core._report_error = self._report_error
         self.core._auto_update_enabled = auto_update
 
+        self._embedded = embedded
+
         # -- wire shared observers --
         self.core.wire_observers(
             layout_callback=self._update_slot_selector_visibility,
@@ -182,10 +185,11 @@ class EchogramViewerJupyter:
         # -- auto-update hook --
         self._setup_auto_update_hook()
 
-        # -- assemble layout --
-        self._assemble_layout()
+        # -- assemble layout (skip in embedded mode) --
+        if not embedded:
+            self._assemble_layout()
 
-        if show:
+        if show and not embedded:
             display(self.layout)
 
         # -- load initial backgrounds --
@@ -360,6 +364,49 @@ class EchogramViewerJupyter:
         self._is_loading = False
 
     # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> ipywidgets.Widget:
+        """Return all controls as a single embeddable ipywidget."""
+        p = self.panel
+        n_visible = self.core.grid_rows * self.core.grid_cols
+
+        slot_box = ipywidgets.HBox(
+            [self._slot_selectors[i] for i in range(n_visible)]
+        )
+        tab_box = ipywidgets.HBox(self._tab_buttons)
+
+        controls_row = ipywidgets.HBox([
+            p.widget("layout"), p.widget("colorbar_layer"),
+            p.widget("vmin"), p.widget("vmax"),
+            p.widget("auto_update"), p.widget("crosshair"),
+        ])
+        buttons_row = ipywidgets.HBox([
+            p.widget("btn_update"), p.widget("btn_reset"),
+            p.widget("btn_autoscale_y"),
+            p.widget("auto_follow"), p.widget("btn_goto_pingline"),
+            ipywidgets.Label("  Nav:"),
+            p.widget("btn_nav_left"), p.widget("btn_nav_up"),
+            p.widget("btn_nav_down"), p.widget("btn_nav_right"),
+            p.widget("x_interval"), p.widget("btn_set_x_interval"),
+        ])
+
+        progress_box = (
+            ipywidgets.HBox([self.progress]) if self.display_progress
+            else ipywidgets.HBox([])
+        )
+
+        return ipywidgets.VBox([
+            tab_box,
+            slot_box,
+            controls_row,
+            buttons_row,
+            self.hover_label,
+            progress_box,
+        ])
+
+    # =====================================================================
     # Layout assembly
     # =====================================================================
 
@@ -388,6 +435,7 @@ class EchogramViewerJupyter:
         buttons_row = ipywidgets.HBox([
             p.widget("btn_update"),
             p.widget("btn_reset"),
+            p.widget("btn_autoscale_y"),
             p.widget("auto_follow"),
             p.widget("btn_goto_pingline"),
             ipywidgets.Label('  Nav:'),
@@ -395,6 +443,8 @@ class EchogramViewerJupyter:
             p.widget("btn_nav_up"),
             p.widget("btn_nav_down"),
             p.widget("btn_nav_right"),
+            p.widget("x_interval"),
+            p.widget("btn_set_x_interval"),
         ])
 
         # Param editor in collapsible accordion

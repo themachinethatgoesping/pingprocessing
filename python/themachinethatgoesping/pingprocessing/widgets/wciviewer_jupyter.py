@@ -59,6 +59,7 @@ class WCIViewerJupyter:
         initial_grid: Tuple[int, int] = (2, 2),
         time_sync_enabled: bool = True,
         time_warning_threshold: float = 5.0,
+        embedded: bool = False,
         **kwargs: Any,
     ) -> None:
         pgh.ensure_qapp()
@@ -180,15 +181,18 @@ class WCIViewerJupyter:
         # Expose frames on the viewer for convenience
         self.frames: VideoFrames = self.core.frames
 
+        self._embedded = embedded
+
         # -- wire shared observers (after core exists) --
         self.core.wire_observers(
             layout_callback=self._update_slot_selector_visibility,
         )
 
-        # -- assemble layout --
-        self._assemble_layout()
+        # -- assemble layout (skip in embedded mode) --
+        if not embedded:
+            self._assemble_layout()
 
-        if show:
+        if show and not embedded:
             display(self.layout)
 
     # =====================================================================
@@ -211,6 +215,41 @@ class WCIViewerJupyter:
                 ipywidgets.HBox([self._slot_selectors[i], self._ping_sliders[i]])
             )
         self._slot_selector_box.children = controls
+
+    # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> ipywidgets.Widget:
+        """Return all controls as a single embeddable ipywidget."""
+        p = self.panel
+        n_visible = self.core.grid_rows * self.core.grid_cols
+
+        slot_controls = [
+            ipywidgets.HBox([self._slot_selectors[i], self._ping_sliders[i]])
+            for i in range(n_visible)
+        ]
+        slot_box = ipywidgets.VBox(slot_controls)
+        tab_box = ipywidgets.HBox([p.widget("layout")] + self._tab_buttons)
+        settings_tabs = p.build_tabs(WCI_TAB_LAYOUT)
+
+        main_left = ipywidgets.VBox([
+            slot_box,
+            ipywidgets.HBox([p.widget("ref_time"), p.widget("fix_xy"), p.widget("unfix_xy")]),
+            ipywidgets.HBox([p.widget("proctime"), p.widget("procrate")]),
+        ])
+
+        progress_box = (
+            ipywidgets.HBox([self.progress]) if self.display_progress
+            else ipywidgets.HBox([])
+        )
+
+        return ipywidgets.VBox([
+            tab_box,
+            ipywidgets.HBox([main_left, settings_tabs]),
+            progress_box,
+            self.hover_label,
+        ])
 
     # =====================================================================
     # Layout assembly

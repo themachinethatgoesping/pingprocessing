@@ -53,6 +53,7 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         cmap: str = "Greys_r",
         cmap_layer: str = "YlGnBu_r",
         show: bool = True,
+        embedded: bool = False,
         voffsets: Optional[Dict[str, float]] = None,
         widget_height_px: int = 800,
         widget_width_px: int = 1200,
@@ -174,8 +175,11 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         # -- keyboard handling --
         self.installEventFilter(self)
 
-        # -- assemble DockArea layout --
-        self._build_dock_layout()
+        self._embedded = embedded
+
+        # -- assemble DockArea layout (skip in embedded mode) --
+        if not embedded:
+            self._build_dock_layout()
 
         # -- load initial backgrounds --
         self.core.load_all_backgrounds()
@@ -185,7 +189,7 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         if auto_update:
             self._range_check_timer.start()
 
-        if show:
+        if show and not embedded:
             self.show()
 
     # =====================================================================
@@ -358,11 +362,15 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         ctrl_vlayout.addLayout(render_row)
         # Nav row
         nav_row = QtWidgets.QHBoxLayout()
-        for name in ["btn_update", "btn_reset", "auto_follow", "btn_goto_pingline"]:
+        for name in ["btn_update", "btn_reset", "btn_autoscale_y", "auto_follow", "btn_goto_pingline"]:
             if name in self.panel:
                 nav_row.addWidget(self.panel[name].widget)
         nav_row.addWidget(QtWidgets.QLabel("  Nav:"))
         for name in ["btn_nav_left", "btn_nav_up", "btn_nav_down", "btn_nav_right"]:
+            if name in self.panel:
+                nav_row.addWidget(self.panel[name].widget)
+        # X interval controls
+        for name in ["x_interval", "btn_set_x_interval"]:
             if name in self.panel:
                 nav_row.addWidget(self.panel[name].widget)
         nav_row.addStretch()
@@ -397,6 +405,71 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         area.addDock(d_settings, "right", d_slots)
 
         self._dock_area = area
+
+    # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> QtWidgets.QWidget:
+        """Return all controls as a single embeddable QWidget."""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # -- Slot selectors --
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(self.panel["layout"].widget)
+        for eg_name in self.echogram_names:
+            btn = QtWidgets.QPushButton(str(eg_name)[:15])
+            btn.clicked.connect(lambda _, n=eg_name: self.core.show_single(n))
+            top_row.addWidget(btn)
+        layout.addLayout(top_row)
+
+        n_visible = self.core.grid_rows * self.core.grid_cols
+        for i in range(n_visible):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self._slot_selectors[i])
+            layout.addLayout(row)
+
+        # -- Render controls --
+        render_row = QtWidgets.QHBoxLayout()
+        for n in ("colorbar_layer", "vmin", "vmax", "auto_update", "crosshair"):
+            if n in self.panel:
+                render_row.addWidget(self.panel[n].widget)
+        render_row.addStretch()
+        layout.addLayout(render_row)
+
+        # -- Nav controls --
+        nav_row = QtWidgets.QHBoxLayout()
+        for n in ("btn_update", "btn_reset", "btn_autoscale_y", "auto_follow", "btn_goto_pingline"):
+            if n in self.panel:
+                nav_row.addWidget(self.panel[n].widget)
+        nav_row.addWidget(QtWidgets.QLabel("  Nav:"))
+        for n in ("btn_nav_left", "btn_nav_up", "btn_nav_down", "btn_nav_right"):
+            if n in self.panel:
+                nav_row.addWidget(self.panel[n].widget)
+        # X interval controls
+        for n in ("x_interval", "btn_set_x_interval"):
+            if n in self.panel:
+                nav_row.addWidget(self.panel[n].widget)
+        nav_row.addStretch()
+        layout.addLayout(nav_row)
+
+        # -- Param editor tab --
+        if ECHO_TAB_LAYOUT:
+            settings_tabs = self.panel.build_tab_widget(ECHO_TAB_LAYOUT)
+            layout.addWidget(settings_tabs)
+
+        # -- Progress --
+        if hasattr(self.progress, "widget"):
+            layout.addWidget(self.progress.widget)
+
+        # -- Hover label --
+        if "hover_label" in self.panel:
+            layout.addWidget(self.panel["hover_label"].widget)
+
+        layout.addStretch()
+        return container
 
     # =====================================================================
     # Public API

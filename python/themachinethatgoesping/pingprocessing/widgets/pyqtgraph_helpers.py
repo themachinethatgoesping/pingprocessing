@@ -94,28 +94,34 @@ def ensure_qapp() -> None:
         QtWidgets.QApplication([])
 
 
-def resolve_colormap(cmap: Union[str, pg.ColorMap]) -> pg.ColorMap:
-    """Return a PyQtGraph ColorMap from either a name or a ColorMap instance.
+def resolve_colormap(cmap) -> pg.ColorMap:
+    """Return a PyQtGraph ColorMap from a name, pg.ColorMap, or matplotlib Colormap.
     
     Parameters
     ----------
-    cmap : str or pg.ColorMap
-        Colormap name (pyqtgraph or matplotlib) or ColorMap instance.
-        Use :func:`list_colormaps` to see all available names.
+    cmap : str, pg.ColorMap, or matplotlib.colors.Colormap
+        Colormap name (pyqtgraph or matplotlib), a PyQtGraph ColorMap
+        instance, or a matplotlib Colormap (e.g. ``colorcet.cm.CET_L20``).
     
     Returns
     -------
     pg.ColorMap
         Resolved colormap. Falls back to 'viridis' if not found.
-    
-    Examples
-    --------
-    >>> cmap = resolve_colormap('cubehelix_r')  # matplotlib colormap
-    >>> cmap = resolve_colormap('viridis')      # pyqtgraph colormap
     """
 
     if isinstance(cmap, pg.ColorMap):
         return cmap
+
+    # Accept matplotlib Colormap objects (e.g. from colorcet)
+    try:
+        from matplotlib.colors import Colormap as MplColormap
+        if isinstance(cmap, MplColormap):
+            positions = np.linspace(0.0, 1.0, 256)
+            colors = (cmap(positions) * 255).astype(np.uint8)
+            return pg.ColorMap(positions, colors)
+    except ImportError:
+        pass
+
     if isinstance(cmap, str):
         try:
             return pg.colormap.get(cmap)

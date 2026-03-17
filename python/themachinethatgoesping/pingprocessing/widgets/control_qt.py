@@ -339,6 +339,7 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
     if isinstance(spec, HTMLSpec):
         w = QtWidgets.QLabel(spec.value)
         w.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        w.setWordWrap(True)
         return QtControlHandle(w, w.text, w.setText, None, inner=w)
 
     raise ValueError(f"Unknown spec type: {type(spec)}")

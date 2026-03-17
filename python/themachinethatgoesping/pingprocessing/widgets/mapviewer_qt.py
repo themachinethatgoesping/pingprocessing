@@ -56,6 +56,7 @@ class MapViewerQt(QtWidgets.QMainWindow):
         auto_update: bool = True,
         auto_update_delay_ms: int = 300,
         show: bool = True,
+        embedded: bool = False,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         pgh.ensure_qapp()
@@ -125,8 +126,33 @@ class MapViewerQt(QtWidgets.QMainWindow):
         self._range_check_timer.setInterval(100)
         self._range_check_timer.timeout.connect(self._check_view_range_changed)
 
-        # Build dock layout
-        self._build_dock_layout(builder, tile_builder, show_controls)
+        # Store builder/tile_builder refs for build_control_widget
+        self._builder = builder
+        self._tile_builder_arg = tile_builder
+        self._embedded = embedded
+
+        # Init layer/tile control widget dicts (populated by _build_layer_tile_controls)
+        self._tile_source_combo: Optional[QtWidgets.QComboBox] = None
+        self._tile_visible_cb: Optional[QtWidgets.QCheckBox] = None
+        self._layer_checkboxes_qt: Dict[str, QtWidgets.QCheckBox] = {}
+        self._layer_sliders_qt: Dict[str, QtWidgets.QSlider] = {}
+        self._layer_colormap_combos: Dict[str, QtWidgets.QComboBox] = {}
+
+        # Build layer/tile controls (needed by both dock layout and build_control_widget)
+        self._build_layer_tile_controls(builder, tile_builder)
+
+        # Track legend widgets
+        self._track_scroll = QtWidgets.QScrollArea()
+        self._track_scroll.setWidgetResizable(True)
+        self._track_container = QtWidgets.QWidget()
+        self._track_layout = QtWidgets.QVBoxLayout(self._track_container)
+        self._track_layout.setContentsMargins(4, 4, 4, 4)
+        self._track_layout.addStretch()
+        self._track_scroll.setWidget(self._track_container)
+
+        # Build dock layout (skip in embedded mode)
+        if not embedded:
+            self._build_dock_layout(builder, tile_builder, show_controls)
 
         # Wire track legend
         self.core._update_track_legend = self._update_track_legend
@@ -134,14 +160,18 @@ class MapViewerQt(QtWidgets.QMainWindow):
         # Initial render
         self.core.update_view()
         self.core.create_colorbar()
+
+        if show and not embedded:
+            self.show()
+            self.core.zoom_to_fit()
+
+        # Mark startup complete *after* zoom_to_fit so the range check
+        # timer doesn't see the initial layout adjustments as user
+        # interaction and trigger a progressive zoom-out.
         self._startup_complete = True
 
         if auto_update:
             self._range_check_timer.start()
-
-        if show:
-            self.show()
-            self.core.zoom_to_fit()
 
     # =====================================================================
     # Auto-update
@@ -159,6 +189,9 @@ class MapViewerQt(QtWidgets.QMainWindow):
         if not self._startup_complete or not self._auto_update_enabled:
             return
         if self.core._ignore_range_changes or self._is_loading:
+            return
+        # Respect grace period after programmatic pan/zoom
+        if time.time() < self.core._ignore_range_until:
             return
         vb = self.core._plot.getViewBox()
         current_range = vb.viewRange()
@@ -189,7 +222,7 @@ class MapViewerQt(QtWidgets.QMainWindow):
 
         if self.core._builder is None:
             if self.core._tracks or self.core._overview_tracks:
-                self.core._update_tracks()
+                self.core._update_tracks(force=True)
                 self.core._update_ping_marker()
             return
 
@@ -316,6 +349,75 @@ class MapViewerQt(QtWidgets.QMainWindow):
         self._is_loading_tiles = False
 
     # =====================================================================
+    # Layer / tile control creation (shared by dock layout + embedded)
+    # =====================================================================
+
+    def _build_layer_tile_controls(self, builder, tile_builder) -> None:
+        """Create layer and tile control widgets (stored as instance attrs)."""
+        if tile_builder is not None:
+            try:
+                from ..overview.map_builder.tile_builder import TILE_SOURCES
+            except Exception:
+                TILE_SOURCES = {}
+
+            self._tile_visible_cb = QtWidgets.QCheckBox("Show background tiles")
+            self._tile_visible_cb.setChecked(self.core.tile_visible)
+            self._tile_visible_cb.toggled.connect(self._on_tile_visibility_qt)
+
+            self._tile_source_combo = QtWidgets.QComboBox()
+            self._tile_source_combo.addItem("None")
+            for src in TILE_SOURCES.keys():
+                self._tile_source_combo.addItem(src)
+            current_source = getattr(tile_builder, '_current_source_name', None)
+            if current_source:
+                idx = self._tile_source_combo.findText(current_source)
+                if idx >= 0:
+                    self._tile_source_combo.setCurrentIndex(idx)
+            self._tile_source_combo.currentTextChanged.connect(self._on_tile_source_qt)
+
+        if builder is not None:
+            for layer in builder.layers:
+                settings = self.core._layer_render_settings.get(layer.name, LayerRenderSettings())
+
+                cb = QtWidgets.QCheckBox(layer.name)
+                cb.setChecked(layer.visible)
+                cb.toggled.connect(lambda checked, n=layer.name: self.core.set_layer_visibility(n, checked))
+                self._layer_checkboxes_qt[layer.name] = cb
+
+                slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+                slider.setRange(0, 100)
+                slider.setValue(int(settings.opacity * 100))
+                slider.setFixedWidth(80)
+                slider.valueChanged.connect(
+                    lambda val, n=layer.name: self.core.set_layer_opacity_image(n, val / 100.0)
+                )
+                self._layer_sliders_qt[layer.name] = slider
+
+                cmap_combo = QtWidgets.QComboBox()
+                for cm in MAP_COLORMAPS:
+                    cmap_combo.addItem(cm)
+                idx = cmap_combo.findText(settings.colormap)
+                if idx >= 0:
+                    cmap_combo.setCurrentIndex(idx)
+                cmap_combo.currentTextChanged.connect(
+                    lambda text, n=layer.name: self.core.set_layer_colormap_image(n, text)
+                )
+                self._layer_colormap_combos[layer.name] = cmap_combo
+
+            # Update colorbar dropdown options
+            layer_names = [l.name for l in builder.layers]
+            if layer_names and "colorbar_layer" in self.panel:
+                handle = self.panel["colorbar_layer"]
+                w = handle.widget
+                if isinstance(w, QtWidgets.QComboBox):
+                    w.clear()
+                    w.addItem("None", None)
+                    for n in layer_names:
+                        w.addItem(n, n)
+                    w.setCurrentIndex(1)
+                    self.core._active_colorbar_layer = layer_names[0]
+
+    # =====================================================================
     # DockArea layout
     # =====================================================================
 
@@ -333,7 +435,6 @@ class MapViewerQt(QtWidgets.QMainWindow):
         ctrl_vlayout = QtWidgets.QVBoxLayout(ctrl_widget)
         ctrl_vlayout.setContentsMargins(4, 2, 4, 2)
 
-        # Navigation row
         nav_row = QtWidgets.QHBoxLayout()
         for name in ["btn_zoom_fit", "btn_zoom_track", "btn_zoom_wci", "btn_refresh_tracks"]:
             if name in self.panel:
@@ -344,116 +445,39 @@ class MapViewerQt(QtWidgets.QMainWindow):
         nav_row.addStretch()
         ctrl_vlayout.addLayout(nav_row)
 
-        # Colorbar layer selector
         colorbar_row = QtWidgets.QHBoxLayout()
         if "colorbar_layer" in self.panel:
             colorbar_row.addWidget(self.panel["colorbar_layer"].widget)
         colorbar_row.addStretch()
         ctrl_vlayout.addLayout(colorbar_row)
-
         d_controls.addWidget(ctrl_widget)
 
-        # -- Layers dock --
+        # -- Layers dock (using pre-built controls) --
         d_layers = Dock("Layers", size=(300, 200))
         layers_widget = QtWidgets.QWidget()
         layers_vlayout = QtWidgets.QVBoxLayout(layers_widget)
         layers_vlayout.setContentsMargins(4, 4, 4, 4)
 
-        # Tile controls
-        self._tile_source_combo: Optional[QtWidgets.QComboBox] = None
-        self._tile_visible_cb: Optional[QtWidgets.QCheckBox] = None
-        if tile_builder is not None:
-            from ..overview.map_builder.tile_builder import TILE_SOURCES
-
-            self._tile_visible_cb = QtWidgets.QCheckBox("Show background tiles")
-            self._tile_visible_cb.setChecked(self.core.tile_visible)
-            self._tile_visible_cb.toggled.connect(self._on_tile_visibility_qt)
-
-            self._tile_source_combo = QtWidgets.QComboBox()
-            self._tile_source_combo.addItem("None")
-            for src in TILE_SOURCES.keys():
-                self._tile_source_combo.addItem(src)
-            current_source = getattr(tile_builder, '_current_source_name', None)
-            if current_source:
-                idx = self._tile_source_combo.findText(current_source)
-                if idx >= 0:
-                    self._tile_source_combo.setCurrentIndex(idx)
-            self._tile_source_combo.currentTextChanged.connect(self._on_tile_source_qt)
-
+        if self._tile_visible_cb is not None:
             tile_row = QtWidgets.QHBoxLayout()
             tile_row.addWidget(self._tile_visible_cb)
             tile_row.addWidget(self._tile_source_combo)
             tile_row.addStretch()
             layers_vlayout.addLayout(tile_row)
 
-        # Per-layer controls
-        self._layer_checkboxes_qt: Dict[str, QtWidgets.QCheckBox] = {}
-        self._layer_sliders_qt: Dict[str, QtWidgets.QSlider] = {}
-        self._layer_colormap_combos: Dict[str, QtWidgets.QComboBox] = {}
-
-        if builder is not None:
-            for layer in builder.layers:
-                settings = self.core._layer_render_settings.get(layer.name, LayerRenderSettings())
-
-                row = QtWidgets.QHBoxLayout()
-
-                cb = QtWidgets.QCheckBox(layer.name)
-                cb.setChecked(layer.visible)
-                cb.toggled.connect(lambda checked, n=layer.name: self.core.set_layer_visibility(n, checked))
-                self._layer_checkboxes_qt[layer.name] = cb
-                row.addWidget(cb)
-
-                slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-                slider.setRange(0, 100)
-                slider.setValue(int(settings.opacity * 100))
-                slider.setFixedWidth(80)
-                slider.valueChanged.connect(
-                    lambda val, n=layer.name: self.core.set_layer_opacity_image(n, val / 100.0)
-                )
-                self._layer_sliders_qt[layer.name] = slider
-                row.addWidget(slider)
-
-                cmap_combo = QtWidgets.QComboBox()
-                for cm in MAP_COLORMAPS:
-                    cmap_combo.addItem(cm)
-                idx = cmap_combo.findText(settings.colormap)
-                if idx >= 0:
-                    cmap_combo.setCurrentIndex(idx)
-                cmap_combo.currentTextChanged.connect(
-                    lambda text, n=layer.name: self.core.set_layer_colormap_image(n, text)
-                )
-                self._layer_colormap_combos[layer.name] = cmap_combo
-                row.addWidget(cmap_combo)
-
-                row.addStretch()
-                layers_vlayout.addLayout(row)
-
-        # Update colorbar dropdown options
-        if builder is not None:
-            layer_names = [l.name for l in builder.layers]
-            if layer_names and "colorbar_layer" in self.panel:
-                handle = self.panel["colorbar_layer"]
-                w = handle.widget
-                if isinstance(w, QtWidgets.QComboBox):
-                    w.clear()
-                    w.addItem("None", None)
-                    for n in layer_names:
-                        w.addItem(n, n)
-                    w.setCurrentIndex(1)
-                    self.core._active_colorbar_layer = layer_names[0]
+        for layer_name in self._layer_checkboxes_qt:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self._layer_checkboxes_qt[layer_name])
+            row.addWidget(self._layer_sliders_qt[layer_name])
+            row.addWidget(self._layer_colormap_combos[layer_name])
+            row.addStretch()
+            layers_vlayout.addLayout(row)
 
         layers_vlayout.addStretch()
         d_layers.addWidget(layers_widget)
 
         # -- Track legend dock --
         d_tracks = Dock("Tracks", size=(300, 150))
-        self._track_scroll = QtWidgets.QScrollArea()
-        self._track_scroll.setWidgetResizable(True)
-        self._track_container = QtWidgets.QWidget()
-        self._track_layout = QtWidgets.QVBoxLayout(self._track_container)
-        self._track_layout.setContentsMargins(4, 4, 4, 4)
-        self._track_layout.addStretch()
-        self._track_scroll.setWidget(self._track_container)
         d_tracks.addWidget(self._track_scroll)
 
         # -- Coord label dock --
@@ -469,6 +493,58 @@ class MapViewerQt(QtWidgets.QMainWindow):
         area.addDock(d_tracks, "bottom", d_layers)
 
         self._dock_area = area
+
+    # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> QtWidgets.QWidget:
+        """Return all controls as a single embeddable QWidget."""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Nav row
+        nav_row = QtWidgets.QHBoxLayout()
+        for n in ("btn_zoom_fit", "btn_zoom_track", "btn_zoom_wci", "btn_refresh_tracks"):
+            if n in self.panel:
+                nav_row.addWidget(self.panel[n].widget)
+        for n in ("auto_update", "auto_center_wci"):
+            if n in self.panel:
+                nav_row.addWidget(self.panel[n].widget)
+        nav_row.addStretch()
+        layout.addLayout(nav_row)
+
+        # Colorbar
+        if "colorbar_layer" in self.panel:
+            layout.addWidget(self.panel["colorbar_layer"].widget)
+
+        # Tile controls
+        if self._tile_visible_cb is not None:
+            tile_row = QtWidgets.QHBoxLayout()
+            tile_row.addWidget(self._tile_visible_cb)
+            tile_row.addWidget(self._tile_source_combo)
+            tile_row.addStretch()
+            layout.addLayout(tile_row)
+
+        # Layer controls
+        for layer_name in self._layer_checkboxes_qt:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(self._layer_checkboxes_qt[layer_name])
+            row.addWidget(self._layer_sliders_qt[layer_name])
+            row.addWidget(self._layer_colormap_combos[layer_name])
+            row.addStretch()
+            layout.addLayout(row)
+
+        # Track legend
+        layout.addWidget(self._track_scroll)
+
+        # Coord label
+        if "lbl_coords" in self.panel:
+            layout.addWidget(self.panel["lbl_coords"].widget)
+
+        layout.addStretch()
+        return container
 
     # =====================================================================
     # Tile callbacks (Qt)

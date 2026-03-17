@@ -59,6 +59,7 @@ class MapViewerJupyter:
         auto_update: bool = True,
         auto_update_delay_ms: int = 300,
         show: bool = True,
+        embedded: bool = False,
     ) -> None:
         pgh.ensure_qapp()
 
@@ -144,17 +145,20 @@ class MapViewerJupyter:
         self._track_legend = ipywidgets.VBox([])
         self.core._update_track_legend = self._update_track_legend
 
+        self._embedded = embedded
+
         # Auto-update hook
         self._setup_auto_update_hook()
 
-        # Assemble layout
-        self._assemble_layout()
+        # Assemble layout (skip in embedded mode)
+        if not embedded:
+            self._assemble_layout()
 
         # Initial render
         self.core.update_view()
         self._startup_complete = True
 
-        if show:
+        if show and not embedded:
             self.show()
 
     # =====================================================================
@@ -347,7 +351,7 @@ class MapViewerJupyter:
         if self.core._builder is None:
             # Just update tracks
             if self.core._tracks or self.core._overview_tracks:
-                self.core._update_tracks()
+                self.core._update_tracks(force=True)
                 self.core._update_ping_marker()
                 self._request_draw()
             return
@@ -524,6 +528,50 @@ class MapViewerJupyter:
             checkbox_widgets.append(row)
 
         self._track_legend.children = checkbox_widgets
+
+    # =====================================================================
+    # Embeddable control widget
+    # =====================================================================
+
+    def build_control_widget(self) -> ipywidgets.Widget:
+        """Return all controls as a single embeddable ipywidget."""
+        p = self.panel
+        parts: list = []
+
+        # Tile controls
+        if self._tile_source_dropdown is not None:
+            parts.append(ipywidgets.HTML("<b>Background Tiles</b>"))
+            parts.append(ipywidgets.HBox([
+                self._tile_visibility_checkbox, self._tile_source_dropdown
+            ]))
+
+        # Layer controls
+        if self.core._builder is not None:
+            layer_widgets = []
+            for layer in self.core._builder.layers:
+                if layer.name in self._layer_checkboxes:
+                    layer_widgets.append(ipywidgets.HBox([
+                        self._layer_checkboxes[layer.name],
+                        self._layer_sliders[layer.name],
+                        self._layer_colormap_dropdowns[layer.name],
+                    ]))
+            if layer_widgets:
+                parts.append(ipywidgets.HTML("<b>Data Layers</b>"))
+                parts.append(ipywidgets.VBox(layer_widgets))
+                parts.append(p.widget("colorbar_layer"))
+
+        # Navigation
+        parts.append(ipywidgets.HBox([
+            p.widget("btn_zoom_fit"), p.widget("btn_zoom_track"),
+            p.widget("btn_zoom_wci"), p.widget("btn_refresh_tracks"),
+        ]))
+        parts.append(ipywidgets.HBox([
+            p.widget("auto_update"), p.widget("auto_center_wci"),
+        ]))
+        parts.append(p.widget("lbl_coords"))
+        parts.append(self._track_legend)
+
+        return ipywidgets.VBox(parts)
 
     # =====================================================================
     # Layout

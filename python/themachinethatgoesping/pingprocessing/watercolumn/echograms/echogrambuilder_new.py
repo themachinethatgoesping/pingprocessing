@@ -6,6 +6,8 @@ This module provides the EchogramBuilder class which handles:
 - Coordinate system delegation to EchogramCoordinateSystem
 """
 
+import warnings
+
 import numpy as np
 from typing import Optional, Tuple
 from copy import deepcopy
@@ -885,13 +887,16 @@ class EchogramBuilder:
         if self._oversampling_mode == "linear_mean":
             # dB → linear → nanmean → dB
             # Use float64 for precision in power conversion
-            with np.errstate(invalid='ignore'):
+            with warnings.catch_warnings(), np.errstate(invalid='ignore'):
+                warnings.simplefilter("ignore", RuntimeWarning)
                 linear = np.power(10.0, np.float64(blocked) * 0.1)
                 mean_linear = np.nanmean(linear, axis=(1, 3))
                 result = (10.0 * np.log10(mean_linear)).astype(np.float32)
         else:
             # db_mean: average directly in dB domain
-            result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
         
         # If target is larger than what we computed (edge case), pad with NaN
         if actual_nx < target_nx or actual_ny < target_ny:

@@ -19,4 +19,7 @@ from .mapviewer_pyqtgraph import MapViewerPyQtGraph
 from .mapviewer_core import MapCore
 from .mapviewer_jupyter import MapViewerJupyter
 from .mapviewer_qt import MapViewerQt
+from .combinedviewer_core import CombinedViewerCore, ViewerEntry
+from .combinedviewer_qt import CombinedViewerQt
+from .combinedviewer_jupyter import CombinedViewerJupyter
 from . import tools

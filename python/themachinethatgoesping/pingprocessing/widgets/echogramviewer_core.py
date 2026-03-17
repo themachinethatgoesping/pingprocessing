@@ -547,12 +547,15 @@ class EchogramCore:
 
         p["btn_update"].on_click(lambda _: self._schedule_update())
         p["btn_reset"].on_click(lambda _: self.reset_view())
+        p["btn_autoscale_y"].on_click(lambda _: self.autoscale_y())
         p["btn_goto_pingline"].on_click(lambda _: self.goto_pingline())
 
         p["btn_nav_left"].on_click(lambda _: self.pan_view('left'))
         p["btn_nav_right"].on_click(lambda _: self.pan_view('right'))
         p["btn_nav_up"].on_click(lambda _: self.pan_view('up'))
         p["btn_nav_down"].on_click(lambda _: self.pan_view('down'))
+
+        p["btn_set_x_interval"].on_click(lambda _: self.set_x_interval_from_panel())
 
         # Param editor observers
         p["param_master"].on_change(lambda _: self._on_param_master_change())
@@ -1091,6 +1094,138 @@ class EchogramCore:
         try:
             vb.setXRange(x_range[0] + dx, x_range[1] + dx, padding=0)
             vb.setYRange(y_range[0] + dy, y_range[1] + dy, padding=0)
+        finally:
+            self._ignore_range_changes = False
+        self._request_remote_draw()
+        self._schedule_update()
+
+    def autoscale_y(self) -> None:
+        """Scale Y axis to fit the visible data range in the current X view."""
+        master = self._get_master_plot()
+        if not master:
+            return
+        vb = master.getViewBox()
+        x_range = vb.viewRange()[0]
+
+        ymin_global, ymax_global = np.inf, -np.inf
+        for slot in self._get_visible_slots():
+            if slot.plot_item is None:
+                continue
+            # Use the best available image data for this slot
+            img_data = slot.high_res_image if slot.high_res_image is not None else slot.background_image
+            img_extent = slot.high_res_extent if slot.high_res_image is not None else slot.background_extent
+            if img_data is None or img_extent is None:
+                continue
+
+            x0, x1, y0, y1 = self._numeric_extent(img_extent)
+            rows, cols = img_data.shape[:2]
+            if rows == 0 or cols == 0:
+                continue
+
+            # Map x view range to column indices
+            col_start = max(0, int((x_range[0] - x0) / (x1 - x0) * cols)) if x1 != x0 else 0
+            col_end = min(cols, int(np.ceil((x_range[1] - x0) / (x1 - x0) * cols))) if x1 != x0 else cols
+            if col_start >= col_end:
+                continue
+
+            sub = img_data[col_start:col_end, :]
+            finite = sub[np.isfinite(sub)]
+            if finite.size == 0:
+                continue
+
+            # Find the row range that contains data
+            row_has_data = np.any(np.isfinite(sub), axis=0)
+            rows_with_data = np.where(row_has_data)[0]
+            if len(rows_with_data) == 0:
+                continue
+
+            first_row = rows_with_data[0]
+            last_row = rows_with_data[-1]
+
+            # Map row indices back to y coordinates
+            y_lo = y0 + (first_row / max(sub.shape[1] - 1, 1)) * (y1 - y0)
+            y_hi = y0 + (last_row / max(sub.shape[1] - 1, 1)) * (y1 - y0)
+
+            ymin_global = min(ymin_global, y_lo, y_hi)
+            ymax_global = max(ymax_global, y_lo, y_hi)
+
+        if not np.isfinite(ymin_global) or not np.isfinite(ymax_global):
+            return
+        if ymin_global >= ymax_global:
+            return
+
+        # Add a small margin
+        margin = (ymax_global - ymin_global) * 0.02
+        self._ignore_range_changes = True
+        try:
+            master.setYRange(ymin_global - margin, ymax_global + margin, padding=0)
+        finally:
+            self._ignore_range_changes = False
+        self._request_remote_draw()
+        self._schedule_update()
+
+    def set_x_interval_from_panel(self) -> None:
+        """Set X axis width from the x_interval panel text field.
+
+        Supported formats:
+        - ``"2 min"`` or ``"2min"`` — 2 minutes (datetime axis only)
+        - ``"30 s"`` or ``"30s"`` — 30 seconds (datetime axis only)
+        - ``"1 h"`` or ``"1h"`` — 1 hour (datetime axis only)
+        - ``"500"`` — 500 in native x-axis units (ping number, etc.)
+        """
+        text = self.panel["x_interval"].value.strip()
+        if not text:
+            return
+        width = self._parse_x_interval(text)
+        if width is None or width <= 0:
+            return
+        self.set_x_interval(width)
+
+    def _parse_x_interval(self, text: str) -> Optional[float]:
+        """Parse an interval string and return the width in x-axis units."""
+        import re
+        text = text.strip()
+
+        # Try "<number> <unit>" patterns
+        m = re.match(r'^([0-9]*\.?[0-9]+)\s*(h|hr|hours?|min|minutes?|m|s|sec|seconds?)$',
+                     text, re.IGNORECASE)
+        if m:
+            value = float(m.group(1))
+            unit = m.group(2).lower()
+            if unit.startswith('h'):
+                seconds = value * 3600
+            elif unit.startswith('m') and not unit.startswith('ms'):
+                seconds = value * 60
+            else:
+                seconds = value
+
+            if self._x_axis_is_datetime:
+                # DateTime axis uses matplotlib day numbers
+                return seconds / 86400.0
+            elif self._x_axis_format == "timedelta":
+                return seconds
+            else:
+                return seconds
+
+        # Plain number
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def set_x_interval(self, width: float) -> None:
+        """Set X axis to a given width, centered on the current view center."""
+        master = self._get_master_plot()
+        if not master:
+            return
+        vb = master.getViewBox()
+        x_range = vb.viewRange()[0]
+        center = (x_range[0] + x_range[1]) / 2.0
+        new_xmin = center - width / 2.0
+        new_xmax = center + width / 2.0
+        self._ignore_range_changes = True
+        try:
+            master.setXRange(new_xmin, new_xmax, padding=0)
         finally:
             self._ignore_range_changes = False
         self._request_remote_draw()
