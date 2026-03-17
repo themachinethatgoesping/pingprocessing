@@ -368,7 +368,7 @@ class WCIViewerQt(QtWidgets.QMainWindow):
     def _play_tick(self) -> None:
         import time as _time
 
-        t0 = _time.time()
+        t0 = _time.perf_counter()
         slot = self.core.slots[0]
         pings = slot.get_pings()
         if not pings:
@@ -382,14 +382,14 @@ class WCIViewerQt(QtWidgets.QMainWindow):
         if new_idx > max_idx:
             new_idx = 0
 
-        # Compute next interval
-        interval_ms = int(1000.0 / speed_mult)
+        # Compute desired interval
+        desired_ms = int(1000.0 / speed_mult)
         if use_ping_time:
             current_ts = slot.get_timestamp(current_idx)
             next_ts = slot.get_timestamp(new_idx)
             if current_ts is not None and next_ts is not None:
                 ping_dt = abs(next_ts - current_ts)
-                interval_ms = max(5, int(1000.0 * ping_dt / speed_mult))
+                desired_ms = max(5, int(1000.0 * ping_dt / speed_mult))
 
         self.panel["ping_slider_0"].value = new_idx
 
@@ -401,7 +401,10 @@ class WCIViewerQt(QtWidgets.QMainWindow):
                 self.panel["real_fps"].value = f"real: {real_fps:.1f}"
         self._play_last_time = t0
 
-        # Adapt timer for next tick
+        # Subtract processing time so the timer only waits for the
+        # remaining budget, keeping actual FPS closer to the target.
+        elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+        interval_ms = max(0, int(desired_ms - elapsed_ms))
         self._play_timer.setInterval(interval_ms)
 
     def _stop_play_qt(self) -> None:

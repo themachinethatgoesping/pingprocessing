@@ -212,7 +212,11 @@ class MapCore:
         # Create plot for map display
         self._plot = self.graphics.addPlot(row=0, col=0)
         self._plot.setAspectLocked(True)
-        self._plot.getViewBox().setBackgroundColor("w")
+        vb = self._plot.getViewBox()
+        vb.setBackgroundColor("w")
+        # Disable autoRange so that adding/updating ImageItems does not
+        # cause the ViewBox to progressively expand the view.
+        vb.disableAutoRange()
         self._plot.setLabel('bottom', 'Longitude')
         self._plot.setLabel('left', 'Latitude')
 
@@ -499,24 +503,29 @@ class MapCore:
 
         self._tile_cache_key = cache_key
 
-        if self._tile_image is None:
-            self._tile_image = pg.ImageItem(axisOrder="row-major")
-            self._plot.addItem(self._tile_image)
-            self._tile_image.setZValue(-100)
+        self._ignore_range_changes = True
+        try:
+            if self._tile_image is None:
+                self._tile_image = pg.ImageItem(axisOrder="row-major")
+                self._plot.addItem(self._tile_image)
+                self._tile_image.setZValue(-100)
 
-        flipped = tile_image[::-1]
-        self._tile_image.setImage(flipped, autoLevels=False)
+            flipped = tile_image[::-1]
+            self._tile_image.setImage(flipped, autoLevels=False)
 
-        x0 = actual_bounds.xmin
-        x1 = actual_bounds.xmax
-        y0 = actual_bounds.ymin
-        y1 = actual_bounds.ymax
+            x0 = actual_bounds.xmin
+            x1 = actual_bounds.xmax
+            y0 = actual_bounds.ymin
+            y1 = actual_bounds.ymax
 
-        rect = QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)
-        self._tile_image.setRect(rect)
-        self._tile_image.setVisible(self._tile_visible)
+            rect = QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)
+            self._tile_image.setRect(rect)
+            self._tile_image.setVisible(self._tile_visible)
 
-        self._do_request_draw()
+            self._do_request_draw()
+        finally:
+            self._ignore_range_changes = False
+            self._ignore_range_until = time.time() + 0.3
 
     def _render_layer(self, layer) -> None:
         """Render a single data layer."""
@@ -1421,15 +1430,23 @@ class MapCore:
 
     def apply_high_res_results(self, results: Dict[str, Any]) -> None:
         """Apply preloaded layer data from background thread."""
-        for layer_name, layer_data in results.items():
-            self._render_layer_from_data(
-                layer_data['layer'],
-                layer_data['data'],
-                layer_data['cs'],
-            )
-        self._update_tracks(force=True)
-        self._update_ping_marker()
-        self._do_request_draw()
+        self._ignore_range_changes = True
+        try:
+            for layer_name, layer_data in results.items():
+                self._render_layer_from_data(
+                    layer_data['layer'],
+                    layer_data['data'],
+                    layer_data['cs'],
+                )
+            self._update_tracks(force=True)
+            self._update_ping_marker()
+            self._do_request_draw()
+        finally:
+            self._ignore_range_changes = False
+            # Grace period so deferred sigRangeChanged from setRect /
+            # aspect-locked ViewBox adjustments don't retrigger the
+            # high-res update cycle.
+            self._ignore_range_until = time.time() + 0.3
 
     # =====================================================================
     # Wire observers

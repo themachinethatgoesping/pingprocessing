@@ -1100,7 +1100,11 @@ class EchogramCore:
         self._schedule_update()
 
     def autoscale_y(self) -> None:
-        """Scale Y axis to fit the visible data range in the current X view."""
+        """Scale Y axis to fit the visible data range in the current X view.
+
+        Uses the per-ping vec_min_y / vec_max_y from the echogrambuilder's
+        coordinate system rather than scanning rendered pixels.
+        """
         master = self._get_master_plot()
         if not master:
             return
@@ -1109,45 +1113,43 @@ class EchogramCore:
 
         ymin_global, ymax_global = np.inf, -np.inf
         for slot in self._get_visible_slots():
-            if slot.plot_item is None:
+            eg = slot.get_echogram()
+            if eg is None or not hasattr(eg, '_coord_system'):
                 continue
-            # Use the best available image data for this slot
-            img_data = slot.high_res_image if slot.high_res_image is not None else slot.background_image
-            img_extent = slot.high_res_extent if slot.high_res_image is not None else slot.background_extent
-            if img_data is None or img_extent is None:
-                continue
+            cs = eg._coord_system
 
-            x0, x1, y0, y1 = self._numeric_extent(img_extent)
-            rows, cols = img_data.shape[:2]
-            if rows == 0 or cols == 0:
+            if not hasattr(cs, 'vec_min_y') or cs.vec_min_y is None:
                 continue
 
-            # Map x view range to column indices
-            col_start = max(0, int((x_range[0] - x0) / (x1 - x0) * cols)) if x1 != x0 else 0
-            col_end = min(cols, int(np.ceil((x_range[1] - x0) / (x1 - x0) * cols))) if x1 != x0 else cols
-            if col_start >= col_end:
+            # Convert x view boundaries to ping indices
+            fm = cs.feature_mapper
+            x_axis = cs.x_axis_name
+            if x_axis == "Date time":
+                # View range is in matplotlib day-numbers; convert to
+                # unix-epoch seconds which is what the feature mapper uses.
+                x_lo_feat = x_range[0] * 86400.0
+                x_hi_feat = x_range[1] * 86400.0
+            else:
+                x_lo_feat = x_range[0]
+                x_hi_feat = x_range[1]
+
+            idx_lo = int(fm.feature_to_index(x_axis, float(x_lo_feat)))
+            idx_hi = int(fm.feature_to_index(x_axis, float(x_hi_feat)))
+            if idx_lo > idx_hi:
+                idx_lo, idx_hi = idx_hi, idx_lo
+            idx_hi = min(idx_hi + 1, len(cs.vec_min_y))
+            if idx_lo >= idx_hi:
                 continue
 
-            sub = img_data[col_start:col_end, :]
-            finite = sub[np.isfinite(sub)]
-            if finite.size == 0:
+            slice_min = cs.vec_min_y[idx_lo:idx_hi]
+            slice_max = cs.vec_max_y[idx_lo:idx_hi]
+            finite_min = slice_min[np.isfinite(slice_min)]
+            finite_max = slice_max[np.isfinite(slice_max)]
+            if finite_min.size == 0 or finite_max.size == 0:
                 continue
 
-            # Find the row range that contains data
-            row_has_data = np.any(np.isfinite(sub), axis=0)
-            rows_with_data = np.where(row_has_data)[0]
-            if len(rows_with_data) == 0:
-                continue
-
-            first_row = rows_with_data[0]
-            last_row = rows_with_data[-1]
-
-            # Map row indices back to y coordinates
-            y_lo = y0 + (first_row / max(sub.shape[1] - 1, 1)) * (y1 - y0)
-            y_hi = y0 + (last_row / max(sub.shape[1] - 1, 1)) * (y1 - y0)
-
-            ymin_global = min(ymin_global, y_lo, y_hi)
-            ymax_global = max(ymax_global, y_lo, y_hi)
+            ymin_global = min(ymin_global, float(np.nanmin(finite_min)))
+            ymax_global = max(ymax_global, float(np.nanmax(finite_max)))
 
         if not np.isfinite(ymin_global) or not np.isfinite(ymax_global):
             return
