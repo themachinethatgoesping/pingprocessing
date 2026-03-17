@@ -29,6 +29,7 @@ from .control_spec import (
     MAP_NAV_SPECS,
     MAP_MISC_SPECS,
     MAP_COLORBAR_SPECS,
+    MAP_MEASURE_SPECS,
     MAP_COLORMAPS,
     MAP_TAB_LAYOUT,
     DropdownSpec,
@@ -91,6 +92,7 @@ class MapViewerQt(QtWidgets.QMainWindow):
             MAP_NAV_SPECS,
             MAP_MISC_SPECS,
             MAP_COLORBAR_SPECS,
+            MAP_MEASURE_SPECS,
         )
 
         # Graphics widget (native Qt, not jupyter_rfb)
@@ -439,7 +441,7 @@ class MapViewerQt(QtWidgets.QMainWindow):
         for name in ["btn_zoom_fit", "btn_zoom_track", "btn_zoom_wci", "btn_refresh_tracks"]:
             if name in self.panel:
                 nav_row.addWidget(self.panel[name].widget)
-        for name in ["auto_update", "auto_center_wci"]:
+        for name in ["auto_update", "auto_center_wci", "scale_bar"]:
             if name in self.panel:
                 nav_row.addWidget(self.panel[name].widget)
         nav_row.addStretch()
@@ -485,12 +487,38 @@ class MapViewerQt(QtWidgets.QMainWindow):
         if "lbl_coords" in self.panel:
             d_coords.addWidget(self.panel["lbl_coords"].widget)
 
+        # -- Measurement dock --
+        d_measure = Dock("Measure", size=(300, 60))
+        measure_widget = QtWidgets.QWidget()
+        measure_vlayout = QtWidgets.QVBoxLayout(measure_widget)
+        measure_vlayout.setContentsMargins(4, 2, 4, 2)
+
+        measure_row1 = QtWidgets.QHBoxLayout()
+        if "measure_tool" in self.panel:
+            measure_row1.addWidget(self.panel["measure_tool"].widget)
+        if "measure_unit" in self.panel:
+            measure_row1.addWidget(self.panel["measure_unit"].widget)
+        measure_row1.addStretch()
+        measure_vlayout.addLayout(measure_row1)
+
+        measure_row2 = QtWidgets.QHBoxLayout()
+        for name in ["btn_measure_undo", "btn_measure_clear"]:
+            if name in self.panel:
+                measure_row2.addWidget(self.panel[name].widget)
+        if "lbl_measure" in self.panel:
+            measure_row2.addWidget(self.panel["lbl_measure"].widget)
+        measure_row2.addStretch()
+        measure_vlayout.addLayout(measure_row2)
+
+        d_measure.addWidget(measure_widget)
+
         # -- Assemble --
         area.addDock(d_graphics, "top")
         area.addDock(d_controls, "bottom", d_graphics)
         area.addDock(d_coords, "bottom", d_controls)
         area.addDock(d_layers, "right")
-        area.addDock(d_tracks, "bottom", d_layers)
+        area.addDock(d_measure, "bottom", d_layers)
+        area.addDock(d_tracks, "bottom", d_measure)
 
         self._dock_area = area
 
@@ -509,7 +537,7 @@ class MapViewerQt(QtWidgets.QMainWindow):
         for n in ("btn_zoom_fit", "btn_zoom_track", "btn_zoom_wci", "btn_refresh_tracks"):
             if n in self.panel:
                 nav_row.addWidget(self.panel[n].widget)
-        for n in ("auto_update", "auto_center_wci"):
+        for n in ("auto_update", "auto_center_wci", "scale_bar"):
             if n in self.panel:
                 nav_row.addWidget(self.panel[n].widget)
         nav_row.addStretch()
@@ -518,6 +546,16 @@ class MapViewerQt(QtWidgets.QMainWindow):
         # Colorbar
         if "colorbar_layer" in self.panel:
             layout.addWidget(self.panel["colorbar_layer"].widget)
+
+        # Measurement
+        measure_row = QtWidgets.QHBoxLayout()
+        for n in ("measure_tool", "measure_unit", "btn_measure_undo", "btn_measure_clear"):
+            if n in self.panel:
+                measure_row.addWidget(self.panel[n].widget)
+        if "lbl_measure" in self.panel:
+            measure_row.addWidget(self.panel["lbl_measure"].widget)
+        measure_row.addStretch()
+        layout.addLayout(measure_row)
 
         # Tile controls
         if self._tile_visible_cb is not None:

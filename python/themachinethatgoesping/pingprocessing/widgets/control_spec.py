@@ -430,6 +430,19 @@ MAP_NAV_SPECS: List[ControlSpecType] = [
 # -- Misc / hover --
 MAP_MISC_SPECS: List[ControlSpecType] = [
     LabelSpec("lbl_coords", "Lat: --, Lon: --", width="300px"),
+    CheckboxSpec("scale_bar", "Scale bar", value=True),
+]
+
+# -- Measurement tool --
+MAP_MEASURE_SPECS: List[ControlSpecType] = [
+    CheckboxSpec("measure_tool", "Measure (left-click)", value=False,
+                 tooltip="Left-click on the map to place measurement points"),
+    DropdownSpec("measure_unit", "Unit:",
+                 options=[("m", "m"), ("km", "km"), ("Nautical miles", "nm")],
+                 value="m", width="140px"),
+    ButtonSpec("btn_measure_clear", "Clear", tooltip="Remove all measurement points", width="60px"),
+    ButtonSpec("btn_measure_undo", "Undo", tooltip="Remove last measurement point", width="60px"),
+    LabelSpec("lbl_measure", "", width="250px"),
 ]
 
 # -- Colorbar controls --

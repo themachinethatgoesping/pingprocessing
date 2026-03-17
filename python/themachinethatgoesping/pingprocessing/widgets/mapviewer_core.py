@@ -7,6 +7,7 @@ controls and wire up display / async loading.
 """
 from __future__ import annotations
 
+import math
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -29,6 +30,48 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres between two (lat, lon) points."""
+    R = 6_371_000.0  # Earth radius in metres
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _format_distance(metres: float, unit: str = "m") -> str:
+    """Format *metres* into the requested display *unit*."""
+    if unit == "nm":
+        value = metres / 1852.0
+        if value < 0.01:
+            return f"{value:.4f} nm"
+        if value < 1:
+            return f"{value:.2f} nm"
+        return f"{value:.1f} nm"
+    if unit == "km":
+        value = metres / 1000.0
+        if value < 0.01:
+            return f"{metres:.0f} m"
+        if value < 10:
+            return f"{value:.2f} km"
+        return f"{value:.1f} km"
+    # metres
+    if metres < 1:
+        return f"{metres:.2f} m"
+    if metres < 1000:
+        return f"{metres:.0f} m"
+    return f"{metres / 1000:.2f} km"
+
+
+# "Nice" distances for the scale bar (metres)
+_NICE_DISTANCES = [
+    1, 2, 5, 10, 20, 50, 100, 200, 500,
+    1_000, 2_000, 5_000, 10_000, 20_000, 50_000,
+    100_000, 200_000, 500_000, 1_000_000, 2_000_000,
+]
 
 def _get_colormap_lut(name: str, n_colors: int = 256) -> np.ndarray:
     """Get a colormap LUT (Look-Up Table) for pyqtgraph."""
@@ -168,6 +211,23 @@ class MapCore:
         # Tile cache key (for avoiding redundant loads)
         self._tile_cache_key: Optional[Tuple] = None
 
+        # Scale bar
+        self._scale_bar_visible: bool = True
+        self._scale_bar_line: Optional[pg.PlotCurveItem] = None
+        self._scale_bar_text: Optional[pg.TextItem] = None
+        self._scale_bar_bg: Optional[pg.QtWidgets.QGraphicsRectItem] = None
+
+        # Measurement tool
+        self._measure_active: bool = False
+        self._measure_unit: str = "m"  # "m", "km", "nm"
+        self._measure_points: List[Tuple[float, float]] = []  # (lon, lat) pairs
+        self._measure_plots: List[Any] = []
+        self._measure_markers: Optional[pg.ScatterPlotItem] = None
+        self._measure_labels: List[pg.TextItem] = []
+        self._measure_total_label: Optional[pg.TextItem] = None
+        self._ctx_measure_action: Optional[Any] = None
+        self._ctx_unit_actions: Dict[str, Any] = {}
+
         # Adapter callbacks (set by the adapter)
         self._schedule_update: Optional[Callable] = None
         self._request_draw: Optional[Callable] = None
@@ -227,7 +287,14 @@ class MapCore:
 
         # Connect mouse move for coordinate display
         self._plot.scene().sigMouseMoved.connect(self._on_mouse_move)
+        self._plot.scene().sigMouseClicked.connect(self._on_mouse_click)
         self._plot.sigRangeChanged.connect(self._on_view_changed)
+
+        # Build scale bar overlay
+        self._build_scale_bar()
+
+        # Add measurement entries to the ViewBox right-click context menu
+        self._build_measure_context_menu()
 
     # =====================================================================
     # Colorbar
@@ -1253,6 +1320,317 @@ class MapCore:
         except Exception:
             pass
 
+    def _on_mouse_click(self, ev) -> None:
+        """Handle mouse clicks — left-click places measurement points."""
+        try:
+            btn = ev.button()
+        except Exception:
+            return
+
+        if btn == QtCore.Qt.MouseButton.LeftButton and self._measure_active:
+            pos = ev.scenePos()
+            mouse_point = self._plot.vb.mapSceneToView(pos)
+            lon, lat = mouse_point.x(), mouse_point.y()
+            self._measure_points.append((lon, lat))
+            self._update_measurement_overlay()
+            ev.accept()
+            return
+
+        if btn == QtCore.Qt.MouseButton.LeftButton:
+            try:
+                pos = ev.scenePos()
+                mouse_point = self._plot.vb.mapSceneToView(pos)
+                lon, lat = mouse_point.x(), mouse_point.y()
+                for cb in self._click_callbacks:
+                    cb(lat, lon)
+            except Exception:
+                pass
+
+    # =====================================================================
+    # Scale bar
+    # =====================================================================
+
+    def _build_scale_bar(self) -> None:
+        """Create the scale bar graphics items."""
+        self._scale_bar_line = pg.PlotCurveItem(
+            pen=pg.mkPen(color="k", width=3),
+        )
+        self._scale_bar_line.setZValue(1000)
+        self._plot.addItem(self._scale_bar_line)
+
+        self._scale_bar_text = pg.TextItem(
+            "", anchor=(0.5, 1), color="k",
+        )
+        self._scale_bar_text.setZValue(1001)
+        self._plot.addItem(self._scale_bar_text)
+
+        # End ticks stored as separate items so they render cleanly
+        self._scale_bar_tick_left = pg.PlotCurveItem(
+            pen=pg.mkPen(color="k", width=2),
+        )
+        self._scale_bar_tick_left.setZValue(1000)
+        self._plot.addItem(self._scale_bar_tick_left)
+        self._scale_bar_tick_right = pg.PlotCurveItem(
+            pen=pg.mkPen(color="k", width=2),
+        )
+        self._scale_bar_tick_right.setZValue(1000)
+        self._plot.addItem(self._scale_bar_tick_right)
+
+        self._set_scale_bar_items_visible(self._scale_bar_visible)
+
+    def _set_scale_bar_items_visible(self, visible: bool) -> None:
+        for item in (self._scale_bar_line, self._scale_bar_text,
+                     self._scale_bar_tick_left, self._scale_bar_tick_right):
+            if item is not None:
+                item.setVisible(visible)
+
+    def set_scale_bar_visible(self, visible: bool) -> None:
+        self._scale_bar_visible = visible
+        self._set_scale_bar_items_visible(visible)
+        if visible:
+            self._update_scale_bar()
+
+    def _update_scale_bar(self) -> None:
+        """Recompute and reposition the scale bar for the current view."""
+        if not self._scale_bar_visible or self._scale_bar_line is None:
+            return
+
+        vb = self._plot.getViewBox()
+        view_range = vb.viewRange()
+        lon_min, lon_max = view_range[0]
+        lat_min, lat_max = view_range[1]
+        if lon_max <= lon_min or lat_max <= lat_min:
+            return
+
+        center_lat = (lat_min + lat_max) / 2.0
+        view_width_m = _haversine_distance(
+            center_lat, lon_min, center_lat, lon_max,
+        )
+
+        # Pick a nice bar length ≈ 15–25 % of the view width
+        target_m = view_width_m * 0.2
+        bar_m = _NICE_DISTANCES[0]
+        for d in _NICE_DISTANCES:
+            if d <= target_m:
+                bar_m = d
+            else:
+                break
+
+        # Convert bar_m back to degrees of longitude at center_lat
+        cos_lat = math.cos(math.radians(center_lat))
+        if cos_lat < 1e-8:
+            return
+        bar_deg = bar_m / (111_320.0 * cos_lat)
+
+        # Position: bottom-left corner with some margin
+        margin_x = (lon_max - lon_min) * 0.05
+        margin_y = (lat_max - lat_min) * 0.06
+        x0 = lon_min + margin_x
+        x1 = x0 + bar_deg
+        y0 = lat_min + margin_y
+
+        # Tick height in data coords (small fraction of view)
+        tick_h = (lat_max - lat_min) * 0.012
+
+        self._scale_bar_line.setData([x0, x1], [y0, y0])
+        self._scale_bar_tick_left.setData([x0, x0], [y0 - tick_h, y0 + tick_h])
+        self._scale_bar_tick_right.setData([x1, x1], [y0 - tick_h, y0 + tick_h])
+
+        label = _format_distance(bar_m, "m")
+        self._scale_bar_text.setText(label)
+        self._scale_bar_text.setPos((x0 + x1) / 2, y0 + tick_h * 1.5)
+
+    # =====================================================================
+    # Context menu (right-click) – measurement entries
+    # =====================================================================
+
+    def _build_measure_context_menu(self) -> None:
+        """Add measurement tool actions to the ViewBox right-click menu."""
+        try:
+            from pyqtgraph.Qt import QtWidgets as _QtW
+            # QAction lives in QtGui (Qt6) or QtWidgets (Qt5)
+            try:
+                from pyqtgraph.Qt.QtGui import QAction, QActionGroup
+            except ImportError:
+                from pyqtgraph.Qt.QtWidgets import QAction, QActionGroup
+        except Exception:
+            return
+
+        vb = self._plot.getViewBox()
+        menu = vb.menu
+        if menu is None:
+            return
+
+        menu.addSeparator()
+
+        # ── Toggle measure ──
+        self._ctx_measure_action = QAction("Distance measurement", menu)
+        self._ctx_measure_action.setCheckable(True)
+        self._ctx_measure_action.setChecked(self._measure_active)
+        self._ctx_measure_action.toggled.connect(self.set_measure_active)
+        menu.addAction(self._ctx_measure_action)
+
+        # ── Unit sub-menu ──
+        unit_menu = menu.addMenu("Measure unit")
+        unit_group = QActionGroup(unit_menu)
+        unit_group.setExclusive(True)
+        for label, key in [("Metres", "m"), ("Kilometres", "km"),
+                           ("Nautical miles", "nm")]:
+            act = QAction(label, unit_menu)
+            act.setCheckable(True)
+            act.setChecked(key == self._measure_unit)
+            act.triggered.connect(
+                lambda _checked, k=key: self.set_measure_unit(k))
+            unit_group.addAction(act)
+            unit_menu.addAction(act)
+        self._ctx_unit_actions = {a.text(): a for a in unit_group.actions()}
+
+        # ── Undo / Clear ──
+        undo_action = QAction("Undo last point", menu)
+        undo_action.triggered.connect(lambda: self._measure_undo())
+        menu.addAction(undo_action)
+
+        clear_action = QAction("Clear measurement", menu)
+        clear_action.triggered.connect(lambda: self.clear_measurement())
+        menu.addAction(clear_action)
+
+    # =====================================================================
+    # Measurement tool
+    # =====================================================================
+
+    def set_measure_active(self, active: bool) -> None:
+        """Enable or disable the measurement tool (left-click to place)."""
+        self._measure_active = active
+        # Sync the context-menu checkable action
+        if hasattr(self, '_ctx_measure_action') and self._ctx_measure_action is not None:
+            if self._ctx_measure_action.isChecked() != active:
+                self._ctx_measure_action.setChecked(active)
+        # Sync the control-panel checkbox
+        if self._panel and "measure_tool" in self._panel:
+            if self._panel["measure_tool"].value != active:
+                self._panel["measure_tool"].value = active
+        if not active:
+            self.clear_measurement()
+
+    def set_measure_unit(self, unit: str) -> None:
+        """Set the measurement display unit ('m', 'km', or 'nm')."""
+        if unit not in ("m", "km", "nm"):
+            return
+        self._measure_unit = unit
+        # Sync context-menu radio buttons
+        _label_map = {"m": "Metres", "km": "Kilometres", "nm": "Nautical miles"}
+        if hasattr(self, '_ctx_unit_actions'):
+            lbl = _label_map.get(unit)
+            if lbl and lbl in self._ctx_unit_actions:
+                act = self._ctx_unit_actions[lbl]
+                if not act.isChecked():
+                    act.setChecked(True)
+        # Sync control-panel dropdown
+        if self._panel and "measure_unit" in self._panel:
+            if self._panel["measure_unit"].value != unit:
+                self._panel["measure_unit"].value = unit
+        if self._measure_points:
+            self._update_measurement_overlay()
+
+    def clear_measurement(self) -> None:
+        """Remove all measurement points and overlays."""
+        self._measure_points.clear()
+        self._remove_measurement_overlay()
+
+    def _measure_undo(self) -> None:
+        """Remove the last measurement point."""
+        if self._measure_points:
+            self._measure_points.pop()
+            if self._measure_points:
+                self._update_measurement_overlay()
+            else:
+                self._remove_measurement_overlay()
+
+    def _remove_measurement_overlay(self) -> None:
+        """Remove all measurement graphics items from the plot."""
+        for item in self._measure_plots:
+            self._plot.removeItem(item)
+        self._measure_plots.clear()
+        if self._measure_markers is not None:
+            self._plot.removeItem(self._measure_markers)
+            self._measure_markers = None
+        for lbl in self._measure_labels:
+            self._plot.removeItem(lbl)
+        self._measure_labels.clear()
+        if self._measure_total_label is not None:
+            self._plot.removeItem(self._measure_total_label)
+            self._measure_total_label = None
+        if self._panel and "lbl_measure" in self._panel:
+            self._panel["lbl_measure"].value = ""
+
+    def _update_measurement_overlay(self) -> None:
+        """Redraw measurement lines, markers, and distance labels."""
+        self._remove_measurement_overlay()
+        pts = self._measure_points
+        if not pts:
+            return
+
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+
+        # Markers at each point
+        self._measure_markers = pg.ScatterPlotItem(
+            x=xs, y=ys, size=10,
+            pen=pg.mkPen("r", width=2),
+            brush=pg.mkBrush(255, 0, 0, 120),
+            symbol="o",
+        )
+        self._measure_markers.setZValue(2000)
+        self._plot.addItem(self._measure_markers)
+
+        total_m = 0.0
+        for i in range(1, len(pts)):
+            lon1, lat1 = pts[i - 1]
+            lon2, lat2 = pts[i]
+            seg_m = _haversine_distance(lat1, lon1, lat2, lon2)
+            total_m += seg_m
+
+            # Segment line
+            line = pg.PlotCurveItem(
+                [lon1, lon2], [lat1, lat2],
+                pen=pg.mkPen(color="r", width=2, style=QtCore.Qt.PenStyle.DashLine),
+            )
+            line.setZValue(1999)
+            self._plot.addItem(line)
+            self._measure_plots.append(line)
+
+            # Segment label at midpoint
+            mx = (lon1 + lon2) / 2
+            my = (lat1 + lat2) / 2
+            lbl = pg.TextItem(
+                _format_distance(seg_m, self._measure_unit),
+                anchor=(0.5, 1), color="r",
+            )
+            lbl.setZValue(2001)
+            lbl.setPos(mx, my)
+            self._plot.addItem(lbl)
+            self._measure_labels.append(lbl)
+
+        # Total distance label at last point
+        if len(pts) > 1:
+            total_text = f"Total: {_format_distance(total_m, self._measure_unit)}"
+            self._measure_total_label = pg.TextItem(
+                total_text, anchor=(0, 0), color=(180, 0, 0),
+            )
+            self._measure_total_label.setZValue(2001)
+            self._measure_total_label.setPos(xs[-1], ys[-1])
+            self._plot.addItem(self._measure_total_label)
+
+        # Update info panel
+        if self._panel and "lbl_measure" in self._panel:
+            if len(pts) == 1:
+                self._panel["lbl_measure"].value = "Click to add next point"
+            else:
+                self._panel["lbl_measure"].value = (
+                    f"Total: {_format_distance(total_m, self._measure_unit)} "
+                    f"({len(pts)} points)"
+                )
+
     def _on_view_changed(self) -> None:
         if self._ignore_range_changes:
             return
@@ -1269,6 +1647,8 @@ class MapCore:
             xmin=view_range[0][0], xmax=view_range[0][1],
             ymin=view_range[1][0], ymax=view_range[1][1],
         )
+
+        self._update_scale_bar()
 
         for callback in self._view_change_callbacks:
             try:
@@ -1471,6 +1851,16 @@ class MapCore:
             p["auto_update"].on_change(self._on_auto_update_toggle)
         if "colorbar_layer" in p:
             p["colorbar_layer"].on_change(self._on_colorbar_layer_panel_change)
+        if "scale_bar" in p:
+            p["scale_bar"].on_change(lambda v: self.set_scale_bar_visible(v))
+        if "measure_tool" in p:
+            p["measure_tool"].on_change(lambda v: self.set_measure_active(v))
+        if "measure_unit" in p:
+            p["measure_unit"].on_change(lambda v: self.set_measure_unit(v))
+        if "btn_measure_clear" in p:
+            p["btn_measure_clear"].on_click(lambda _=None: self.clear_measurement())
+        if "btn_measure_undo" in p:
+            p["btn_measure_undo"].on_click(lambda _=None: self._measure_undo())
 
     def _on_auto_update_toggle(self, value) -> None:
         # Adapter will handle actual enable/disable
