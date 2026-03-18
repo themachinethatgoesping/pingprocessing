@@ -117,6 +117,7 @@ class WCISlot:
         self.wci_image: Optional[np.ndarray] = None
         self.wci_extent: Optional[Tuple[float, float, float, float]] = None
         self._image_cache: Dict[int, Dict[str, Any]] = {}
+        self._cached_timestamps: Optional[np.ndarray] = None
 
         self.imagebuilder: Optional[mi.ImageBuilder] = None
 
@@ -131,6 +132,7 @@ class WCISlot:
             self.wci_image = None
             self.wci_extent = None
             self._image_cache.clear()
+            self._cached_timestamps = None
 
             if channel_key is not None:
                 pings = self._channels.get(channel_key)
@@ -140,10 +142,25 @@ class WCISlot:
                         horizontal_pixels=self._args_imagebuilder["horizontal_pixels"],
                         progress=self._progress,
                     )
+                    self._build_timestamp_cache(pings)
                 else:
                     self.imagebuilder = None
             else:
                 self.imagebuilder = None
+
+    def _build_timestamp_cache(self, pings: Sequence[Any]) -> None:
+        """Extract timestamps from all pings into a numpy array."""
+        n = len(pings)
+        ts = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            ping = pings[i]
+            if isinstance(ping, dict):
+                ping = next(iter(ping.values()))
+            try:
+                ts[i] = ping.get_timestamp()
+            except Exception:
+                ts[i] = np.nan
+        self._cached_timestamps = ts
 
     def get_pings(self) -> Optional[Sequence[Any]]:
         if self.channel_key is None:
@@ -172,6 +189,20 @@ class WCISlot:
             return None
 
     def find_closest_ping_index(self, target_timestamp: float) -> int:
+        if self._cached_timestamps is not None and len(self._cached_timestamps) > 0:
+            idx = int(np.searchsorted(self._cached_timestamps,
+                                      target_timestamp, side='left'))
+            n = len(self._cached_timestamps)
+            if idx >= n:
+                return n - 1
+            if idx == 0:
+                return 0
+            # Pick whichever neighbour is closer
+            if (abs(self._cached_timestamps[idx - 1] - target_timestamp)
+                    <= abs(self._cached_timestamps[idx] - target_timestamp)):
+                return idx - 1
+            return idx
+        # Fallback when cache isn't built
         pings = self.get_pings()
         if pings is None or len(pings) == 0:
             return 0

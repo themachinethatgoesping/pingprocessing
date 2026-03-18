@@ -11,6 +11,8 @@ import time as time_module
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from tqdm.auto import tqdm
+
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
@@ -472,6 +474,15 @@ class EchogramCore:
 
         # Pingviewer
         self.pingviewer = None
+        self._ping_timestamps: Optional[np.ndarray] = None
+
+        # Drag-throttle state for pingline dragging
+        self._drag_timer = QtCore.QTimer()
+        self._drag_timer.setSingleShot(True)
+        self._drag_timer.setInterval(50)
+        self._drag_timer.timeout.connect(self._on_drag_timer_fired)
+        self._drag_coord: Optional[float] = None
+        self._drag_updating = False
 
         # Station data
         self._station_data_list: List[Dict[str, Any]] = []
@@ -2030,10 +2041,12 @@ class EchogramCore:
     # Pingviewer integration
     # =====================================================================
 
-    def connect_pingviewer(self, pingviewer: Any) -> None:
+    def connect_pingviewer(self, pingviewer: Any,
+                           progress: bool = False) -> None:
         if self.pingviewer is not None:
             self.disconnect_pingviewer()
         self.pingviewer = pingviewer
+        self._build_ping_index(progress=progress)
         self._update_ping_lines()
         if hasattr(pingviewer, 'register_ping_change_callback'):
             pingviewer.register_ping_change_callback(self._update_ping_lines)
@@ -2043,9 +2056,29 @@ class EchogramCore:
             if hasattr(self.pingviewer, 'unregister_ping_change_callback'):
                 self.pingviewer.unregister_ping_change_callback(self._update_ping_lines)
         self.pingviewer = None
+        self._ping_timestamps = None
         for slot in self.slots:
             if slot.pingline:
                 slot.pingline.hide()
+
+    def _build_ping_index(self, progress: bool = False) -> None:
+        """Pre-extract ping timestamps into a sorted numpy array.
+
+        Converts once to avoid per-click Python/nanobind overhead.
+        """
+        pings = self._get_pingviewer_pings()
+        if pings is None or len(pings) == 0:
+            self._ping_timestamps = None
+            return
+        n = len(pings)
+        timestamps = np.empty(n, dtype=np.float64)
+        for i in tqdm(range(n), desc="Building ping index",
+                      disable=not progress):
+            ping = pings[i]
+            if isinstance(ping, dict):
+                ping = next(iter(ping.values()))
+            timestamps[i] = ping.get_timestamp()
+        self._ping_timestamps = timestamps
 
     def update_ping_lines(self) -> None:
         self._update_ping_lines()
@@ -2072,39 +2105,44 @@ class EchogramCore:
             return 0
         return self.pingviewer.w_index.value
 
-    def _update_pingviewer_from_coordinate(self, coord: float) -> None:
-        if self.pingviewer is None:
-            return
+    def _coord_to_ping_index(self, coord: float) -> Optional[int]:
+        """Convert an x-axis coordinate to a ping index (O(log n))."""
         pings = self._get_pingviewer_pings()
-        if pings is None:
-            return
+        if pings is None or len(pings) == 0:
+            return None
+        n = len(pings)
         match self.x_axis_name:
             case "Ping number" | "Ping index":
-                new_idx = int(max(0, min(coord, len(pings) - 1)))
-                self._set_pingviewer_index(new_idx)
+                return int(max(0, min(coord, n - 1)))
             case "Date time":
+                if self._ping_timestamps is None:
+                    return None
                 target = self._mpl_num_to_datetime(coord).timestamp()
-                for idx, ping in enumerate(pings):
-                    ping_obj = ping if not isinstance(ping, dict) else next(iter(ping.values()))
-                    if ping_obj.get_datetime().timestamp() > target:
-                        self._set_pingviewer_index(max(0, idx - 1))
-                        return
-                self._set_pingviewer_index(len(pings) - 1)
+                idx = int(np.searchsorted(self._ping_timestamps, target,
+                                          side='right')) - 1
+                return max(0, min(idx, n - 1))
             case "Ping time":
-                for idx, ping in enumerate(pings):
-                    ping_obj = ping if not isinstance(ping, dict) else next(iter(ping.values()))
-                    if ping_obj.get_timestamp() > coord:
-                        self._set_pingviewer_index(max(0, idx - 1))
-                        return
-                self._set_pingviewer_index(len(pings) - 1)
+                if self._ping_timestamps is None:
+                    return None
+                idx = int(np.searchsorted(self._ping_timestamps, coord,
+                                          side='right')) - 1
+                return max(0, min(idx, n - 1))
             case _:
                 first_eg = next(iter(self.echograms.values()), None)
                 if first_eg is not None and hasattr(first_eg, '_coord_system'):
                     cs = first_eg._coord_system
                     if cs._custom_x_per_ping is not None:
-                        idx = int(np.searchsorted(cs._custom_x_per_ping, coord))
-                        idx = max(0, min(idx, len(pings) - 1))
-                        self._set_pingviewer_index(idx)
+                        idx = int(np.searchsorted(cs._custom_x_per_ping,
+                                                  coord))
+                        return max(0, min(idx, n - 1))
+        return None
+
+    def _update_pingviewer_from_coordinate(self, coord: float) -> None:
+        if self.pingviewer is None:
+            return
+        idx = self._coord_to_ping_index(coord)
+        if idx is not None:
+            self._set_pingviewer_index(idx)
 
     def _set_pingviewer_index(self, idx: int) -> None:
         if self.pingviewer is None:
@@ -2145,11 +2183,14 @@ class EchogramCore:
                 continue
             if slot.pingline is None:
                 line = pg.InfiniteLine(
-                    angle=90, pen=pg.mkPen(
+                    angle=90, movable=True, pen=pg.mkPen(
                         color='k', style=QtCore.Qt.PenStyle.DashLine))
+                line.sigPositionChanged.connect(self._on_pingline_dragged)
                 slot.plot_item.addItem(line)
                 slot.pingline = line
+            slot.pingline.blockSignals(True)
             slot.pingline.setValue(value)
+            slot.pingline.blockSignals(False)
             slot.pingline.show()
         if self.panel["auto_follow"].value:
             self._auto_follow_pingline(value)
@@ -2182,6 +2223,45 @@ class EchogramCore:
             self._ignore_range_changes = False
         if self._auto_update_enabled:
             self._schedule_update()
+
+    # =====================================================================
+    # Pingline drag handling (throttled)
+    # =====================================================================
+
+    def _on_pingline_dragged(self, line: pg.InfiniteLine) -> None:
+        """Called on every sigPositionChanged during a drag.
+
+        Immediately syncs the other slots' pinglines (cheap) and
+        schedules a throttled WCI update so the image rebuild doesn't
+        block every pixel of the drag.
+        """
+        coord = line.value()
+        # Sync all other pinglines instantly (visual only, cheap)
+        for slot in self._get_visible_slots():
+            pl = slot.pingline
+            if pl is not None and pl is not line:
+                pl.blockSignals(True)
+                pl.setValue(coord)
+                pl.blockSignals(False)
+        # Store latest coord and (re)start the timer
+        self._drag_coord = coord
+        if not self._drag_updating:
+            self._drag_timer.start()
+
+    def _on_drag_timer_fired(self) -> None:
+        """Dispatch the most recent drag coordinate to the pingviewer."""
+        coord = self._drag_coord
+        if coord is None or self.pingviewer is None:
+            return
+        self._drag_updating = True
+        try:
+            self._update_pingviewer_from_coordinate(coord)
+        finally:
+            self._drag_updating = False
+        # If new drag events arrived during the (synchronous) WCI build,
+        # schedule one more update so the final position is honoured.
+        if self._drag_coord is not None and self._drag_coord != coord:
+            self._drag_timer.start()
 
     def goto_pingline(self) -> None:
         """Center the view on the current pingline position."""

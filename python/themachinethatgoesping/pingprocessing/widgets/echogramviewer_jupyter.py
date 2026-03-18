@@ -516,8 +516,8 @@ class EchogramViewerJupyter:
     def pan_view(self, direction: str, fraction: float = 0.25) -> None:
         self.core.pan_view(direction, fraction)
 
-    def connect_pingviewer(self, pingviewer: Any) -> None:
-        self.core.connect_pingviewer(pingviewer)
+    def connect_pingviewer(self, pingviewer: Any, **kwargs) -> None:
+        self.core.connect_pingviewer(pingviewer, **kwargs)
 
     def disconnect_pingviewer(self) -> None:
         self.core.disconnect_pingviewer()
