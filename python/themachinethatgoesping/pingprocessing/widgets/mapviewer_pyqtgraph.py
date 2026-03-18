@@ -278,6 +278,7 @@ class MapViewerPyQtGraph:
         # Connected viewers
         self._echogram_viewer = None
         self._wci_viewer = None
+        self._wci_track_index: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
         
         # Throttle WCI ping-change callback
         self._wci_ping_dirty: bool = False
@@ -348,6 +349,7 @@ class MapViewerPyQtGraph:
         
         # Connect signals
         self._plot.scene().sigMouseMoved.connect(self._on_mouse_move)
+        self._plot.scene().sigMouseClicked.connect(self._on_mouse_click)
         self._plot.sigRangeChanged.connect(self._on_view_changed)
         
         # Set up auto-update hook (like EchogramViewer)
@@ -1573,6 +1575,22 @@ class MapViewerPyQtGraph:
                 
         except Exception:
             pass
+
+    def _on_mouse_click(self, ev):
+        """Handle mouse clicks — fire click callbacks with (lat, lon)."""
+        try:
+            btn = ev.button()
+        except Exception:
+            return
+        if btn == QtCore.Qt.MouseButton.LeftButton:
+            try:
+                pos = ev.scenePos()
+                mouse_point = self._plot.vb.mapSceneToView(pos)
+                lon, lat = mouse_point.x(), mouse_point.y()
+                for cb in self._click_callbacks:
+                    cb(lat, lon)
+            except Exception:
+                pass
     
     def _on_view_changed(self):
         """Handle view range change (pan/zoom)."""
@@ -2492,6 +2510,7 @@ class MapViewerPyQtGraph:
         This will:
         - Add tracks for each channel (if echogram data is available)
         - Update ping position when the ping changes
+        - Enable click-on-track to select ping
         
         Args:
             wci_viewer: WCIViewerMultiChannel instance.
@@ -2500,6 +2519,7 @@ class MapViewerPyQtGraph:
         
         # Load tracks from WCI channels if they have echogram/navigation data
         self._load_tracks_from_wci_viewer()
+        self._build_wci_track_index()
         
         # Register ping change callback to update position marker
         if hasattr(wci_viewer, 'register_ping_change_callback'):
@@ -2507,6 +2527,9 @@ class MapViewerPyQtGraph:
         
         # Update position now to show current ping
         self._on_wci_ping_change()
+        
+        # Register click handler for ping selection
+        self.register_click_callback(self._on_map_click_select_ping)
     
     def _on_wci_ping_change(self):
         """Handle WCI ping change - update ping position marker (throttled)."""
@@ -2593,6 +2616,66 @@ class MapViewerPyQtGraph:
                 warnings.warn(f"Failed to extract track from WCI channel {name}: {e}")
         
         self._update_tracks()
+
+    def _build_wci_track_index(self) -> None:
+        """Precompute lat/lon arrays per WCI channel for fast click lookup."""
+        self._wci_track_index.clear()
+        if self._wci_viewer is None:
+            return
+        channels = getattr(self._wci_viewer, 'channels', {})
+        for name in channels:
+            track = self._tracks.get(str(name))
+            if track is not None and len(track.latitudes) > 0:
+                self._wci_track_index[str(name)] = (
+                    track.latitudes, track.longitudes)
+
+    def _on_map_click_select_ping(self, lat: float, lon: float) -> None:
+        """Find the nearest track point to the click and set the WCI ping."""
+        if self._wci_viewer is None or not self._wci_track_index:
+            return
+
+        best_dist = float('inf')
+        best_idx = None
+        best_channel = None
+
+        cos_lat = np.cos(np.radians(lat))
+        for channel_name, (lats, lons) in self._wci_track_index.items():
+            dlat = lats - lat
+            dlon = (lons - lon) * cos_lat
+            dists = dlat * dlat + dlon * dlon
+            idx = int(np.argmin(dists))
+            d = dists[idx]
+            if d < best_dist:
+                best_dist = d
+                best_idx = idx
+                best_channel = channel_name
+
+        if best_idx is None:
+            return
+
+        self._set_wci_ping_index(best_idx, best_channel)
+
+    def _set_wci_ping_index(self, idx: int, channel_name: Optional[str] = None) -> None:
+        """Set the ping index on the connected WCI viewer."""
+        wci = self._wci_viewer
+        if wci is None:
+            return
+        if hasattr(wci, 'ping_sliders'):
+            for i, slot in enumerate(wci.slots):
+                if slot.is_visible and (
+                        channel_name is None
+                        or str(slot.channel_key) == channel_name):
+                    wci.ping_sliders[i].value = idx
+                    return
+        elif hasattr(wci, '_ping_sliders'):
+            for i, slot in enumerate(wci.slots):
+                if slot.is_visible and (
+                        channel_name is None
+                        or str(slot.channel_key) == channel_name):
+                    wci._ping_sliders[i].setValue(idx)
+                    return
+        elif hasattr(wci, 'w_index'):
+            wci.w_index.value = idx
     
     def refresh_tracks(self):
         """Refresh tracks from connected viewers, preserving visibility state."""

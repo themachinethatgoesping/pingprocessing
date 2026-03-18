@@ -198,6 +198,7 @@ class MapCore:
         # Connected viewers
         self._echogram_viewer = None
         self._wci_viewer = None
+        self._wci_track_index: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
         # Callbacks
         self._click_callbacks: List[Callable] = []
@@ -1672,9 +1673,11 @@ class MapCore:
     def connect_wci_viewer(self, wci_viewer) -> None:
         self._wci_viewer = wci_viewer
         self._load_tracks_from_wci_viewer()
+        self._build_wci_track_index()
         if hasattr(wci_viewer, 'register_ping_change_callback'):
             wci_viewer.register_ping_change_callback(self._on_wci_ping_change)
         self._on_wci_ping_change()
+        self.register_click_callback(self._on_map_click_select_ping)
 
     def _on_wci_ping_change(self) -> None:
         if self._wci_viewer is None:
@@ -1791,6 +1794,69 @@ class MapCore:
             except Exception as e:
                 warnings.warn(f"Failed to extract track from WCI channel {name}: {e}")
         self._update_tracks()
+
+    def _build_wci_track_index(self) -> None:
+        """Precompute lat/lon arrays per WCI channel for fast click lookup."""
+        self._wci_track_index.clear()
+        if self._wci_viewer is None:
+            return
+        channels = getattr(self._wci_viewer, 'channels', {})
+        for name in channels:
+            track = self._tracks.get(str(name))
+            if track is not None and len(track.latitudes) > 0:
+                self._wci_track_index[str(name)] = (
+                    track.latitudes, track.longitudes)
+
+    def _on_map_click_select_ping(self, lat: float, lon: float) -> None:
+        """Find the nearest track point to the click and set the WCI ping."""
+        if self._wci_viewer is None or not self._wci_track_index:
+            return
+
+        best_dist = float('inf')
+        best_idx = None
+        best_channel = None
+
+        cos_lat = np.cos(np.radians(lat))
+        for channel_name, (lats, lons) in self._wci_track_index.items():
+            dlat = lats - lat
+            dlon = (lons - lon) * cos_lat
+            dists = dlat * dlat + dlon * dlon
+            idx = int(np.argmin(dists))
+            d = dists[idx]
+            if d < best_dist:
+                best_dist = d
+                best_idx = idx
+                best_channel = channel_name
+
+        if best_idx is None:
+            return
+
+        self._set_wci_ping_index(best_idx, best_channel)
+
+    def _set_wci_ping_index(self, idx: int, channel_name: Optional[str] = None) -> None:
+        """Set the ping index on the connected WCI viewer."""
+        wci = self._wci_viewer
+        if wci is None:
+            return
+        # Jupyter WCI viewer: public ping_sliders
+        if hasattr(wci, 'ping_sliders'):
+            for i, slot in enumerate(wci.slots):
+                if slot.is_visible and (
+                        channel_name is None
+                        or str(slot.channel_key) == channel_name):
+                    wci.ping_sliders[i].value = idx
+                    return
+        # Qt WCI viewer: private _ping_sliders
+        elif hasattr(wci, '_ping_sliders'):
+            for i, slot in enumerate(wci.slots):
+                if slot.is_visible and (
+                        channel_name is None
+                        or str(slot.channel_key) == channel_name):
+                    wci._ping_sliders[i].setValue(idx)
+                    return
+        # Single-channel viewer
+        elif hasattr(wci, 'w_index'):
+            wci.w_index.value = idx
 
     def refresh_tracks(self) -> None:
         visibility_state = {name: track.visible for name, track in self._tracks.items()}

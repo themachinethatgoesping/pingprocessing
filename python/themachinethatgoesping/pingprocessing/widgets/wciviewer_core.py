@@ -7,6 +7,7 @@ controls and wire up observers.
 """
 from __future__ import annotations
 
+import os
 import time as time_module
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -1205,11 +1206,14 @@ class WCICore:
                 found_slot = slot
                 data_pos = (point.x(), point.y())
                 value = self._sample_value(slot, point.x(), point.y())
+                filename = self._get_ping_filename(slot)
                 label = (
                     f"<b>Slot {slot.slot_idx + 1}</b> | "
                     f"<b>x</b>: {point.x():0.2f} | <b>y</b>: {point.y():0.2f} | "
                     f"<b>value</b>: {value:0.2f}" if value is not None else "--"
                 )
+                if filename:
+                    label += f" | <b>file</b>: {filename}"
                 self.panel["hover_label"].value = label
                 break
 
@@ -1280,6 +1284,15 @@ class WCICore:
             if slot.crosshair_h is not None:
                 slot.crosshair_h.setPos(depth)
                 slot.crosshair_h.show()
+
+    def _get_ping_filename(self, slot: WCISlot) -> Optional[str]:
+        ping = slot.get_ping()
+        if ping is None:
+            return None
+        try:
+            return os.path.split(ping.file_data.get_primary_file_path())[-1]
+        except Exception:
+            return None
 
     def _sample_value(self, slot: WCISlot, x: float, y: float) -> Optional[float]:
         ii = slot.image_item
