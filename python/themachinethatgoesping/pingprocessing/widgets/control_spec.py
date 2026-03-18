@@ -244,6 +244,7 @@ WCI_STACK_SPECS: List[ControlSpecType] = [
     IntTextSpec("stack_step", "step", value=1, width="140px"),
     IntTextSpec("mp_cores", "cores", value=1, width="140px"),
     CheckboxSpec("stack_linear", "linear stack", value=True),
+    IntTextSpec("max_cache_images", "cache", value=200, width="140px"),
 ]
 
 # -- Tab: Timing --
@@ -313,6 +314,7 @@ WCI_TAB_LAYOUT: Dict[str, List[List[str]]] = {
     ],
     "Stack": [
         ["stack", "stack_step", "mp_cores", "stack_linear"],
+        ["max_cache_images"],
     ],
     "Playback": [
         ["ping_step", "step_prev", "step_next"],

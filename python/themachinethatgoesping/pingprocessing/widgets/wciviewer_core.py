@@ -379,7 +379,7 @@ class WCICore:
         for name in (
             "stack", "stack_step", "mp_cores", "stack_linear",
             "wci_value", "wci_render", "horizontal_pixels",
-            "oversampling", "oversampling_mode",
+            "oversampling", "oversampling_mode", "max_cache_images",
         ):
             p[name].on_change(lambda _, n=name: self.on_global_param_change())
 
@@ -684,6 +684,7 @@ class WCICore:
         self.args_imagebuilder["mp_cores"] = self.panel["mp_cores"].value
         self.args_imagebuilder["oversampling"] = self.panel["oversampling"].value
         self.args_imagebuilder["oversampling_mode"] = self.panel["oversampling_mode"].value
+        self.args_imagebuilder["max_cache_images"] = self.panel["max_cache_images"].value
         for slot in self.slots:
             if slot.imagebuilder is not None:
                 slot.imagebuilder.update_args(**self.args_imagebuilder)
