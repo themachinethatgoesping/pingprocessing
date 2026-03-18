@@ -282,6 +282,7 @@ class WCICore:
         self._autoplay_last_time: Optional[float] = None
 
         self._continuous_capture_active = False
+        self._combined_grab_widget: Optional[QtWidgets.QWidget] = None
 
         self.frames: VideoFrames = VideoFrames()
 
@@ -921,7 +922,7 @@ class WCICore:
         self.panel["video_status"].value = f"Capturing {actual_frames} frames..."
 
         try:
-            gfx_view = self._get_gfx_view()
+            gfx_view = self._get_grab_target()
             if not hasattr(gfx_view, "grab"):
                 self.panel["video_status"].value = "Error: No graphics view available"
                 return
@@ -1057,7 +1058,7 @@ class WCICore:
         """Grab a single frame from the graphics view and append to frames."""
         if not self._continuous_capture_active:
             return
-        gfx_view = self._get_gfx_view()
+        gfx_view = self._get_grab_target()
         if gfx_view is None or not hasattr(gfx_view, "grab"):
             return
         try:
@@ -1210,17 +1211,18 @@ class WCICore:
                 slot.crosshair_h.hide()
 
     def _sample_value(self, slot: WCISlot, x: float, y: float) -> Optional[float]:
-        if slot.wci_image is None or slot.wci_extent is None:
+        ii = slot.image_item
+        if ii is None or ii.image is None or slot.wci_image is None:
             return None
-        x0, x1, y0, y1 = slot.wci_extent
-        dx = x1 - x0
-        dy = y1 - y0
-        if dx == 0 or dy == 0:
+        inv, ok = ii.transform().inverted()
+        if not ok:
             return None
-        col = (x - x0) / dx * (slot.wci_image.shape[0] - 1)
-        row = (y - y0) / dy * (slot.wci_image.shape[1] - 1)
-        if 0 <= col < slot.wci_image.shape[0] and 0 <= row < slot.wci_image.shape[1]:
-            return float(slot.wci_image[int(col), int(row)])
+        pt = inv.map(QtCore.QPointF(x, y))
+        # After transpose, local x spans original rows, y spans original cols
+        r, c = int(pt.x()), int(pt.y())
+        nrows, ncols = slot.wci_image.shape
+        if 0 <= r < nrows and 0 <= c < ncols:
+            return float(slot.wci_image[r, c])
         return None
 
     # =====================================================================
@@ -1244,6 +1246,22 @@ class WCICore:
     def _get_gfx_view(self):
         """Return the underlying QGraphicsView (works for both native and jupyter_rfb)."""
         return getattr(self.graphics, "gfxView", self.graphics)
+
+    def _get_grab_target(self):
+        """Return the widget to grab for video frames.
+
+        When the *combined* checkbox is checked and a combined viewer
+        widget has been registered, grab that widget instead of the
+        local graphics view.
+        """
+        use_combined = (
+            "video_combined" in self.panel
+            and self.panel["video_combined"].value
+            and self._combined_grab_widget is not None
+        )
+        if use_combined:
+            return self._combined_grab_widget
+        return self._get_gfx_view()
 
     def _connect_scene_events(self) -> None:
         gfx_view = self._get_gfx_view()

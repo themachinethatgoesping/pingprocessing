@@ -219,6 +219,11 @@ class CombinedViewerQt(QtWidgets.QMainWindow):
         # Wire viewer's hover label to the combined info bar
         self._hook_hover_label(viewer, entry.name)
 
+        # Let WCI viewers grab the entire combined dock area for video
+        core = getattr(viewer, "core", None)
+        if core is not None and hasattr(core, "_combined_grab_widget"):
+            core._combined_grab_widget = self._dock_area
+
         return entry
 
     def _hook_hover_label(self, viewer: Any, name: str) -> None:

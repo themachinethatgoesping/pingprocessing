@@ -272,12 +272,18 @@ WCI_VIDEO_SPECS: List[ControlSpecType] = [
     IntSliderSpec("video_quality", "quality", min=1, max=100, step=1, value=75, width="200px"),
     TextSpec("video_filename", "filename", value="wci_video", width="200px"),
     ButtonSpec("export_video", "Capture", tooltip="Capture frames (and optionally export)", width="120px"),
-    ButtonSpec("continuous_capture", "Start Capture", tooltip="Capture continuously until pressed again", width="130px"),
+    ButtonSpec(
+        "continuous_capture", "Start Capture",
+        tooltip="Capture continuously until pressed again",
+        width="130px",
+    ),
     LabelSpec("video_status", "", width="300px"),
     CheckboxSpec("video_ping_time", "ping time", value=False,
                  tooltip="Use ping timestamps for video timing"),
     CheckboxSpec("video_live", "live", value=True,
                  tooltip="Show live preview during capture"),
+    CheckboxSpec("video_combined", "combined", value=False,
+                 tooltip="Capture the entire combined viewer window instead of just the WCI panel"),
 ]
 
 # -- Non-tabbed controls --
@@ -314,8 +320,8 @@ WCI_TAB_LAYOUT: Dict[str, List[List[str]]] = {
     ],
     "Video": [
         ["video_frames", "video_fps", "video_format", "video_quality"],
-        ["video_filename", "video_ping_time", "video_live", "export_video"],
-        ["continuous_capture", "video_status"],
+        ["video_filename", "video_ping_time", "video_live", "video_combined"],
+        ["export_video", "continuous_capture", "video_status"],
     ],
 }
 

@@ -1289,21 +1289,22 @@ class EchogramCore:
                 slot.crosshair_h.hide()
 
     def _sample_value(self, slot: EchogramSlot, x: float, y: float) -> Optional[float]:
-        sources = [
-            (slot.high_res_image, slot.high_res_extent),
-            (slot.background_image, slot.background_extent),
+        layers_and_images = [
+            (slot.image_layers.get("high"), slot.high_res_image),
+            (slot.image_layers.get("bg"), slot.background_image),
         ]
-        for image, extent in sources:
-            if image is None or extent is None:
+        for layer_item, orig_image in layers_and_images:
+            if layer_item is None or layer_item.image is None or orig_image is None:
                 continue
-            x0, x1, y0, y1 = self._numeric_extent(extent)
-            dx, dy = x1 - x0, y1 - y0
-            if dx == 0 or dy == 0:
+            inv, ok = layer_item.transform().inverted()
+            if not ok:
                 continue
-            col = (x - x0) / dx * (image.shape[1] - 1)
-            row = (y - y0) / dy * (image.shape[0] - 1)
-            if 0 <= col < image.shape[1] and 0 <= row < image.shape[0]:
-                return float(image[int(row), int(col)])
+            pt = inv.map(QtCore.QPointF(x, y))
+            # After transpose, local x spans original rows, y spans original cols
+            r, c = int(pt.x()), int(pt.y())
+            nrows, ncols = orig_image.shape
+            if 0 <= r < nrows and 0 <= c < ncols:
+                return float(orig_image[r, c])
         return None
 
     def _update_hover_label(self, x: float, y: float,
