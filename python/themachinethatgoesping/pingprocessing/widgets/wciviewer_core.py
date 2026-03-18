@@ -305,6 +305,8 @@ class WCICore:
         self._crosshair_enabled = True
         self._crosshair_position: Optional[Tuple[float, float]] = None
         self._ping_change_callbacks: List[Any] = []
+        self._depth_change_callbacks: List[Any] = []
+        self._external_crosshair_depth: Optional[float] = None
         self._ignore_range_changes = False
         self._first_draw = True
 
@@ -1214,8 +1216,10 @@ class WCICore:
         if self._crosshair_enabled and found_slot is not None and data_pos is not None:
             self._crosshair_position = data_pos
             self._update_crosshairs()
+            self._fire_depth_change(data_pos[1])
         else:
             self._hide_crosshairs()
+            self._fire_depth_change(None)
 
         if found_slot is None:
             self.panel["hover_label"].value = "&nbsp;"
@@ -1241,6 +1245,41 @@ class WCICore:
                 slot.crosshair_v.hide()
             if slot.crosshair_h is not None:
                 slot.crosshair_h.hide()
+
+    # =====================================================================
+    # Depth crosshair sync
+    # =====================================================================
+
+    def register_depth_change_callback(self, callback: Any) -> None:
+        if callback not in self._depth_change_callbacks:
+            self._depth_change_callbacks.append(callback)
+
+    def unregister_depth_change_callback(self, callback: Any) -> None:
+        if callback in self._depth_change_callbacks:
+            self._depth_change_callbacks.remove(callback)
+
+    def _fire_depth_change(self, depth: Optional[float]) -> None:
+        for cb in self._depth_change_callbacks:
+            try:
+                cb(depth)
+            except Exception:
+                pass
+
+    def set_external_crosshair_depth(self, depth: Optional[float]) -> None:
+        """Set the horizontal crosshair from an external viewer (no callback fired)."""
+        self._external_crosshair_depth = depth
+        n_visible = self.grid_rows * self.grid_cols
+        if depth is None:
+            for i in range(n_visible):
+                slot = self.slots[i]
+                if slot.crosshair_h is not None and self._crosshair_position is None:
+                    slot.crosshair_h.hide()
+            return
+        for i in range(n_visible):
+            slot = self.slots[i]
+            if slot.crosshair_h is not None:
+                slot.crosshair_h.setPos(depth)
+                slot.crosshair_h.show()
 
     def _sample_value(self, slot: WCISlot, x: float, y: float) -> Optional[float]:
         ii = slot.image_item

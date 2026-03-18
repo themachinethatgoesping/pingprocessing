@@ -471,10 +471,13 @@ class EchogramCore:
         self._crosshair_enabled = True
         self._crosshair_position: Optional[Tuple[float, float]] = None
         self._last_crosshair_position: Optional[Tuple[float, float]] = None
+        self._depth_change_callbacks: List[Any] = []
+        self._external_crosshair_depth: Optional[float] = None
 
         # Pingviewer
         self.pingviewer = None
         self._ping_timestamps: Optional[np.ndarray] = None
+        self._depth_sync_active: bool = False
 
         # Drag-throttle state for pingline dragging
         self._drag_timer = QtCore.QTimer()
@@ -1276,10 +1279,12 @@ class EchogramCore:
                 self._update_hover_label(x, y, value, slot.echogram_key)
                 if self._crosshair_enabled:
                     self._update_crosshairs(x, y)
+                    self._fire_depth_change(y)
                 return
         self.panel["hover_label"].value = "&nbsp;"
         if self._crosshair_enabled:
             self._hide_crosshairs()
+            self._fire_depth_change(None)
 
     def _update_crosshairs(self, x: float, y: float) -> None:
         self._crosshair_position = (x, y)
@@ -1298,6 +1303,38 @@ class EchogramCore:
                 slot.crosshair_v.hide()
             if slot.crosshair_h:
                 slot.crosshair_h.hide()
+
+    # =====================================================================
+    # Depth crosshair sync
+    # =====================================================================
+
+    def register_depth_change_callback(self, callback: Any) -> None:
+        if callback not in self._depth_change_callbacks:
+            self._depth_change_callbacks.append(callback)
+
+    def unregister_depth_change_callback(self, callback: Any) -> None:
+        if callback in self._depth_change_callbacks:
+            self._depth_change_callbacks.remove(callback)
+
+    def _fire_depth_change(self, depth: Optional[float]) -> None:
+        for cb in self._depth_change_callbacks:
+            try:
+                cb(depth)
+            except Exception:
+                pass
+
+    def set_external_crosshair_depth(self, depth: Optional[float]) -> None:
+        """Set the horizontal crosshair from an external viewer (no callback fired)."""
+        self._external_crosshair_depth = depth
+        for slot in self._get_visible_slots():
+            if slot.crosshair_h is None:
+                continue
+            if depth is None:
+                if self._crosshair_position is None:
+                    slot.crosshair_h.hide()
+            else:
+                slot.crosshair_h.setValue(depth)
+                slot.crosshair_h.show()
 
     def _sample_value(self, slot: EchogramSlot, x: float, y: float) -> Optional[float]:
         layers_and_images = [
@@ -2051,10 +2088,28 @@ class EchogramCore:
         if hasattr(pingviewer, 'register_ping_change_callback'):
             pingviewer.register_ping_change_callback(self._update_ping_lines)
 
+        # Sync depth crosshair if both y-axes represent depth
+        self._depth_sync_active = False
+        if (self.y_axis_name == "Depth (m)"
+                and hasattr(pingviewer, 'register_depth_change_callback')
+                and hasattr(pingviewer, 'set_external_crosshair_depth')):
+            pingviewer.register_depth_change_callback(
+                self.set_external_crosshair_depth)
+            self.register_depth_change_callback(
+                pingviewer.set_external_crosshair_depth)
+            self._depth_sync_active = True
+
     def disconnect_pingviewer(self) -> None:
         if self.pingviewer is not None:
             if hasattr(self.pingviewer, 'unregister_ping_change_callback'):
                 self.pingviewer.unregister_ping_change_callback(self._update_ping_lines)
+            if self._depth_sync_active:
+                if hasattr(self.pingviewer, 'unregister_depth_change_callback'):
+                    self.pingviewer.unregister_depth_change_callback(
+                        self.set_external_crosshair_depth)
+                self.unregister_depth_change_callback(
+                    self.pingviewer.set_external_crosshair_depth)
+                self._depth_sync_active = False
         self.pingviewer = None
         self._ping_timestamps = None
         for slot in self.slots:

@@ -243,6 +243,11 @@ class MapCore:
         # Throttle ping update
         self._last_ping_update_time: float = 0.0
 
+        # Throttle WCI ping-change callback
+        self._wci_ping_dirty: bool = False
+        self._wci_ping_timer: Optional[QtCore.QTimer] = None
+        self._last_wci_ping_time: float = 0.0
+
         # Throttle track re-rendering
         self._last_track_update_time: float = 0.0
         self._track_update_pending: bool = False
@@ -1672,6 +1677,37 @@ class MapCore:
         self._on_wci_ping_change()
 
     def _on_wci_ping_change(self) -> None:
+        if self._wci_viewer is None:
+            return
+
+        now = time.time()
+        elapsed = now - self._last_wci_ping_time
+        if elapsed < 0.1:
+            # Throttled – mark dirty and ensure a trailing timer fires
+            self._wci_ping_dirty = True
+            if self._wci_ping_timer is None:
+                self._wci_ping_timer = QtCore.QTimer()
+                self._wci_ping_timer.setSingleShot(True)
+                self._wci_ping_timer.timeout.connect(self._flush_wci_ping_change)
+            if not self._wci_ping_timer.isActive():
+                remaining_ms = int((0.1 - elapsed) * 1000) + 1
+                self._wci_ping_timer.start(remaining_ms)
+            return
+
+        self._wci_ping_dirty = False
+        self._last_wci_ping_time = now
+        self._do_wci_ping_update()
+
+    def _flush_wci_ping_change(self) -> None:
+        """Trailing-edge callback: render the last skipped ping position."""
+        if not self._wci_ping_dirty:
+            return
+        self._wci_ping_dirty = False
+        self._last_wci_ping_time = time.time()
+        self._do_wci_ping_update()
+
+    def _do_wci_ping_update(self) -> None:
+        """Resolve geolocation from the WCI viewer and update the marker."""
         if self._wci_viewer is None:
             return
         slots = getattr(self._wci_viewer, 'slots', [])
