@@ -156,8 +156,43 @@ class CombinedViewerQt(QtWidgets.QMainWindow):
         self._dock_area.addDock(self._info_dock, "bottom")
         self._info_parts: dict[str, str] = {}
 
+        # Settings tab
+        self._settings_widget = self._build_settings_tab()
+        self._tab_widget.addTab(self._settings_widget, "Settings")
+
         # Restore window geometry from QSettings
         self._restore_window_geometry()
+
+    # ------------------------------------------------------------------
+    # Settings tab
+    # ------------------------------------------------------------------
+
+    def _build_settings_tab(self) -> QtWidgets.QWidget:
+        """Build the shared Settings tab with cross-viewer toggles."""
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # --- Crosshair sync ---
+        grp = QtWidgets.QGroupBox("Crosshair")
+        grp_lay = QtWidgets.QVBoxLayout(grp)
+
+        self._cb_sync_depth = QtWidgets.QCheckBox("Sync depth crosshair")
+        self._cb_sync_depth.setChecked(True)
+        self._cb_sync_depth.toggled.connect(self._on_depth_sync_toggled)
+        grp_lay.addWidget(self._cb_sync_depth)
+
+        layout.addWidget(grp)
+        layout.addStretch()
+        return widget
+
+    def _on_depth_sync_toggled(self, enabled: bool) -> None:
+        """Enable / disable depth crosshair sync on all connected echogram viewers."""
+        for entry in self._core.entries:
+            viewer = entry.viewer
+            core = getattr(viewer, "core", viewer)
+            if hasattr(core, "set_depth_sync_enabled"):
+                core.set_depth_sync_enabled(enabled)
 
     # ------------------------------------------------------------------
     # Public API

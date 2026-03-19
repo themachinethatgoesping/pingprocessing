@@ -185,7 +185,10 @@ class MapCore:
         # Track overlays
         self._tracks: Dict[str, TrackInfo] = {}
         self._overview_tracks: Dict[str, OverviewTrackInfo] = {}
-        self._track_plots: List[Any] = []
+        self._track_plots: List[Any] = []          # legacy compat (overview + highlights)
+        self._track_base_plots: List[Any] = []     # persistent full-track background lines
+        self._track_highlight_plots: List[Any] = []  # visible-range highlights + markers
+        self._tracks_base_dirty: bool = True       # rebuild base lines on next update
         self._active_track_name: Optional[str] = None
 
         # User marker overlays
@@ -735,9 +738,13 @@ class MapCore:
     def _update_tracks(self, force: bool = False) -> None:
         """Update track overlays.
 
-        Throttled to at most once every 200 ms unless *force* is True
-        to avoid tearing down / recreating all PlotDataItems on every
-        ping callback when connected viewers trigger frequent updates.
+        Throttled to at most once every 200 ms unless *force* is True.
+
+        Static full-track background lines are kept persistent and only
+        rebuilt when tracks are added, removed, or change visibility
+        (``_tracks_base_dirty``).  Only the visible-range highlights,
+        markers, and overview tracks are torn down each call, which is
+        much cheaper.
         """
         now = time.time()
         if not force and now - self._last_track_update_time < 0.2:
@@ -746,15 +753,44 @@ class MapCore:
         self._last_track_update_time = now
         self._track_update_pending = False
 
+        # --- persistent base lines (full tracks) ---
+        if self._tracks_base_dirty:
+            for plot in self._track_base_plots:
+                self._plot.removeItem(plot)
+            self._track_base_plots.clear()
+
+            for track_info in self._tracks.values():
+                if not track_info.visible:
+                    continue
+                x = track_info.longitudes
+                y = track_info.latitudes
+                darker_color = self._darken_color(track_info.color, 0.5)
+                pen_full = pg.mkPen(color=darker_color,
+                                    width=track_info.line_width * 0.5)
+                plot_full = self._plot.plot(x, y, pen=pen_full)
+                self._track_base_plots.append(plot_full)
+
+            self._tracks_base_dirty = False
+
+        # --- dynamic highlights + overview tracks ---
+        for plot in self._track_highlight_plots:
+            self._plot.removeItem(plot)
+        self._track_highlight_plots.clear()
+
+        # Also clear the legacy list (overview track code may still
+        # append here via _render_overview_track).
         for plot in self._track_plots:
             self._plot.removeItem(plot)
         self._track_plots.clear()
 
+        # Render visible-range highlights and markers for regular tracks
+        for track_info in self._tracks.values():
+            if not track_info.visible:
+                continue
+            self._render_track_highlights(track_info)
+
+        # Overview tracks need full rebuild (data changes with zoom)
         self._refresh_overview_tracks()
-
-        for name, track_info in self._tracks.items():
-            self._render_track_info(track_info)
-
         for name, ov_info in self._overview_tracks.items():
             if not ov_info.visible or ov_info.latitudes is None or len(ov_info.latitudes) == 0:
                 continue
@@ -781,6 +817,32 @@ class MapCore:
             pen = pg.mkPen(color=track_info.color, width=line_width)
             plot = self._plot.plot(x, y, pen=pen)
             self._track_plots.append(plot)
+
+    def _render_track_highlights(self, track_info: TrackInfo) -> None:
+        """Render only the visible-range highlight and markers (no base line)."""
+        x = track_info.longitudes
+        y = track_info.latitudes
+
+        visible_range = self._get_slot_visible_ping_range(track_info.slot_idx)
+
+        if visible_range is not None:
+            start_idx, end_idx = visible_range
+            start_idx = max(0, int(start_idx))
+            end_idx = min(len(x), int(end_idx) + 1)
+            if start_idx < end_idx:
+                x_visible = x[start_idx:end_idx]
+                y_visible = y[start_idx:end_idx]
+                line_width = track_info.line_width * 2
+                pen = pg.mkPen(color=track_info.color, width=line_width)
+                plot_visible = self._plot.plot(x_visible, y_visible, pen=pen)
+                self._track_highlight_plots.append(plot_visible)
+                self._add_track_markers(x_visible, y_visible, track_info.color,
+                                        target_list=self._track_highlight_plots)
+        elif track_info.is_active:
+            line_width = track_info.line_width * 2
+            pen = pg.mkPen(color=track_info.color, width=line_width)
+            plot = self._plot.plot(x, y, pen=pen)
+            self._track_highlight_plots.append(plot)
 
     def _render_overview_track(self, ov_info: OverviewTrackInfo) -> None:
         x = ov_info.longitudes
@@ -836,9 +898,11 @@ class MapCore:
 
         self._add_track_markers(x_visible, y_visible, track_info.color)
 
-    def _add_track_markers(self, x, y, color) -> None:
+    def _add_track_markers(self, x, y, color, target_list=None) -> None:
         if len(x) == 0:
             return
+        if target_list is None:
+            target_list = self._track_plots
 
         n_points = len(x)
         marker_interval = max(1, n_points // 10)
@@ -857,7 +921,7 @@ class MapCore:
             pen=pg.mkPen('w', width=1.5), symbol='o'
         )
         self._plot.addItem(markers)
-        self._track_plots.append(markers)
+        target_list.append(markers)
 
         marker_start = pg.ScatterPlotItem(
             [x[0]], [y[0]],
@@ -865,7 +929,7 @@ class MapCore:
             pen=pg.mkPen('w', width=2), symbol='t'
         )
         self._plot.addItem(marker_start)
-        self._track_plots.append(marker_start)
+        target_list.append(marker_start)
 
         marker_end = pg.ScatterPlotItem(
             [x[-1]], [y[-1]],
@@ -873,7 +937,7 @@ class MapCore:
             pen=pg.mkPen('w', width=2), symbol='s'
         )
         self._plot.addItem(marker_end)
-        self._track_plots.append(marker_end)
+        target_list.append(marker_end)
 
     def _get_slot_visible_ping_range(self, slot_idx: Optional[int]) -> Optional[Tuple[int, int]]:
         if slot_idx is None or self._echogram_viewer is None:
@@ -963,6 +1027,7 @@ class MapCore:
         if is_active:
             self._active_track_name = name
 
+        self._tracks_base_dirty = True
         self._update_tracks()
         if self._update_track_legend:
             self._update_track_legend()
@@ -1016,6 +1081,13 @@ class MapCore:
         for plot in self._track_plots:
             self._plot.removeItem(plot)
         self._track_plots.clear()
+        for plot in self._track_base_plots:
+            self._plot.removeItem(plot)
+        self._track_base_plots.clear()
+        for plot in self._track_highlight_plots:
+            self._plot.removeItem(plot)
+        self._track_highlight_plots.clear()
+        self._tracks_base_dirty = True
         if self._update_track_legend:
             self._update_track_legend()
 
@@ -1024,6 +1096,7 @@ class MapCore:
             self._tracks[name].color = color
         if name in self._overview_tracks:
             self._overview_tracks[name].color = color
+        self._tracks_base_dirty = True
         self._update_tracks()
         if self._update_track_legend:
             self._update_track_legend()
@@ -1033,6 +1106,7 @@ class MapCore:
             self._tracks[track_name].visible = visible
         if track_name in self._overview_tracks:
             self._overview_tracks[track_name].visible = visible
+        self._tracks_base_dirty = True
         self._update_tracks()
 
     # =====================================================================

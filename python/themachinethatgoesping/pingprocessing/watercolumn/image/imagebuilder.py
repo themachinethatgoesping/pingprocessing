@@ -138,30 +138,36 @@ class ImageBuilder:
 
         # Build only uncached pings
         linear_mean = _kwargs.get("linear_mean", True)
-        for i in needed:
-            if i in self._cache:
-                continue
-            wci_db, _ = make_wci_dual_head(
-                self.pings[i],
-                horizontal_pixels=_kwargs["horizontal_pixels"],
-                y_coordinates=y_coords,
-                z_coordinates=z_coords,
-                from_bottom_xyz=_kwargs.get("from_bottom_xyz", False),
-                wci_value=_kwargs.get("wci_value", "sv/av/pv/rv"),
-                ping_sample_selector=_kwargs.get("ping_sample_selector"),
-                apply_pss_to_bottom=_kwargs.get("apply_pss_to_bottom", False),
-                mp_cores=_kwargs.get("mp_cores", 1),
+        to_build = [i for i in needed if i not in self._cache]
+
+        if to_build:
+            it = get_progress_iterator(
+                to_build, self.progress,
+                desc=f"Caching pings ({len(to_build)}/{len(needed)})",
+                total=len(to_build),
             )
-            # Store in linear domain when linear_mean is active so that
-            # aggregation only needs to sum — no repeated dB→linear conversion.
-            if linear_mean:
-                cached = np.empty_like(wci_db, dtype=np.float64)
-                cached.fill(np.nan)
-                use = np.isfinite(wci_db)
-                cached[use] = np.power(10, wci_db[use].astype(np.float64) * 0.1)
-                self._cache[i] = cached
-            else:
-                self._cache[i] = wci_db
+            for i in it:
+                wci_db, _ = make_wci_dual_head(
+                    self.pings[i],
+                    horizontal_pixels=_kwargs["horizontal_pixels"],
+                    y_coordinates=y_coords,
+                    z_coordinates=z_coords,
+                    from_bottom_xyz=_kwargs.get("from_bottom_xyz", False),
+                    wci_value=_kwargs.get("wci_value", "sv/av/pv/rv"),
+                    ping_sample_selector=_kwargs.get("ping_sample_selector"),
+                    apply_pss_to_bottom=_kwargs.get("apply_pss_to_bottom", False),
+                    mp_cores=_kwargs.get("mp_cores", 1),
+                )
+                # Store in linear domain when linear_mean is active so that
+                # aggregation only needs to sum — no repeated dB→linear conversion.
+                if linear_mean:
+                    cached = np.empty_like(wci_db, dtype=np.float64)
+                    cached.fill(np.nan)
+                    use = np.isfinite(wci_db)
+                    cached[use] = np.power(10, wci_db[use].astype(np.float64) * 0.1)
+                    self._cache[i] = cached
+                else:
+                    self._cache[i] = wci_db
 
         # Aggregate cached sub-images
         WCI = None

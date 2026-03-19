@@ -2121,6 +2121,27 @@ class EchogramCore:
             if slot.pingline:
                 slot.pingline.hide()
 
+    def set_depth_sync_enabled(self, enabled: bool) -> None:
+        """Enable or disable depth crosshair sync without disconnecting."""
+        if self.pingviewer is None:
+            return
+        pv = self.pingviewer
+        if enabled and not self._depth_sync_active:
+            if (hasattr(pv, 'register_depth_change_callback')
+                    and hasattr(pv, 'set_external_crosshair_depth')):
+                pv.register_depth_change_callback(
+                    self.set_external_crosshair_depth)
+                self.register_depth_change_callback(
+                    pv.set_external_crosshair_depth)
+                self._depth_sync_active = True
+        elif not enabled and self._depth_sync_active:
+            if hasattr(pv, 'unregister_depth_change_callback'):
+                pv.unregister_depth_change_callback(
+                    self.set_external_crosshair_depth)
+            self.unregister_depth_change_callback(
+                pv.set_external_crosshair_depth)
+            self._depth_sync_active = False
+
     def _build_ping_index(self, progress: bool = False) -> None:
         """Pre-extract ping timestamps into a sorted numpy array.
 
