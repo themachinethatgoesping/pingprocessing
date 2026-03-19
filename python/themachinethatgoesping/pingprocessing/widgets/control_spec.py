@@ -289,7 +289,7 @@ WCI_VIDEO_SPECS: List[ControlSpecType] = [
 
 # -- Non-tabbed controls --
 WCI_MISC_SPECS: List[ControlSpecType] = [
-    TextSpec("ref_time", "Ref time:", disabled=True, width="220px"),
+    TextSpec("ref_time", "Ref time:", disabled=False, width="280px"),
     ButtonSpec("fix_xy", "Fix view", width="80px"),
     ButtonSpec("unfix_xy", "Unfix", width="70px"),
     HTMLSpec("hover_label", "&nbsp;"),

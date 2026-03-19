@@ -478,6 +478,9 @@ class EchogramCore:
         self.pingviewer = None
         self._ping_timestamps: Optional[np.ndarray] = None
         self._depth_sync_active: bool = False
+        self._pingline_update_in_progress: bool = False
+        self._cached_pingline_index: Optional[int] = None
+        self._cached_pingline_value: Optional[float] = None
 
         # Drag-throttle state for pingline dragging
         self._drag_timer = QtCore.QTimer()
@@ -2080,6 +2083,9 @@ class EchogramCore:
 
     def connect_pingviewer(self, pingviewer: Any,
                            progress: bool = False) -> None:
+        # Unwrap Qt/Jupyter wrapper to get the core object
+        if hasattr(pingviewer, 'core'):
+            pingviewer = pingviewer.core
         if self.pingviewer is not None:
             self.disconnect_pingviewer()
         self.pingviewer = pingviewer
@@ -2088,10 +2094,9 @@ class EchogramCore:
         if hasattr(pingviewer, 'register_ping_change_callback'):
             pingviewer.register_ping_change_callback(self._update_ping_lines)
 
-        # Sync depth crosshair if both y-axes represent depth
+        # Sync horizontal crosshair (depth / range) between viewers
         self._depth_sync_active = False
-        if (self.y_axis_name == "Depth (m)"
-                and hasattr(pingviewer, 'register_depth_change_callback')
+        if (hasattr(pingviewer, 'register_depth_change_callback')
                 and hasattr(pingviewer, 'set_external_crosshair_depth')):
             pingviewer.register_depth_change_callback(
                 self.set_external_crosshair_depth)
@@ -2221,18 +2226,25 @@ class EchogramCore:
     def _update_ping_lines(self) -> None:
         if self.pingviewer is None:
             return
-        ping = self._get_current_ping()
-        if ping is None:
-            return
-        match self.x_axis_name:
-            case "Ping number" | "Ping index":
-                value = float(self._get_pingviewer_current_index())
-            case "Date time":
-                value = self._datetime_to_mpl_num(ping.get_datetime())
-            case "Ping time":
-                value = ping.get_timestamp()
-            case _:
+        idx = self._get_pingviewer_current_index()
+        # Use cached value when ping index hasn't changed
+        if idx == self._cached_pingline_index and self._cached_pingline_value is not None:
+            value = self._cached_pingline_value
+        else:
+            ping = self._get_current_ping()
+            if ping is None:
                 return
+            match self.x_axis_name:
+                case "Ping number" | "Ping index":
+                    value = float(idx)
+                case "Date time":
+                    value = self._datetime_to_mpl_num(ping.get_datetime())
+                case "Ping time":
+                    value = ping.get_timestamp()
+                case _:
+                    return
+            self._cached_pingline_index = idx
+            self._cached_pingline_value = value
         for slot in self._get_visible_slots():
             if slot.plot_item is None:
                 continue
@@ -2247,19 +2259,30 @@ class EchogramCore:
             slot.pingline.setValue(value)
             slot.pingline.blockSignals(False)
             slot.pingline.show()
+        scrolled = False
         if self.panel["auto_follow"].value:
-            self._auto_follow_pingline(value)
-        self._request_remote_draw()
+            scrolled = self._auto_follow_pingline(value)
+        # Only force a frame render when auto_follow actually scrolled;
+        # otherwise the InfiniteLine move renders on the next natural frame.
+        if scrolled:
+            self._request_remote_draw()
+        else:
+            self._pingline_update_in_progress = True
+            try:
+                self._request_remote_draw()
+            finally:
+                self._pingline_update_in_progress = False
 
-    def _auto_follow_pingline(self, pingline_x: float) -> None:
+    def _auto_follow_pingline(self, pingline_x: float) -> bool:
+        """Scroll the view to keep the pingline visible. Returns True if scrolled."""
         master = self._get_master_plot()
         if master is None:
-            return
+            return False
         vb = master.getViewBox()
         (xmin, xmax), _ = vb.viewRange()
         x_extent = xmax - xmin
         if x_extent <= 0:
-            return
+            return False
         position_fraction = (pingline_x - xmin) / x_extent
         edge_threshold = 0.10
         needs_scroll = (
@@ -2267,7 +2290,7 @@ class EchogramCore:
             or position_fraction < edge_threshold
             or position_fraction > (1 - edge_threshold))
         if not needs_scroll:
-            return
+            return False
         target_position = 0.30
         new_xmin = pingline_x - (target_position * x_extent)
         new_xmax = new_xmin + x_extent
@@ -2278,6 +2301,7 @@ class EchogramCore:
             self._ignore_range_changes = False
         if self._auto_update_enabled:
             self._schedule_update()
+        return True
 
     # =====================================================================
     # Pingline drag handling (throttled)

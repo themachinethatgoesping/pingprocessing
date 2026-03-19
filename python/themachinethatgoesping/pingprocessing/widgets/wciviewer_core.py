@@ -310,6 +310,7 @@ class WCICore:
         self._external_crosshair_depth: Optional[float] = None
         self._ignore_range_changes = False
         self._first_draw = True
+        self._updating_ref_time = False
 
         self._autoplay_active = False
         self._autoplay_task: Optional[Any] = None
@@ -394,6 +395,7 @@ class WCICore:
 
         p["fix_xy"].on_click(lambda _: self.fix_xy())
         p["unfix_xy"].on_click(lambda _: self.unfix_xy())
+        p["ref_time"].on_change(lambda v: self._on_ref_time_edited(v))
 
         p["ping_step"].on_change(lambda v: self.on_ping_step_change(v))
         p["step_prev"].on_click(lambda _: self.step_prev())
@@ -646,9 +648,42 @@ class WCICore:
         if self._reference_timestamp is not None:
             from datetime import datetime, timezone
             dt = datetime.fromtimestamp(self._reference_timestamp, tz=timezone.utc)
-            self.panel["ref_time"].value = dt.strftime("%H:%M:%S.%f")[:-3]
+            self._updating_ref_time = True
+            self.panel["ref_time"].value = dt.strftime("%d.%m.%Y %H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
+            self._updating_ref_time = False
         else:
+            self._updating_ref_time = True
             self.panel["ref_time"].value = ""
+            self._updating_ref_time = False
+
+    def _on_ref_time_edited(self, text: str) -> None:
+        """Parse a user-entered datetime string and jump to the closest ping."""
+        if self._updating_ref_time:
+            return
+        text = text.strip()
+        if not text:
+            return
+        from datetime import datetime, timezone
+        # Try multiple formats for user convenience
+        for fmt in (
+            "%d.%m.%Y %H:%M:%S.%f",   # 07.10.2025 4:34:34.123
+            "%d.%m.%Y %H:%M:%S",       # 07.10.2025 4:34:34
+            "%d.%m.%Y %H:%M",          # 07.10.2025 4:34
+            "%Y-%m-%d %H:%M:%S.%f",    # 2025-10-07 4:34:34.123
+            "%Y-%m-%d %H:%M:%S",       # 2025-10-07 4:34:34
+        ):
+            try:
+                dt = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+                break
+            except ValueError:
+                continue
+        else:
+            return  # unparseable — ignore silently
+        target_ts = dt.timestamp()
+        # Use slot 0's cached timestamps for fast binary search
+        slot = self.slots[0]
+        idx = slot.find_closest_ping_index(target_ts)
+        self.on_ping_change(0, idx)
 
     def _update_time_offset_text(self, slot: WCISlot) -> None:
         if slot.time_offset_text is None:

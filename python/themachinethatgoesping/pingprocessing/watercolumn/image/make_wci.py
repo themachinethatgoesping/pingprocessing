@@ -58,13 +58,17 @@ def downsample_wci(wci, extent, factor, mode="linear_mean"):
     # Reshape into blocks: (target_ny, factor, target_nz, factor)
     blocked = trimmed.reshape(target_ny, factor, target_nz, factor)
     
+    import warnings
     if mode == "linear_mean":
-        with np.errstate(invalid='ignore'):
+        with np.errstate(invalid='ignore'), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             linear = np.power(10.0, np.float64(blocked) * 0.1)
             mean_linear = np.nanmean(linear, axis=(1, 3))
             result = (10.0 * np.log10(mean_linear)).astype(np.float32)
     else:
-        result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
     
     return result, tuple(extent)
 

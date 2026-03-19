@@ -230,6 +230,9 @@ class EchogramViewerJupyter:
                 return
             if viewer.core._ignore_range_changes or viewer._is_loading:
                 return
+            # Pingline-only moves don't need an echogram data rebuild
+            if getattr(viewer.core, '_pingline_update_in_progress', False):
+                return
             master = viewer.core._get_master_plot()
             if master is not None:
                 current_range = master.getViewBox().viewRange()

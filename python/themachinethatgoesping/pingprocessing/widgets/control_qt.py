@@ -332,8 +332,11 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
         if spec.disabled:
             w.setReadOnly(True)
         container = _labelled(w, spec.description)
+        # Use editingFinished (Enter/focus-loss) for editable fields,
+        # textChanged for read-only (programmatic updates).
+        signal = w.textChanged if spec.disabled else w.editingFinished
         return QtControlHandle(
-            container, w.text, w.setText, w.textChanged, inner=w,
+            container, w.text, w.setText, signal, inner=w,
         )
 
     if isinstance(spec, HTMLSpec):
