@@ -29,6 +29,11 @@ def get_hash(file_name):
 
 # does not work because pybind11_mkdoc only provides a module script
 #from pybind11_mkdoc import mkdoc
+
+# Get GCC internal include path (needed for libclang to find stddef.h)
+_gcc_include_dir = subprocess.check_output(
+    ['gcc', '-print-file-name=include']).decode().strip()
+_mkdoc_extra_args = [f'-I{_gcc_include_dir}'] if os.path.isdir(_gcc_include_dir) else []
 ignore_files = [
     # 'classhelper.hpp'
 ]
@@ -165,7 +170,7 @@ with open('mkdoc_log.log', 'w', encoding="utf-8") as ofi_log:
         #print(p,doc_paths, output_path)
 
         docstrings = subprocess.check_output(
-            [sys.executable, '-m', 'pybind11_mkdoc', header], stderr=ofi_log).decode('utf8')
+            [sys.executable, '-m', 'pybind11_mkdoc'] + _mkdoc_extra_args + [header], stderr=ofi_log).decode('utf8')
         new_doc = modify_doc(docstrings)
 
         with open(output_path, 'w', encoding="utf-8") as ofi:

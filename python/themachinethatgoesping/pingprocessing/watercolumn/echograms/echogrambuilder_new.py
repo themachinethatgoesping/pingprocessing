@@ -87,8 +87,10 @@ class EchogramBuilder:
         self.mp_cores = 1
         self.verbose = True
         
-        # Value offset (applied to all data values)
+        # Value transforms (applied to all data values)
         self._offset = 0.0
+        self._factor = 1.0
+        self._transform = None  # callable(data) -> data, e.g. lambda d: np.power(10, 0.1*d)
         
         # Oversampling settings
         self._x_oversampling = 1
@@ -357,15 +359,23 @@ class EchogramBuilder:
         # Track the first builder for copying view settings
         first_builder = None
         
-        # Extract backends from builders if needed
+        # Extract backends and per-builder data transforms
         backends = []
+        data_transforms = []
+        has_any_transforms = False
         for item in builders_or_backends:
             if isinstance(item, EchogramBuilder):
                 if first_builder is None:
                     first_builder = item
                 backends.append(item.backend)
+                if item._has_data_transforms:
+                    data_transforms.append((item._factor, item._offset, item._transform))
+                    has_any_transforms = True
+                else:
+                    data_transforms.append(None)
             elif isinstance(item, EchogramDataBackend):
                 backends.append(item)
+                data_transforms.append(None)
             else:
                 raise TypeError(
                     f"Expected EchogramBuilder or EchogramDataBackend, got {type(item)}"
@@ -391,7 +401,8 @@ class EchogramBuilder:
         
         combine_backend = CombineBackend(
             backends, combine_func=combine_func, name=name,
-            x_align=x_align, y_align=y_align, linear=linear
+            x_align=x_align, y_align=y_align, linear=linear,
+            data_transforms=data_transforms if has_any_transforms else None
         )
         result = cls(combine_backend)
         
@@ -483,6 +494,58 @@ class EchogramBuilder:
         """
         self._offset = float(value)
 
+    @property
+    def factor(self) -> float:
+        """Multiplicative factor applied to all data.
+        
+        Data is multiplied by this factor before adding the offset.
+        Applied in order: data * factor + offset, then transform.
+        
+        Returns:
+            Current factor value (default 1.0).
+        """
+        return self._factor
+    
+    @factor.setter
+    def factor(self, value: float):
+        """Set the multiplicative factor applied to all data.
+        
+        Args:
+            value: Factor to multiply all echogram values by (e.g., -1 to invert).
+        """
+        self._factor = float(value)
+
+    @property
+    def transform(self):
+        """Callable transform applied to all data after factor and offset.
+        
+        The transform is a function f(data) -> data applied element-wise
+        to the image array. Set to None to disable.
+        
+        Applied in order: data * factor + offset, then transform(result).
+        
+        Returns:
+            Current transform callable, or None.
+        
+        Example:
+            >>> # Convert from dB to linear
+            >>> echogram.transform = lambda d: np.power(10, 0.1 * d)
+            >>> # Reset
+            >>> echogram.transform = None
+        """
+        return self._transform
+    
+    @transform.setter
+    def transform(self, value):
+        """Set the transform function applied to all data.
+        
+        Args:
+            value: Callable f(data) -> data, or None to disable.
+        """
+        if value is not None and not callable(value):
+            raise TypeError("transform must be callable or None")
+        self._transform = value
+
     # =========================================================================
     # Navigation/track access
     # =========================================================================
@@ -529,13 +592,15 @@ class EchogramBuilder:
         return self._backend.has_latlon
 
     def _copy_view_settings(self, other: "EchogramBuilder"):
-        """Copy view settings (x_axis, y_axis, offset) to another EchogramBuilder.
+        """Copy view settings (x_axis, y_axis, offset, factor, transform) to another EchogramBuilder.
         
         This is used when combining echograms to preserve the view from
         the first echogram in the list.
         """
         self.copy_xy_axis(other)
         other._offset = self._offset
+        other._factor = self._factor
+        other._transform = self._transform
 
     def _apply_axis_type(self, x_axis_name: str, y_axis_name: str):
         """Apply axis type settings without specific zoom parameters.
@@ -910,6 +975,24 @@ class EchogramBuilder:
     # Image building
     # =========================================================================
 
+    def _apply_data_transforms(self, data):
+        """Apply factor, offset, and transform to data array (in-place when possible).
+        
+        Applied in order: data * factor + offset, then transform(result).
+        Skips no-op steps for performance.
+        """
+        if self._factor != 1.0:
+            data = data * self._factor
+        if self._offset != 0.0:
+            data = data + self._offset
+        if self._transform is not None:
+            data = self._transform(data)
+        return data
+
+    @property
+    def _has_data_transforms(self):
+        return self._factor != 1.0 or self._offset != 0.0 or self._transform is not None
+
     def build_image(self, progress=None):
         """Build the echogram image.
         
@@ -940,9 +1023,9 @@ class EchogramBuilder:
             )
             oversampled_image = self._backend.get_image(request)
             
-            # Apply offset before averaging (offset is additive, order doesn't matter)
-            if self._offset != 0.0:
-                oversampled_image = oversampled_image + self._offset
+            # Apply transforms before averaging
+            if self._has_data_transforms:
+                oversampled_image = self._apply_data_transforms(oversampled_image)
             
             image = self._downsample_image(oversampled_image, target_nx, target_ny)
         else:
@@ -950,8 +1033,8 @@ class EchogramBuilder:
             request = cs.make_image_request()
             image = self._backend.get_image(request)
             
-            if self._offset != 0.0:
-                image = image + self._offset
+            if self._has_data_transforms:
+                image = self._apply_data_transforms(image)
         
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -983,14 +1066,14 @@ class EchogramBuilder:
                     y_oversampling=self._y_oversampling,
                 )
                 oversampled_image = self._backend.get_image(request)
-                if self._offset != 0.0:
-                    oversampled_image = oversampled_image + self._offset
+                if self._has_data_transforms:
+                    oversampled_image = self._apply_data_transforms(oversampled_image)
                 image = self._downsample_image(oversampled_image, nx, ny)
             else:
                 request = cs.make_image_request()
                 image = self._backend.get_image(request)
-                if self._offset != 0.0:
-                    image = image + self._offset
+                if self._has_data_transforms:
+                    image = self._apply_data_transforms(image)
         else:
             # Slow path: need per-column iteration for main_layer
             # (oversampling not supported for main_layer path)
@@ -1002,8 +1085,8 @@ class EchogramBuilder:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
-            if self._offset != 0.0:
-                image = image + self._offset
+            if self._has_data_transforms:
+                image = self._apply_data_transforms(image)
 
         # Build layer image (requires per-column iteration, no oversampling)
         layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
@@ -1019,8 +1102,8 @@ class EchogramBuilder:
                         if y1_layer is not None and len(y1_layer) > 0:
                             layer_image[image_index, y1_layer] = wci[y2_layer]
 
-        if self._offset != 0.0:
-            layer_image = layer_image + self._offset
+        if self._has_data_transforms:
+            layer_image = self._apply_data_transforms(layer_image)
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1052,14 +1135,14 @@ class EchogramBuilder:
                     y_oversampling=self._y_oversampling,
                 )
                 oversampled_image = self._backend.get_image(request)
-                if self._offset != 0.0:
-                    oversampled_image = oversampled_image + self._offset
+                if self._has_data_transforms:
+                    oversampled_image = self._apply_data_transforms(oversampled_image)
                 image = self._downsample_image(oversampled_image, nx, ny)
             else:
                 request = cs.make_image_request()
                 image = self._backend.get_image(request)
-                if self._offset != 0.0:
-                    image = image + self._offset
+                if self._has_data_transforms:
+                    image = self._apply_data_transforms(image)
         else:
             # Slow path: need per-column iteration for main_layer
             # (oversampling not supported for main_layer path)
@@ -1071,8 +1154,8 @@ class EchogramBuilder:
                     y1, y2 = self.main_layer.get_y_indices(wci_index)
                     if y1 is not None and len(y1) > 0:
                         image[image_index, y1] = wci[y2]
-            if self._offset != 0.0:
-                image = image + self._offset
+            if self._has_data_transforms:
+                image = self._apply_data_transforms(image)
 
         # Build layer images (requires per-column iteration, no oversampling)
         layer_images = {}
@@ -1091,9 +1174,9 @@ class EchogramBuilder:
                         if y1_layer is not None and len(y1_layer) > 0:
                             layer_images[key][image_index, y1_layer] = wci[y2_layer]
 
-        if self._offset != 0.0:
+        if self._has_data_transforms:
             for key in layer_images:
-                layer_images[key] = layer_images[key] + self._offset
+                layer_images[key] = self._apply_data_transforms(layer_images[key])
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1749,9 +1832,9 @@ class EchogramBuilder:
                     column = self._backend.get_column(ping_idx)
                     chunk_buffer[i, :len(column)] = column
             
-            # Apply offset if set
-            if self._offset != 0.0:
-                chunk_buffer = chunk_buffer + self._offset
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_buffer = self._apply_data_transforms(chunk_buffer)
             
             # Write entire chunk at once
             wci_data[chunk_start:chunk_end, :] = chunk_buffer
@@ -2077,9 +2160,9 @@ class EchogramBuilder:
             # Use generic get_chunk - backends optimize this internally
             chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
             
-            # Apply offset if set
-            if self._offset != 0.0:
-                chunk_data = chunk_data + self._offset
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
             
             # Truncate to mmap size if chunk is larger (can happen due to rounding in sample counts)
             n_cols = min(chunk_data.shape[1], max_samples)
@@ -2261,9 +2344,9 @@ class EchogramBuilder:
                 interpolation=interpolation,
             )
             
-            # Apply offset if set
-            if self._offset != 0.0:
-                chunk_data = chunk_data + self._offset
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
             
             wci_mmap[chunk_start:chunk_end, :] = chunk_data
             del chunk_data
@@ -2764,5 +2847,433 @@ class EchogramBuilder:
                 get_array=lambda name: np.load(store_path / f"{name}.npy") if (store_path / f"{name}.npy").exists() else None,
             )
         
+        return builder
+
+    # =========================================================================
+    # Gridded mmap export / import
+    # =========================================================================
+
+    def to_gridded_mmap(
+        self,
+        path: str,
+        x_step: float,
+        y_step: float,
+        averaging: str = "db_mean",
+        progress: bool = True,
+        chunk_mb: float = 50.0,
+        downsample_ping_params: bool = True,
+    ) -> str:
+        """Export echogram data to a gridded memory-mapped store.
+
+        Data is averaged onto a regular (x, y) grid.  Empty x-bins are
+        omitted (sparse).  Grid cells are centred on multiples of the step
+        size (0 is always a cell centre), so grids from different time
+        ranges can be combined directly.
+
+        The x-axis unit is inferred from the current axis setting:
+        - "Date time" / "Ping time" → seconds
+        - "Ping index" → ping count
+
+        The y-axis unit is inferred from the current axis setting:
+        - "Depth (m)" → metres  (requires depth extents)
+        - "Range (m)" → metres  (requires range extents)
+        - "Sample number" / "Y indice" → sample indices
+
+        Args:
+            path: Output directory (will be created).
+            x_step: Grid cell width in current x-axis units.
+            y_step: Grid cell height in current y-axis units.
+            averaging: Averaging mode.  One of:
+                - ``"db_mean"``     – mean of dB values
+                - ``"linear_mean"`` – mean in linear domain, result in dB
+                - ``"min"``         – minimum value per cell
+                - ``"max"``         – maximum value per cell
+                - ``"median"``      – median per cell (more memory)
+            progress: Show progress bar.
+            chunk_mb: Approximate chunk size in MB for reading source data.
+            downsample_ping_params: If *True*, ping parameters (e.g. bottom
+                depth) are averaged onto the new x-grid.  If *False*, they
+                are stored at original (per-ping) resolution.
+
+        Returns:
+            Path to the created store directory.
+
+        Examples:
+            >>> builder.set_y_axis_depth()
+            >>> builder.set_x_axis_date_time()
+            >>> builder.to_gridded_mmap("gridded.mmap", x_step=10, y_step=0.5)
+        """
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+
+        from .backends.gridded_mmap_backend import (
+            GRIDDED_MMAP_FORMAT_VERSION,
+            AVERAGING_MODES,
+        )
+        from .backends.storage_mode import StorageAxisMode
+
+        if averaging not in AVERAGING_MODES:
+            raise ValueError(
+                f"averaging must be one of {list(AVERAGING_MODES)}, got {averaging!r}"
+            )
+
+        # ----- resolve current axis types -----
+        x_axis_name = self._coord_system.x_axis_name
+        y_axis_name = self._coord_system.y_axis_name
+
+        # X coordinates per source ping
+        if x_axis_name in ("Ping time", "Date time"):
+            x_coords = self._backend.ping_times.astype(np.float64)
+            x_axis_type = "ping_time"
+        elif x_axis_name == "Ping index":
+            x_coords = np.arange(self._backend.n_pings, dtype=np.float64)
+            x_axis_type = "ping_index"
+        else:
+            # Custom x-axis: try to use ping times as proxy
+            x_coords = self._backend.ping_times.astype(np.float64)
+            x_axis_type = "ping_time"
+
+        # Y extents per ping  (vec_min_y, vec_max_y)
+        if y_axis_name == "Depth (m)":
+            if self._backend.depth_extents is None:
+                raise ValueError("Depth extents not available in backend")
+            y_min, y_max = self._backend.depth_extents
+            y_axis_type = "depth"
+        elif y_axis_name == "Range (m)":
+            if self._backend.range_extents is None:
+                raise ValueError("Range extents not available in backend")
+            y_min, y_max = self._backend.range_extents
+            y_axis_type = "range"
+        elif y_axis_name in ("Sample number", "Y indice"):
+            s_min, s_max = self._backend.sample_nr_extents
+            y_min = s_min.astype(np.float64)
+            y_max = s_max.astype(np.float64)
+            y_axis_type = "sample_index"
+        else:
+            raise ValueError(f"Unsupported y-axis for gridding: {y_axis_name}")
+
+        y_min = np.asarray(y_min, dtype=np.float64)
+        y_max = np.asarray(y_max, dtype=np.float64)
+        max_sample_counts = self._backend.max_sample_counts
+
+        n_pings = self._backend.n_pings
+
+        # ----- compute grid extents -----
+        # X-bins  (sparse: only occupied bins stored)
+        x_bins = np.round(x_coords / x_step).astype(np.int64)
+        unique_x_bins, first_idx, x_bin_counts = np.unique(
+            x_bins, return_index=True, return_counts=True
+        )
+        n_x_bins = len(unique_x_bins)
+        x_bin_to_row = np.empty(unique_x_bins.max() - unique_x_bins.min() + 1, dtype=np.int64)
+        x_bin_to_row[:] = -1
+        x_bin_to_row[unique_x_bins - unique_x_bins.min()] = np.arange(n_x_bins)
+        x_bin_offset = int(unique_x_bins.min())
+
+        # Y-bins  (regular grid, all rows same length)
+        global_y_min = float(np.nanmin(y_min))
+        global_y_max = float(np.nanmax(y_max))
+        y_bin_min = int(np.floor(global_y_min / y_step + 0.5))
+        y_bin_max = int(np.ceil(global_y_max / y_step - 0.5))
+        # Ensure at least 1 cell, and that global extremes are included
+        if y_bin_min * y_step - 0.5 * y_step > global_y_min:
+            y_bin_min -= 1
+        if y_bin_max * y_step + 0.5 * y_step < global_y_max:
+            y_bin_max += 1
+        n_y_cells = y_bin_max - y_bin_min + 1
+        y_origin = float(y_bin_min * y_step)
+
+        total_cells = n_x_bins * n_y_cells
+
+        # ----- allocate accumulators -----
+        if averaging in ("db_mean", "linear_mean"):
+            acc_sum = np.zeros(total_cells, dtype=np.float64)
+            acc_count = np.zeros(total_cells, dtype=np.int64)
+        elif averaging == "min":
+            acc_val = np.full(total_cells, np.inf, dtype=np.float64)
+        elif averaging == "max":
+            acc_val = np.full(total_cells, -np.inf, dtype=np.float64)
+        elif averaging == "median":
+            # Collect all values per cell (slower, more memory)
+            cell_values = [[] for _ in range(total_cells)]
+
+        # ----- process pings in chunks -----
+        max_s = int(max_sample_counts.max()) + 1
+        bytes_per_ping = max_s * 4
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+
+        sample_indices_row = np.arange(max_s, dtype=np.float64)
+
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter, desc="Gridding", delay=0.5, unit="chunk", total=n_chunks,
+            )
+
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            nc = chunk_end - chunk_start
+
+            chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
+
+            # Apply data transforms (factor, offset, transform)
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+
+            chunk_data = chunk_data.astype(np.float64)
+
+            # Effective sample count: min of max_s and actual data width
+            eff_s = min(max_s, chunk_data.shape[1])
+            chunk_data = chunk_data[:, :eff_s]
+
+            # X row indices for this chunk
+            chunk_x_bins = x_bins[chunk_start:chunk_end]
+            chunk_row_idx = x_bin_to_row[chunk_x_bins - x_bin_offset]  # (nc,)
+
+            # Y bin indices for every (ping, sample) in the chunk
+            chunk_y_min = y_min[chunk_start:chunk_end]           # (nc,)
+            chunk_y_max = y_max[chunk_start:chunk_end]           # (nc,)
+            chunk_n_samples = max_sample_counts[chunk_start:chunk_end]  # (nc,)
+
+            # Affine: y_coord = y_min + (y_max - y_min) / n_samples * j
+            b_fwd = np.where(
+                chunk_n_samples > 0,
+                (chunk_y_max - chunk_y_min) / chunk_n_samples,
+                0.0,
+            )  # (nc,)
+            # y_coords shape (nc, eff_s)
+            y_coords = chunk_y_min[:, None] + b_fwd[:, None] * sample_indices_row[None, :eff_s]
+            y_bin_idx = np.round(y_coords / y_step).astype(np.int64) - y_bin_min  # (nc, eff_s)
+
+            # Row indices broadcast
+            row_idx_2d = np.broadcast_to(chunk_row_idx[:, None], (nc, eff_s))
+
+            # Valid mask
+            valid = (
+                np.isfinite(chunk_data)
+                & (y_bin_idx >= 0)
+                & (y_bin_idx < n_y_cells)
+            )
+            # Also mask samples beyond ping's own sample count
+            sample_mask = sample_indices_row[None, :eff_s] <= chunk_n_samples[:, None]
+            valid &= sample_mask
+
+            flat_idx = row_idx_2d[valid] * n_y_cells + y_bin_idx[valid]
+            flat_vals = chunk_data[valid]
+
+            if averaging == "db_mean":
+                acc_sum += np.bincount(flat_idx, weights=flat_vals, minlength=total_cells)
+                acc_count += np.bincount(flat_idx, minlength=total_cells)
+            elif averaging == "linear_mean":
+                lin_vals = np.power(10.0, flat_vals / 10.0)
+                acc_sum += np.bincount(flat_idx, weights=lin_vals, minlength=total_cells)
+                acc_count += np.bincount(flat_idx, minlength=total_cells)
+            elif averaging == "min":
+                np.minimum.at(acc_val, flat_idx, flat_vals)
+            elif averaging == "max":
+                np.maximum.at(acc_val, flat_idx, flat_vals)
+            elif averaging == "median":
+                for fi, fv in zip(flat_idx, flat_vals):
+                    cell_values[fi].append(fv)
+
+        # ----- compute result -----
+        result = np.full((n_x_bins, n_y_cells), np.nan, dtype=np.float32)
+        if averaging == "db_mean":
+            mask = acc_count > 0
+            vals = np.where(mask, acc_sum / np.maximum(acc_count, 1), np.nan)
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging == "linear_mean":
+            mask = acc_count > 0
+            vals = np.where(mask, 10.0 * np.log10(acc_sum / np.maximum(acc_count, 1)), np.nan)
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging in ("min", "max"):
+            vals = acc_val.copy()
+            vals[np.isinf(vals)] = np.nan
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging == "median":
+            flat_result = np.full(total_cells, np.nan, dtype=np.float32)
+            for i, cv in enumerate(cell_values):
+                if cv:
+                    flat_result[i] = float(np.median(cv))
+            result = flat_result.reshape(n_x_bins, n_y_cells)
+
+        # ----- write store -----
+        output_path = Path(path)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # WCI data
+        wci_file = output_path / "wci_data.bin"
+        wci_mmap = np.memmap(
+            wci_file, dtype=np.float32, mode="w+", shape=(n_x_bins, n_y_cells)
+        )
+        wci_mmap[:] = result
+        wci_mmap.flush()
+        del wci_mmap
+
+        # Bin x coordinates (cell centres)
+        bin_x_coords = unique_x_bins.astype(np.float64) * x_step
+        np.save(output_path / "bin_x_coordinates.npy", bin_x_coords)
+        np.save(output_path / "ping_times.npy", bin_x_coords)
+        np.save(output_path / "ping_counts.npy", x_bin_counts.astype(np.int32))
+
+        # Lat/lon: average per bin (if available)
+        has_latlon = self._backend.has_latlon
+        if has_latlon:
+            src_lats = self._backend.latitudes
+            src_lons = self._backend.longitudes
+            bin_lats = np.zeros(n_x_bins, dtype=np.float64)
+            bin_lons = np.zeros(n_x_bins, dtype=np.float64)
+            for i in range(n_pings):
+                row = x_bin_to_row[x_bins[i] - x_bin_offset]
+                bin_lats[row] += src_lats[i]
+                bin_lons[row] += src_lons[i]
+            bin_lats /= x_bin_counts
+            bin_lons /= x_bin_counts
+            np.save(output_path / "latitudes.npy", bin_lats)
+            np.save(output_path / "longitudes.npy", bin_lons)
+
+        # Ping parameters
+        ping_params = self._get_all_ping_params()
+        ping_param_names = []
+        ping_params_meta = {}
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            timestamps = np.asarray(timestamps, dtype=np.float64)
+            values = np.asarray(values, dtype=np.float64)
+            if downsample_ping_params:
+                # Average values onto new x grid using bin assignments
+                ds_times = bin_x_coords
+                ds_values = np.full(n_x_bins, np.nan, dtype=np.float64)
+                val_sum = np.zeros(n_x_bins, dtype=np.float64)
+                val_count = np.zeros(n_x_bins, dtype=np.int64)
+                # Map original timestamps to bins
+                param_bins = np.round(timestamps / x_step).astype(np.int64)
+                for j in range(len(timestamps)):
+                    b = param_bins[j]
+                    bi = b - x_bin_offset
+                    if 0 <= bi < len(x_bin_to_row) and x_bin_to_row[bi] >= 0:
+                        row = x_bin_to_row[bi]
+                        if np.isfinite(values[j]):
+                            val_sum[row] += values[j]
+                            val_count[row] += 1
+                mask = val_count > 0
+                ds_values[mask] = val_sum[mask] / val_count[mask]
+                np.save(output_path / f"ping_param_{name}_times.npy", ds_times)
+                np.save(output_path / f"ping_param_{name}_values.npy", ds_values)
+            else:
+                # Keep original resolution
+                np.save(output_path / f"ping_param_{name}_times.npy", timestamps)
+                np.save(output_path / f"ping_param_{name}_values.npy", values)
+
+        # Layers
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y)
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y)
+        has_main_layer = self.main_layer is not None
+        if has_main_layer:
+            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y)
+            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y)
+
+        # Storage mode
+        storage_mode = StorageAxisMode(
+            x_axis=x_axis_type,
+            y_axis=y_axis_type,
+            x_resolution=x_step,
+            x_origin=float(unique_x_bins.min()) * x_step,
+            y_resolution=y_step,
+            y_origin=y_origin,
+        )
+
+        # Metadata
+        metadata = {
+            "format_type": "gridded_mmap",
+            "format_version": GRIDDED_MMAP_FORMAT_VERSION,
+            "n_x_bins": int(n_x_bins),
+            "n_y_cells": int(n_y_cells),
+            "x_step": float(x_step),
+            "y_step": float(y_step),
+            "y_origin": float(y_origin),
+            "x_axis_type": x_axis_type,
+            "y_axis_type": y_axis_type,
+            "averaging": averaging,
+            "wci_value": self._backend.wci_value,
+            "linear_mean": self._backend.linear_mean,
+            "has_navigation": self._backend.has_navigation,
+            "has_latlon": has_latlon,
+            "ping_param_names": ping_param_names,
+            "ping_params_meta": ping_params_meta,
+            "ping_params_gridded": downsample_ping_params,
+            "storage_mode": storage_mode.to_dict(),
+            "x_axis_name": x_axis_name,
+            "y_axis_name": y_axis_name,
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
+            "layer_names": layer_names,
+            "has_main_layer": has_main_layer,
+        }
+
+        with open(output_path / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        return str(output_path)
+
+    @classmethod
+    def from_gridded_mmap(
+        cls,
+        path: str,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a gridded mmap store.
+
+        The WCI data is memory-mapped and lazy-loaded.  Axis type settings
+        are restored from saved metadata.
+
+        Args:
+            path: Path to the gridded mmap store directory.
+
+        Returns:
+            EchogramBuilder backed by a GriddedMmapBackend.
+        """
+        import json
+        from pathlib import Path as _Path
+        from .backends.gridded_mmap_backend import GriddedMmapBackend
+
+        backend = GriddedMmapBackend.from_path(path)
+        builder = cls(backend)
+
+        metadata_file = _Path(path) / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, "r") as f:
+                metadata = json.load(f)
+
+            x_axis_name = metadata.get("x_axis_name")
+            y_axis_name = metadata.get("y_axis_name")
+            builder._apply_axis_type(x_axis_name, y_axis_name)
+
+            builder._x_oversampling = int(metadata.get("x_oversampling", 1))
+            builder._y_oversampling = int(metadata.get("y_oversampling", 1))
+            builder._oversampling_mode = metadata.get("oversampling_mode", "linear_mean")
+
+            store_path = _Path(path)
+            builder._restore_layers_from_store(
+                layer_names_json=json.dumps(metadata.get("layer_names", [])),
+                has_main_layer=metadata.get("has_main_layer", False),
+                get_array=lambda name: (
+                    np.load(store_path / f"{name}.npy")
+                    if (store_path / f"{name}.npy").exists()
+                    else None
+                ),
+            )
+
         return builder
 

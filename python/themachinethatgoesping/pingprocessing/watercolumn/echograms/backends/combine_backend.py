@@ -72,6 +72,17 @@ def first_valid(stack: np.ndarray, axis: int) -> np.ndarray:
     return result
 
 
+def nandiff(stack: np.ndarray, axis: int) -> np.ndarray:
+    """Difference: first backend minus all others (NaN-aware).
+    
+    Computes stack[0] - stack[1] - stack[2] - ... ignoring NaN.
+    """
+    result = stack[0].copy()
+    for i in range(1, stack.shape[0]):
+        result = result - stack[i]
+    return result
+
+
 # Registry of built-in functions
 COMBINE_FUNCTIONS = {
     "nanmean": nanmean,
@@ -80,6 +91,7 @@ COMBINE_FUNCTIONS = {
     "nanmax": nanmax,
     "nanmin": nanmin,
     "nanstd": nanstd,
+    "nandiff": nandiff,
     "mean": mean,
     "first_valid": first_valid,
 }
@@ -131,6 +143,7 @@ class CombineBackend(EchogramDataBackend):
         x_align: str = "ping_index",
         y_align: str = "sample_index",
         linear: bool = True,
+        data_transforms: list = None,
     ):
         """Initialize CombineBackend.
         
@@ -153,6 +166,9 @@ class CombineBackend(EchogramDataBackend):
                 combining, then convert back to dB. This gives acoustically
                 correct averaging of intensities. Set to False to combine
                 directly in dB domain.
+            data_transforms: Optional list of (factor, offset, transform_func) tuples,
+                one per backend. If provided, applied to each backend's image before
+                combining. None entries or None list means no transforms.
         
         Raises:
             ValueError: If backends list is empty or invalid align mode.
@@ -170,6 +186,7 @@ class CombineBackend(EchogramDataBackend):
         self._x_align = x_align
         self._y_align = y_align
         self._linear = linear
+        self._data_transforms = data_transforms
         
         # Resolve combine function
         if isinstance(combine_func, str):
@@ -772,6 +789,14 @@ class CombineBackend(EchogramDataBackend):
                 
                 img = backend.get_image(backend_request)
             
+            # Apply per-backend data transforms (factor, offset, transform)
+            if self._data_transforms is not None and self._data_transforms[backend_idx] is not None:
+                factor, offset, transform_func = self._data_transforms[backend_idx]
+                if factor != 1.0 or offset != 0.0:
+                    img = img * factor + offset
+                if transform_func is not None:
+                    img = transform_func(img)
+
             images.append(img)
         
         # Stack: shape (n_backends, nx, ny)

@@ -4,6 +4,7 @@ from .base import EchogramDataBackend
 from .ping_backend import PingDataBackend
 from .zarr_backend import ZarrDataBackend
 from .mmap_backend import MmapDataBackend
+from .gridded_mmap_backend import GriddedMmapBackend, AVERAGING_MODES
 from .concat_backend import ConcatBackend
 from .combine_backend import CombineBackend, COMBINE_FUNCTIONS
 from .storage_mode import (
@@ -19,6 +20,8 @@ __all__ = [
     "PingDataBackend", 
     "ZarrDataBackend",
     "MmapDataBackend",
+    "GriddedMmapBackend",
+    "AVERAGING_MODES",
     "ConcatBackend",
     "CombineBackend",
     "COMBINE_FUNCTIONS",
