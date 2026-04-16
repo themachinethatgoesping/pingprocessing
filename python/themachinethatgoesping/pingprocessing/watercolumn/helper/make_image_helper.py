@@ -51,14 +51,16 @@ def get_bottom_directions_wci(
     # Raytrace to bottom assuming constant sound velocity profile.
     rt = geoprocessing.raytracers.RTConstantSVP(geolocation, c)
     xyz = rt.trace_points(bottomdirections)
-    bottom_directions = geoprocessing.datastructures.SampleDirectionsRange_1([ping.watercolumn.get_number_of_beams()])
+    bottom_directions = geoprocessing.datastructures.SampleDirectionsRange_1([selection.get_number_of_beams()])
     bottom_directions.crosstrack_angle = bottomdirections.crosstrack_angle
     bottom_directions.alongtrack_angle = bottomdirections.alongtrack_angle
     bottom_directions.range = xyz.true_range    
     
     return xyz, bottom_directions, bottom_direction_sample_numbers
 
-def get_bottom_directions_bottom(ping: echosounders.filetemplates.I_Ping) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
+def get_bottom_directions_bottom(
+    ping: echosounders.filetemplates.I_Ping,
+    selection: echosounders.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
     """
     Retrieve bottom positions/directions/sample numbers from a bottom ping.
 
@@ -66,6 +68,8 @@ def get_bottom_directions_bottom(ping: echosounders.filetemplates.I_Ping) -> (ge
     ----------
     ping : echosounders.filetemplates.I_Ping
         Ping to retrieve bottom positions/directions/sample numbers from.
+    selection : echosounders.pingtools.BeamSelection, optional
+        A beam selection to filter beams, by default None (all beams).
 
     Returns
     -------
@@ -82,14 +86,20 @@ def get_bottom_directions_bottom(ping: echosounders.filetemplates.I_Ping) -> (ge
     posoff = sc.get_position_source()
     geolocation = ping.get_geolocation()
     
-    xyz = ping.bottom.get_xyz()
+    if selection is not None:
+        xyz = ping.bottom.get_xyz(selection)
+    else:
+        xyz = ping.bottom.get_xyz()
     xyz.x = xyz.x + posoff.x
     xyz.y = xyz.y + posoff.y
     xyz.z = xyz.z + geolocation.z
     
     bt = geoprocessing.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
     bottom_directions = bt.backtrace_points(xyz)
-    bottom_direction_sample_numbers = ping.watercolumn.get_bottom_range_samples()
+    if selection is not None:
+        bottom_direction_sample_numbers = ping.watercolumn.get_bottom_range_samples(selection)
+    else:
+        bottom_direction_sample_numbers = ping.watercolumn.get_bottom_range_samples()
     
     return xyz, bottom_directions, bottom_direction_sample_numbers
 

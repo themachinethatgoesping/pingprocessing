@@ -189,8 +189,18 @@ class PingDataBackend(EchogramDataBackend):
             if ping.has_bottom():
                 if ping.bottom.has_xyz():
                     try:
-                        br = ping.bottom.get_bottom_z(sel)
-                        mr = ping.watercolumn.get_minslant_sample_nr() * range_res * angle_factor
+                        # Compute bottom depth from watercolumn bottom range samples
+                        # using the PSS-filtered selection (sel). This avoids the
+                        # angle/beam-index mismatch between watercolumn and bottom
+                        # objects (they can have different beam counts and angle
+                        # definitions, especially for KMALL data).
+                        bottom_samples = ping.watercolumn.get_bottom_range_samples(sel)
+                        valid = bottom_samples[bottom_samples > 0]
+                        if len(valid) > 0:
+                            br = float(np.median(valid)) * range_res * angle_factor
+                        else:
+                            br = float(np.median(bottom_samples)) * range_res * angle_factor
+                        mr = ping.watercolumn.get_minslant_sample_nr(sel) * range_res * angle_factor
                         bottom_d_times.append(times[nr])
 
                         if not no_navigation:
