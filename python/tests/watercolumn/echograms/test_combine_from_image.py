@@ -1232,7 +1232,7 @@ class TestCombineDepthExtentTimeAlignment:
                 )
 
     def test_max_sample_counts_time_aligned(self):
-        """max_sample_counts uses first backend; depth extents are time-aligned."""
+        """max_sample_counts reflects finest backend resolution per-ping."""
         t0 = 1_000_000_000.0
         n_mbes, n_sbes = 200, 50
         b_m = _make_backend(n_mbes, 833, t0, t0 + 400, 5.0, 25.0)
@@ -1243,11 +1243,19 @@ class TestCombineDepthExtentTimeAlignment:
         ec = EchogramBuilder.combine([eb_m, eb_s], combine_func="nanmean", linear=False)
         cb = ec.backend
 
-        # max_sample_counts stays from first backend (MBES) everywhere
-        # (kept for get_column/layer compatibility)
-        assert np.all(cb.max_sample_counts <= 833), (
-            f"max_sample_counts should be from first backend (<=833), "
-            f"got max={np.max(cb.max_sample_counts)}"
+        # Before SBES overlap: max_sample_counts == MBES counts (832)
+        sbes_start_idx = np.searchsorted(cb.ping_times, t0 + 300)
+        safe_end = max(0, sbes_start_idx - 2)
+        assert np.all(cb.max_sample_counts[:safe_end] == 832), (
+            f"MBES-only region should have 832, got {cb.max_sample_counts[:safe_end]}"
+        )
+
+        # During overlap: max_sample_counts increases to cover wider depth
+        # at the finer SBES resolution
+        overlap_counts = cb.max_sample_counts[sbes_start_idx:]
+        assert np.all(overlap_counts > 833), (
+            f"Overlap region should have more samples than MBES alone, "
+            f"got min={np.min(overlap_counts)}"
         )
 
         # But depth extents should be time-aligned
@@ -1310,3 +1318,34 @@ class TestCombineDepthExtentTimeAlignment:
                     f"is {c_val:.1f}dB, expected > -45dB (marker). "
                     f"MBES value is {m_val:.1f}dB"
                 )
+
+    def test_depth_extents_dense_during_overlap(self):
+        """Every combined ping in the overlap region should have SBES depth extents.
+
+        With MBES at 4x the ping rate of SBES, the previous backend→combined
+        mapping left ~3 out of 4 combined pings without SBES depth contributions.
+        The fix (combined→backend mapping) should give dense coverage.
+        """
+        t0 = 1_000_000_000.0
+        n_mbes, n_sbes = 400, 100  # 4x denser MBES
+        # SBES starts at t0+200, overlap from t0+200 to t0+400
+        b_m = _make_backend(n_mbes, 833, t0, t0 + 400, 5.0, 25.0)
+        b_s = _make_backend(n_sbes, 5504, t0 + 200, t0 + 400, 5.0, 55.0)
+        eb_m = _make_builder(b_m)
+        eb_s = _make_builder(b_s)
+
+        ec = EchogramBuilder.combine([eb_m, eb_s], combine_func="nanmean", linear=False)
+        cb = ec.backend
+
+        # Find the overlap region (well inside, skip boundaries)
+        overlap_start = np.searchsorted(cb.ping_times, t0 + 210)
+        overlap_end = np.searchsorted(cb.ping_times, t0 + 390)
+
+        # ALL pings in overlap should have depth_max >= 50 (from SBES)
+        overlap_depth_max = cb.depth_extents[1][overlap_start:overlap_end]
+        n_with_sbes = np.sum(overlap_depth_max > 40.0)
+        total = len(overlap_depth_max)
+        assert n_with_sbes == total, (
+            f"Expected ALL {total} overlap pings to have SBES depth_max > 40m, "
+            f"but only {n_with_sbes} do (sparse mapping bug)"
+        )
