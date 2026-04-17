@@ -209,6 +209,69 @@ class EchogramBuilder:
         return cls(backend=backend)
 
     @classmethod
+    def from_image(
+        cls,
+        image: np.ndarray,
+        ping_times: np.ndarray,
+        y_min,
+        y_max,
+        *,
+        y_axis: str = "range",
+        wci_value: str = "sv",
+        linear_mean: bool = True,
+        latitudes: Optional[np.ndarray] = None,
+        longitudes: Optional[np.ndarray] = None,
+        ping_params: Optional[dict] = None,
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from a 2D image array with extent metadata.
+
+        This is the replacement for the old ``EchoData`` helper. Pass any 2D
+        numpy array (in-memory or memory-mapped) together with per-ping
+        y-axis extents and timestamps.
+
+        Args:
+            image: 2D array of shape (n_pings, n_samples).  Accepts both
+                regular ``ndarray`` and ``np.memmap``.
+            ping_times: Unix timestamps per ping, shape (n_pings,).
+            y_min: Per-ping minimum y value (float or array).
+            y_max: Per-ping maximum y value (float or array).
+            y_axis: Coordinate type for the y-axis.  One of
+                ``"range"`` (default), ``"depth"``, or ``"sample_index"``.
+            wci_value: Label for the stored quantity (e.g. ``"sv"``).
+            linear_mean: Whether beam averaging was done in linear domain.
+            latitudes: Optional per-ping latitudes.
+            longitudes: Optional per-ping longitudes.
+            ping_params: Optional dict of pre-computed ping parameters,
+                ``{name: (y_reference, (timestamps, values))}``.
+
+        Returns:
+            EchogramBuilder instance.
+
+        Examples:
+            >>> import numpy as np
+            >>> image = np.random.rand(100, 200).astype(np.float32)
+            >>> times = np.linspace(0, 100, 100)
+            >>> builder = EchogramBuilder.from_image(
+            ...     image, times, y_min=0.5, y_max=50.0, y_axis="depth"
+            ... )
+        """
+        from .backends import ImageBackend
+
+        backend = ImageBackend.from_image(
+            image,
+            ping_times,
+            y_min,
+            y_max,
+            y_axis=y_axis,
+            wci_value=wci_value,
+            linear_mean=linear_mean,
+            latitudes=latitudes,
+            longitudes=longitudes,
+            ping_params=ping_params,
+        )
+        return cls(backend=backend)
+
+    @classmethod
     def from_pings_dict(
         cls,
         pings_dict: dict,
@@ -3275,5 +3338,181 @@ class EchogramBuilder:
                 ),
             )
 
+        return builder
+
+    # =========================================================================
+    # Image export (in-memory or mmap)
+    # =========================================================================
+
+    def to_image(
+        self,
+        path: Optional[str] = None,
+        progress: bool = True,
+        chunk_mb: float = 50.0,
+    ) -> "EchogramBuilder":
+        """Export the current view to an ImageBackend (in-memory or mmap).
+
+        The current x/y axis settings determine the coordinate system of
+        the output.  Each source ping is stored as one column, the y-axis
+        is resampled onto a regular grid derived from the global y extents.
+
+        Args:
+            path: If *None* (default) the image is kept in memory as a
+                numpy array.  If a file path is given, the image is written
+                as a raw float32 binary and opened as a read-only memmap.
+            progress: Show progress bar.
+            chunk_mb: Approximate chunk size in MB for reading source data.
+
+        Returns:
+            A **new** EchogramBuilder backed by an ``ImageBackend``.
+            Layers from the current builder are **not** transferred
+            (create new layers on the returned builder if needed).
+
+        Examples:
+            >>> builder.set_y_axis_depth()
+            >>> fast = builder.to_image()            # in-memory
+            >>> fast = builder.to_image("cache.bin") # on-disk mmap
+        """
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+
+        from .backends.image_backend import ImageBackend
+
+        # ----- resolve y-axis -----
+        y_axis_name = self._coord_system.y_axis_name
+
+        if y_axis_name == "Depth (m)":
+            if self._backend.depth_extents is None:
+                raise ValueError("Depth extents not available in backend")
+            y_min_arr, y_max_arr = self._backend.depth_extents
+            y_axis = "depth"
+        elif y_axis_name == "Range (m)":
+            if self._backend.range_extents is None:
+                raise ValueError("Range extents not available in backend")
+            y_min_arr, y_max_arr = self._backend.range_extents
+            y_axis = "range"
+        else:
+            s_min, s_max = self._backend.sample_nr_extents
+            y_min_arr = s_min.astype(np.float64)
+            y_max_arr = s_max.astype(np.float64)
+            y_axis = "sample_index"
+
+        y_min_arr = np.asarray(y_min_arr, dtype=np.float64)
+        y_max_arr = np.asarray(y_max_arr, dtype=np.float64)
+        n_pings = self._backend.n_pings
+        max_sample_counts = self._backend.max_sample_counts
+
+        # Global y extent → output grid
+        global_y_min = float(np.nanmin(y_min_arr))
+        global_y_max = float(np.nanmax(y_max_arr))
+
+        # Compute a common resolution from the median per-ping step
+        resolutions = np.where(
+            max_sample_counts > 1,
+            (y_max_arr - y_min_arr) / (max_sample_counts - 1),
+            1.0,
+        )
+        y_res = float(np.nanmedian(resolutions))
+        if y_res <= 0:
+            y_res = 1.0
+        n_samples = max(1, int(np.round((global_y_max - global_y_min) / y_res)) + 1)
+
+        # Output y grid (cell centres)
+        y_grid = global_y_min + np.arange(n_samples, dtype=np.float64) * y_res
+
+        # ----- allocate output -----
+        if path is not None:
+            out_path = Path(path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            image = np.memmap(
+                out_path, dtype=np.float32, mode="w+",
+                shape=(n_pings, n_samples),
+            )
+        else:
+            image = np.full((n_pings, n_samples), np.nan, dtype=np.float32)
+
+        # ----- fill image in chunks -----
+        max_s = int(max_sample_counts.max()) + 1
+        bytes_per_ping = max_s * 4
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter, desc="to_image", delay=0.5,
+                unit="chunk", total=n_chunks,
+            )
+
+        for ci in chunk_iter:
+            cs = ci * chunk_size
+            ce = min(cs + chunk_size, n_pings)
+            nc = ce - cs
+
+            chunk_data = self._backend.get_chunk(cs, ce).astype(np.float64)
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+
+            eff_s = min(max_s, chunk_data.shape[1])
+            chunk_data = chunk_data[:, :eff_s]
+            sample_j = np.arange(eff_s, dtype=np.float64)
+
+            c_y_min = y_min_arr[cs:ce]
+            c_y_max = y_max_arr[cs:ce]
+            c_ns = max_sample_counts[cs:ce]
+
+            # source y per sample: y = y_min + (y_max - y_min) / ns * j
+            b_fwd = np.where(c_ns > 1, (c_y_max - c_y_min) / (c_ns - 1), 0.0)
+            src_y = c_y_min[:, None] + b_fwd[:, None] * sample_j[None, :eff_s]
+
+            # Map source y → output column index (nearest)
+            out_idx = np.rint((src_y - global_y_min) / y_res).astype(np.int64)
+            valid = (
+                np.isfinite(chunk_data)
+                & (out_idx >= 0)
+                & (out_idx < n_samples)
+                & (sample_j[None, :eff_s] < c_ns[:, None])
+            )
+
+            for row in range(nc):
+                m = valid[row]
+                image[cs + row, out_idx[row, m]] = chunk_data[row, m].astype(np.float32)
+
+        # ----- flush mmap if on-disk -----
+        if isinstance(image, np.memmap):
+            image.flush()
+            del image
+            image = np.memmap(path, dtype=np.float32, mode="r",
+                              shape=(n_pings, n_samples))
+
+        # ----- build new ImageBackend -----
+        ping_times = self._backend.ping_times.copy()
+
+        # Propagate lat/lon
+        lats = self._backend.latitudes
+        lons = self._backend.longitudes
+
+        # Propagate ping params
+        ping_params = self._get_all_ping_params()
+
+        backend = ImageBackend(
+            image,
+            ping_times,
+            y_min=global_y_min,
+            y_max=global_y_min + (n_samples - 1) * y_res,
+            y_axis=y_axis,
+            wci_value=self._backend.wci_value,
+            linear_mean=self._backend.linear_mean,
+            latitudes=lats,
+            longitudes=lons,
+            ping_params=ping_params,
+        )
+
+        builder = type(self)(backend)
+        self._copy_view_settings(builder)
         return builder
 

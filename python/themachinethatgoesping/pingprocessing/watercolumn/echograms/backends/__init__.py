@@ -7,6 +7,7 @@ from .mmap_backend import MmapDataBackend
 from .gridded_mmap_backend import GriddedMmapBackend, AVERAGING_MODES
 from .concat_backend import ConcatBackend
 from .combine_backend import CombineBackend, COMBINE_FUNCTIONS
+from .image_backend import ImageBackend
 from .storage_mode import (
     StorageAxisMode,
     XAxisType,
@@ -25,6 +26,7 @@ __all__ = [
     "ConcatBackend",
     "CombineBackend",
     "COMBINE_FUNCTIONS",
+    "ImageBackend",
     "StorageAxisMode",
     "XAxisType",
     "YAxisType",

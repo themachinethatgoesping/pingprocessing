@@ -258,6 +258,11 @@ class CombineBackend(EchogramDataBackend):
         # Other backends will be resampled to match during get_image
         self._n_pings = first.n_pings
         self._ping_times = first.ping_times.copy()
+        
+        # max_sample_counts from the first (reference) backend.
+        # We keep the first backend's sample counts rather than taking the
+        # per-ping max across all backends, because get_column() aligns by
+        # sample index and changing the sample count would break layer code.
         self._max_sample_counts = first.max_sample_counts.copy()
         
         # Sample extents from first backend
@@ -266,33 +271,35 @@ class CombineBackend(EchogramDataBackend):
         self._sample_nr_max = self._sample_nr_max.copy()
         
         # Range extents - use union (min of mins, max of maxes) across backends
+        # Time-aligned: each backend's extents placed at correct combined indices
         if all(b.range_extents is not None for b in self._backends):
-            all_min_r = np.stack([b.range_extents[0][:self._n_pings] for b in self._backends 
-                                  if len(b.range_extents[0]) >= self._n_pings], axis=0)
-            all_max_r = np.stack([b.range_extents[1][:self._n_pings] for b in self._backends
-                                  if len(b.range_extents[1]) >= self._n_pings], axis=0)
-            if len(all_min_r) > 0:
-                self._range_min = np.nanmin(all_min_r, axis=0)
-                self._range_max = np.nanmax(all_max_r, axis=0)
-            else:
-                self._range_min = first.range_extents[0].copy()
-                self._range_max = first.range_extents[1].copy()
+            aligned_min_r = []
+            aligned_max_r = []
+            for i, b in enumerate(self._backends):
+                min_r, max_r = b.range_extents
+                aligned_min_r.append(self._align_backend_array_to_combined(min_r, i))
+                aligned_max_r.append(self._align_backend_array_to_combined(max_r, i))
+            all_min_r = np.stack(aligned_min_r, axis=0)
+            all_max_r = np.stack(aligned_max_r, axis=0)
+            self._range_min = np.nanmin(all_min_r, axis=0)
+            self._range_max = np.nanmax(all_max_r, axis=0)
         else:
             self._range_min = None
             self._range_max = None
         
         # Depth extents - use union across backends
+        # Time-aligned: each backend's extents placed at correct combined indices
         if all(b.depth_extents is not None for b in self._backends):
-            all_min_d = np.stack([b.depth_extents[0][:self._n_pings] for b in self._backends
-                                  if len(b.depth_extents[0]) >= self._n_pings], axis=0)
-            all_max_d = np.stack([b.depth_extents[1][:self._n_pings] for b in self._backends
-                                  if len(b.depth_extents[1]) >= self._n_pings], axis=0)
-            if len(all_min_d) > 0:
-                self._depth_min = np.nanmin(all_min_d, axis=0)
-                self._depth_max = np.nanmax(all_max_d, axis=0)
-            else:
-                self._depth_min = first.depth_extents[0].copy()
-                self._depth_max = first.depth_extents[1].copy()
+            aligned_min_d = []
+            aligned_max_d = []
+            for i, b in enumerate(self._backends):
+                min_d, max_d = b.depth_extents
+                aligned_min_d.append(self._align_backend_array_to_combined(min_d, i))
+                aligned_max_d.append(self._align_backend_array_to_combined(max_d, i))
+            all_min_d = np.stack(aligned_min_d, axis=0)
+            all_max_d = np.stack(aligned_max_d, axis=0)
+            self._depth_min = np.nanmin(all_min_d, axis=0)
+            self._depth_max = np.nanmax(all_max_d, axis=0)
         else:
             self._depth_min = None
             self._depth_max = None
@@ -313,6 +320,55 @@ class CombineBackend(EchogramDataBackend):
         
         # Combine ping parameters
         self._ping_params = self._combine_ping_params()
+
+    @staticmethod
+    def _pad_to_length(arr: np.ndarray, target_length: int) -> np.ndarray:
+        """Pad array to target length with NaN if shorter, or truncate if longer."""
+        arr = np.asarray(arr, dtype=np.float64)
+        if len(arr) >= target_length:
+            return arr[:target_length]
+        padded = np.full(target_length, np.nan, dtype=np.float64)
+        padded[:len(arr)] = arr
+        return padded
+
+    def _align_backend_array_to_combined(self, arr: np.ndarray, backend_idx: int) -> np.ndarray:
+        """Align a per-ping array from a sub-backend to combined ping indices.
+
+        For backend 0 (the reference), pads/truncates to combined length since
+        the combined ping times ARE the first backend's times.
+        For other backends, places values at the combined ping index closest
+        in time to each backend ping.
+        """
+        if backend_idx == 0:
+            return self._pad_to_length(arr, self._n_pings)
+
+        backend = self._backends[backend_idx]
+        backend_times = backend.ping_times
+        combined_times = self._ping_times
+        result = np.full(self._n_pings, np.nan, dtype=np.float64)
+
+        if len(backend_times) == 0 or len(combined_times) == 0:
+            return result
+
+        n_combined = len(combined_times)
+        arr = np.asarray(arr, dtype=np.float64)
+
+        # For each backend ping, find nearest combined ping
+        insert_pos = np.searchsorted(combined_times, backend_times)
+
+        cand_left = np.clip(insert_pos - 1, 0, n_combined - 1)
+        cand_right = np.clip(insert_pos, 0, n_combined - 1)
+
+        diff_left = np.abs(combined_times[cand_left] - backend_times)
+        diff_right = np.abs(combined_times[cand_right] - backend_times)
+
+        use_right = diff_right <= diff_left
+        best_idx = np.where(use_right, cand_right, cand_left)
+
+        n = min(len(arr), len(best_idx))
+        result[best_idx[:n]] = arr[:n]
+
+        return result
 
     def _combine_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         """Combine ping parameters from all backends.
@@ -373,7 +429,7 @@ class CombineBackend(EchogramDataBackend):
                 
                 try:
                     interp = tools.vectorinterpolators.LinearInterpolator(
-                        times[valid], values[valid], extrapolation_mode="nearest"
+                        times[valid], values[valid], extrapolation_mode="nan"
                     )
                     interpolated_values.append(interp(unique_times))
                 except Exception:
@@ -382,8 +438,10 @@ class CombineBackend(EchogramDataBackend):
             # Stack and combine
             stacked = np.stack(interpolated_values, axis=0)
             
-            # Apply the same combine function used for images
-            combined_values = self._combine_func(stacked, axis=0)
+            # Always use nanmean for combining ping parameters (e.g., bottom depth).
+            # Using the image combine function (e.g., nandiff) would produce
+            # meaningless reference values.
+            combined_values = nanmean(stacked, axis=0)
             
             result[name] = (y_ref, (unique_times, combined_values))
         
@@ -471,20 +529,66 @@ class CombineBackend(EchogramDataBackend):
     # Data access (per-column)
     # =========================================================================
 
+    def _find_backend_ping_index(self, backend_idx: int, combined_ping_index: int) -> int:
+        """Find the ping index in a sub-backend that matches the combined ping's time.
+        
+        For the first backend (backend_idx == 0), the combined ping index IS
+        the backend ping index.  For other backends, we find the nearest ping
+        by timestamp, respecting an adaptive time tolerance.
+        
+        Returns -1 if no matching ping exists in the backend.
+        """
+        if backend_idx == 0:
+            backend = self._backends[0]
+            return combined_ping_index if combined_ping_index < backend.n_pings else -1
+        
+        backend = self._backends[backend_idx]
+        if combined_ping_index >= len(self._ping_times):
+            return -1
+        
+        query_time = self._ping_times[combined_ping_index]
+        backend_times = backend.ping_times
+        
+        if len(backend_times) == 0:
+            return -1
+        
+        # Compute adaptive tolerance (same logic as _create_time_aligned_ping_indexer)
+        intervals = []
+        if len(self._ping_times) > 1:
+            intervals.append(np.median(np.abs(np.diff(self._ping_times))))
+        if len(backend_times) > 1:
+            intervals.append(np.median(np.abs(np.diff(backend_times))))
+        tolerance = max(intervals) if intervals else 0.5
+        
+        # Find nearest ping by time
+        idx = int(np.searchsorted(backend_times, query_time))
+        best_idx = -1
+        best_diff = np.inf
+        for candidate in (idx - 1, idx):
+            if 0 <= candidate < len(backend_times):
+                diff = abs(backend_times[candidate] - query_time)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_idx = candidate
+        
+        return best_idx if best_diff <= tolerance else -1
+
     def get_column(self, ping_index: int) -> np.ndarray:
         """Get combined column data for a ping.
         
-        Fetches data from all backends, aligns by sample index, and combines.
+        Fetches data from all backends, aligns by time (for backends
+        beyond the first) and by sample index, then combines.
         Note: This is slower than get_image() due to per-column overhead.
         For building full images, get_image() is preferred.
         """
-        # Collect columns from all backends
+        # Collect columns from all backends, with proper time alignment
         columns = []
         max_len = 0
         
-        for backend in self._backends:
-            if ping_index < backend.n_pings:
-                col = backend.get_column(ping_index)
+        for backend_idx, backend in enumerate(self._backends):
+            mapped_ping = self._find_backend_ping_index(backend_idx, ping_index)
+            if mapped_ping >= 0:
+                col = backend.get_column(mapped_ping)
                 columns.append(col)
                 max_len = max(max_len, len(col))
             else:
@@ -545,16 +649,30 @@ class CombineBackend(EchogramDataBackend):
         # Ensure arrays are long enough
         n = min(n_pings, len(min_depths), len(max_depths), len(max_samples))
         
-        # Resolution per ping: (max_depth - min_depth) / n_samples
+        # Resolution per ping: (max_depth - min_depth) / max_samples
+        # max_samples is the max valid sample index (n_samples - 1), matching
+        # the coordinate system's convention: value = min + (max-min)/n * sample_idx
+        min_d = np.asarray(min_depths[:n], dtype=np.float64)
+        max_d = np.asarray(max_depths[:n], dtype=np.float64)
+        ms = np.asarray(max_samples[:n], dtype=np.float64)
+        
+        # Mark invalid pings: non-finite depths, zero/negative range, zero samples
+        invalid = ~(
+            np.isfinite(min_d) & np.isfinite(max_d)
+            & (max_d > min_d) & (ms > 0)
+        )
+        
         with np.errstate(divide='ignore', invalid='ignore'):
-            resolutions = (max_depths[:n] - min_depths[:n]) / (max_samples[:n] + 1)
-            resolutions = np.where(max_samples[:n] > 0, resolutions, np.nan)
+            resolutions = (max_d - min_d) / ms
         
         # Affine params: sample = a + b * depth
         # where a = -depth_min / resolution, b = 1 / resolution
         with np.errstate(divide='ignore', invalid='ignore'):
             affine_b = 1.0 / resolutions
-            affine_a = -min_depths[:n] / resolutions
+            affine_a = -min_d / resolutions
+        
+        affine_a[invalid] = np.nan
+        affine_b[invalid] = np.nan
         
         # Pad to full length if needed
         if n < n_pings:
@@ -570,7 +688,7 @@ class CombineBackend(EchogramDataBackend):
         self, 
         request_ping_indexer: np.ndarray, 
         backend: EchogramDataBackend,
-        time_tolerance: float = 0.5
+        time_tolerance: Optional[float] = None,
     ) -> np.ndarray:
         """Create a ping indexer for a backend aligned by time.
         
@@ -582,6 +700,8 @@ class CombineBackend(EchogramDataBackend):
             request_ping_indexer: Ping indices from request (into combined/first backend).
             backend: The sub-backend to create indexer for.
             time_tolerance: Maximum time difference (seconds) to consider a match.
+                If None, automatically computed as the median ping interval of the
+                backend (ensures every ping in the backend can be matched).
             
         Returns:
             New ping indexer mapping x-positions to this backend's ping indices.
@@ -603,6 +723,17 @@ class CombineBackend(EchogramDataBackend):
         if len(valid_indices) == 0 or len(backend_times) == 0:
             return backend_indexer
         
+        # Auto-compute tolerance from backend's ping interval if not specified.
+        # Use the median interval of the sparser backend so that every ping
+        # in either backend can be reached by at least one ping in the other.
+        if time_tolerance is None:
+            intervals = []
+            if len(combined_times) > 1:
+                intervals.append(np.median(np.abs(np.diff(combined_times))))
+            if len(backend_times) > 1:
+                intervals.append(np.median(np.abs(np.diff(backend_times))))
+            time_tolerance = max(intervals) if intervals else 0.5
+        
         # Get the combined ping indices we need to map
         combined_ping_indices = request_ping_indexer[valid_mask]
         
@@ -618,32 +749,28 @@ class CombineBackend(EchogramDataBackend):
         # This is O(n log m) instead of O(n*m)
         insert_positions = np.searchsorted(backend_times, query_times)
         
-        # For each query, check the ping at insert_pos and insert_pos-1 to find closest
-        result_indices = np.full(len(query_times), -1, dtype=np.int64)
+        # Vectorised nearest-neighbour: check candidates at pos-1 and pos
+        n_query = len(query_times)
+        n_backend = len(backend_times)
         
-        for i, (query_time, pos) in enumerate(zip(query_times, insert_positions)):
-            best_idx = -1
-            best_diff = time_tolerance
-            
-            # Check position before
-            if pos > 0:
-                diff = abs(backend_times[pos - 1] - query_time)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_idx = pos - 1
-            
-            # Check position at/after
-            if pos < len(backend_times):
-                diff = abs(backend_times[pos] - query_time)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_idx = pos
-            
-            result_indices[i] = best_idx
+        # Candidate indices (clip to valid range)
+        cand_left = np.clip(insert_positions - 1, 0, n_backend - 1)
+        cand_right = np.clip(insert_positions, 0, n_backend - 1)
+        
+        diff_left = np.abs(backend_times[cand_left] - query_times)
+        diff_right = np.abs(backend_times[cand_right] - query_times)
+        
+        # Pick the closer candidate
+        use_right = diff_right <= diff_left
+        best_indices = np.where(use_right, cand_right, cand_left)
+        best_diffs = np.where(use_right, diff_right, diff_left)
+        
+        # Apply tolerance
+        best_indices[best_diffs > time_tolerance] = -1
         
         # Map back to output array
         valid_indices_in_range = valid_indices[in_range]
-        backend_indexer[valid_indices_in_range] = result_indices
+        backend_indexer[valid_indices_in_range] = best_indices
         
         return backend_indexer
 
@@ -665,14 +792,6 @@ class CombineBackend(EchogramDataBackend):
         Handles backends with different coverage (different number of pings)
         by masking out-of-range pings as invalid for each backend.
         """
-        # Determine if we're in depth mode by checking if y_coordinates
-        # look like depth values (not sample indices)
-        y_coords = request.y_coordinates
-        
-        # Heuristic: if y values are > 10 or fractional, likely depth/range mode
-        is_depth_mode = (np.nanmax(np.abs(y_coords)) > 10 or 
-                         not np.allclose(y_coords, y_coords.astype(int)))
-        
         # Collect images from all backends
         images = []
         
