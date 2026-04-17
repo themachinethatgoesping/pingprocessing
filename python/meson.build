@@ -80,6 +80,7 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/combine_backend.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/concat_backend.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/gridded_mmap_backend.py',
+  'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/image_backend.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/mmap_backend.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/ping_backend.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/backends/storage_mode.py',
