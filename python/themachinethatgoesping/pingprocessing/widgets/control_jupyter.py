@@ -23,6 +23,7 @@ from .control_spec import (
     IntSliderSpec,
     IntTextSpec,
     LabelSpec,
+    MultiSelectSpec,
     TextSpec,
 )
 
@@ -137,6 +138,13 @@ def create_jupyter_control(spec: ControlSpecType) -> JupyterControlHandle:
         w = ipywidgets.Dropdown(
             description=spec.description, options=spec.options,
             value=spec.value,
+            layout=ipywidgets.Layout(width=spec.width),
+        )
+    elif isinstance(spec, MultiSelectSpec):
+        w = ipywidgets.SelectMultiple(
+            description=spec.description, options=spec.options,
+            value=tuple(spec.value),
+            rows=spec.rows,
             layout=ipywidgets.Layout(width=spec.width),
         )
     elif isinstance(spec, CheckboxSpec):

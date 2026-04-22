@@ -47,6 +47,21 @@ class DropdownSpec:
 
 
 @dataclass
+class MultiSelectSpec:
+    """Multi-selection list control.
+
+    ``value`` is a sequence of selected option values (the second element of
+    ``(label, value)`` tuples, or the option itself if a plain entry).
+    """
+    name: str
+    description: str
+    options: list = field(default_factory=list)
+    value: Sequence[Any] = field(default_factory=tuple)
+    width: str = "180px"
+    rows: int = 4
+
+
+@dataclass
 class CheckboxSpec:
     name: str
     description: str
@@ -101,7 +116,8 @@ class HTMLSpec:
 
 
 ControlSpecType = Union[
-    FloatSliderSpec, IntSliderSpec, DropdownSpec, CheckboxSpec,
+    FloatSliderSpec, IntSliderSpec, DropdownSpec, MultiSelectSpec,
+    CheckboxSpec,
     IntTextSpec, FloatTextSpec, ButtonSpec, LabelSpec, TextSpec, HTMLSpec,
 ]
 
@@ -337,7 +353,8 @@ ECHO_RENDER_SPECS: List[ControlSpecType] = [
     FloatSliderSpec("vmin", "vmin (all)", min=-150, max=100, step=5, value=-100, width="250px"),
     FloatSliderSpec("vmax", "vmax (all)", min=-150, max=100, step=5, value=-25, width="250px"),
     DropdownSpec("colorbar_layer", "Colorbar:",
-                 options=[("Background", "background"), ("Layer", "layer")],
+                 options=[("Background", "background"), ("Layer", "layer"),
+                          ("Param", "param")],
                  value="background", width="180px"),
     CheckboxSpec("auto_update", "Auto-update", value=True),
     CheckboxSpec("crosshair", "Sync crosshair", value=True),
@@ -392,6 +409,32 @@ ECHO_PARAM_SPECS: List[ControlSpecType] = [
              "<b>Del/Backspace</b>=delete nearest point | Buttons: +Point/-Point</small>"),
 ]
 
+# -- Parameter display controls (read-only overlay of a ping param on the
+#    echogram image; FOV-aware, stride-downsampled. When the selected param
+#    has per-ping values attached (see EchogramBuilder.set_param_values or
+#    add_ping_param(values=...)), the overlay is auto-colored by them.
+ECHO_PARAM_DISPLAY_SPECS: List[ControlSpecType] = [
+    MultiSelectSpec("param_display", "Show params:",
+                    options=[], value=(), width="180px", rows=5),
+    DropdownSpec("param_display_cmap", "Cmap:",
+                 options=["viridis", "plasma", "inferno", "magma",
+                          "turbo", "coolwarm", "RdBu", "Greys"],
+                 value="viridis", width="110px"),
+    IntTextSpec("param_display_max_points", "Max pts:",
+                value=5000, width="90px"),
+    FloatTextSpec("param_display_size", "Size:",
+                  value=8.0, width="70px"),
+    CheckboxSpec("param_display_fix_range", "Fix range", value=False,
+                 tooltip="Use the vmin/vmax below instead of auto-detecting "
+                         "the value range for param coloring"),
+    FloatTextSpec("param_display_vmin", "vmin:",
+                  value=0.0, width="90px"),
+    FloatTextSpec("param_display_vmax", "vmax:",
+                  value=1.0, width="90px"),
+    ButtonSpec("btn_refresh_param_display", "↻",
+               tooltip="Refresh parameter list from echograms", width="35px"),
+]
+
 # Echogram tab layout (used by Qt dock-based viewer for settings tabs;
 # Jupyter viewer uses flat rows instead and does not use this layout.)
 ECHO_TAB_LAYOUT: Dict[str, List[List[str]]] = {
@@ -403,6 +446,11 @@ ECHO_TAB_LAYOUT: Dict[str, List[List[str]]] = {
         ["btn_update", "btn_reset", "btn_autoscale_y", "auto_follow", "btn_goto_pingline"],
         ["btn_nav_left", "btn_nav_up", "btn_nav_down", "btn_nav_right"],
         ["x_interval", "btn_set_x_interval"],
+    ],
+    "Param Display": [
+        ["param_display", "btn_refresh_param_display"],
+        ["param_display_cmap", "param_display_size", "param_display_max_points"],
+        ["param_display_fix_range", "param_display_vmin", "param_display_vmax"],
     ],
     "Param Editor": [
         ["param_master", "param_select", "btn_refresh_params"],

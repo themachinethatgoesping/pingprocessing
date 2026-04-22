@@ -318,6 +318,17 @@ class EchogramSlot:
         self.station_overlay_bg: Optional[StationOverlayItem] = None
         self.station_overlay_fg: Optional[StationOverlayItem] = None
 
+        # Parameter display overlays (read-only; independent of param editor)
+        # Dicts keyed by param name -> ScatterPlotItem / PlotDataItem so we
+        # can show multiple params simultaneously.
+        self.param_overlays: Dict[str, pg.ScatterPlotItem] = {}
+        self.param_lines: Dict[str, pg.PlotDataItem] = {}
+        # Hidden image item used only to bind the slot ColorBarItem to the
+        # param value range when the user switches the colorbar to 'param'.
+        self.param_colorbar_proxy: Optional[pg.ImageItem] = None
+        # Last-seen combined param value range (vmin, vmax) for colorbar binding
+        self.param_value_range: Optional[Tuple[float, float]] = None
+
     def mark_dirty(self):
         self.needs_update = True
 
@@ -587,6 +598,27 @@ class EchogramCore:
         p["btn_add_point"].on_click(lambda _: self._add_point_at_cursor())
         p["btn_del_point"].on_click(lambda _: self._delete_selected_point())
 
+        # Param-display observers (optional: only if the adapter wired these
+        # controls into the panel).
+        for key in ("param_display",
+                    "param_display_cmap", "param_display_size",
+                    "param_display_max_points",
+                    "param_display_fix_range",
+                    "param_display_vmin", "param_display_vmax"):
+            try:
+                p[key].on_change(self._on_param_display_change)
+            except (KeyError, AttributeError):
+                pass
+        try:
+            p["btn_refresh_param_display"].on_click(
+                lambda _: (self._refresh_param_display_options(),
+                           self._update_param_display_all()))
+        except (KeyError, AttributeError):
+            pass
+
+        # Populate the dropdowns now that all echograms are known.
+        self._refresh_param_display_options()
+
     # =====================================================================
     # Grid layout
     # =====================================================================
@@ -669,6 +701,12 @@ class EchogramCore:
             slot.station_overlay_bg = None
             slot.station_overlay_fg = None
 
+            # Parameter display overlays (created lazily on first render)
+            slot.param_overlays = {}
+            slot.param_lines = {}
+            slot.param_colorbar_proxy = None
+            slot.param_value_range = None
+
             # Link axes
             if master_plot is None:
                 master_plot = plot
@@ -685,6 +723,9 @@ class EchogramCore:
             self._param_edit_state['roi_items'] = {}
             self._param_edit_state['line_items'] = {}
             self._update_param_visualization()
+
+        # Recreate param-display overlays after grid change
+        self._update_param_display_all()
 
     # =====================================================================
     # Event handlers (called by adapters or wire_observers)
@@ -833,6 +874,9 @@ class EchogramCore:
 
         slot.needs_update = False
 
+        # Refresh parameter-display overlay for this slot (view-range aware)
+        self._update_param_display(slot)
+
     def _update_slot_image(self, slot: EchogramSlot, key: str,
                            data: np.ndarray,
                            extent: Tuple[float, float, float, float]) -> None:
@@ -882,8 +926,9 @@ class EchogramCore:
         current_levels = slot.colorbar.levels()
         if old_layer == 'background':
             slot.background_levels = current_levels
-        else:
+        elif old_layer == 'layer':
             slot.layer_levels = current_levels
+        # (nothing to stash for 'param' — its levels come from the data)
 
         slot.active_colorbar_layer = new_layer
 
@@ -895,6 +940,10 @@ class EchogramCore:
                     slot.colorbar.setColorMap(self._colormap_layer)
                 if slot.layer_levels is not None:
                     slot.colorbar.setLevels(slot.layer_levels)
+        elif new_layer == 'param':
+            # Re-render the overlay so the proxy image + colorbar pick up
+            # the current value range and colormap.
+            self._update_param_display(slot)
         else:
             bg_img = slot.image_layers.get('background')
             if bg_img is not None:
@@ -1409,6 +1458,347 @@ class EchogramCore:
                 pass
         self._scene_click_conn = scene.sigMouseClicked.connect(self.handle_scene_click)
         self._scene_move_conn = scene.sigMouseMoved.connect(self.handle_scene_move)
+
+    # =====================================================================
+    # Parameter display (read-only overlay, FOV-aware + downsampled)
+    # =====================================================================
+
+    def _get_param_display_settings(self) -> Dict[str, Any]:
+        """Read param-display settings from the control panel.
+
+        Falls back gracefully when any control is missing, so core works even
+        when the adapter chose not to expose the Param Display tab.
+        """
+        p = self.panel
+
+        def _get(key, default):
+            try:
+                return p[key].value
+            except (KeyError, AttributeError):
+                return default
+
+        raw_names = _get("param_display", ())
+        if raw_names is None:
+            names = ()
+        elif isinstance(raw_names, (str, bytes)):
+            names = (raw_names,)
+        else:
+            try:
+                names = tuple(n for n in raw_names if n is not None)
+            except TypeError:
+                names = ()
+
+        return {
+            "names": names,
+            "cmap": _get("param_display_cmap", "viridis"),
+            "size": float(_get("param_display_size", 8)),
+            "max_points": int(_get("param_display_max_points", 5000)),
+            "fix_range": bool(_get("param_display_fix_range", False)),
+            "vmin": float(_get("param_display_vmin", 0.0)),
+            "vmax": float(_get("param_display_vmax", 1.0)),
+        }
+
+    def _get_param_builder_for_slot(self, slot: EchogramSlot):
+        """Return the slot's echogram if it exposes ``get_param_for_image``."""
+        eg = slot.get_echogram()
+        if eg is None:
+            return None
+        if hasattr(eg, "get_param_for_image"):
+            return eg
+        return None
+
+    def _clear_param_display(self, slot: EchogramSlot) -> None:
+        """Hide/remove the parameter-display overlays for a slot."""
+        for name in list(slot.param_overlays.keys()):
+            self._remove_param_overlay(slot, name)
+        slot.param_value_range = None
+
+    def _remove_param_overlay(self, slot: EchogramSlot, name: str) -> None:
+        """Remove a single param's scatter + line overlay from a slot."""
+        scatter = slot.param_overlays.pop(name, None)
+        if scatter is not None:
+            try:
+                slot.plot_item.removeItem(scatter)
+            except (RuntimeError, AttributeError):
+                pass
+        line = slot.param_lines.pop(name, None)
+        if line is not None:
+            try:
+                slot.plot_item.removeItem(line)
+            except (RuntimeError, AttributeError):
+                pass
+
+    def _update_param_display_all(self) -> None:
+        """Refresh param-display overlays for all visible slots."""
+        for slot in self._get_visible_slots():
+            self._update_param_display(slot)
+
+    # Qualitative outline colors for params without per-ping values (so
+    # multiple plain params are visually distinguishable).
+    _PARAM_OUTLINE_CYCLE = (
+        (220,  50,  50),  # red
+        ( 50, 120, 220),  # blue
+        (230, 140,  30),  # orange
+        ( 40, 170,  90),  # green
+        (180,  80, 200),  # purple
+        (200, 180,  40),  # yellow-ish
+        ( 80, 180, 200),  # teal
+        (200, 100, 160),  # pink
+    )
+
+    def _update_param_display(self, slot: EchogramSlot) -> None:
+        """Render all currently-selected display params on one slot.
+
+        Supports multiple params simultaneously (per-slot dicts of
+        scatter / line items, keyed by param name). Each param that has
+        per-ping values attached is colored via the chosen colormap; plain
+        params get distinct qualitative outline colors.
+        """
+        if slot.plot_item is None:
+            return
+
+        settings = self._get_param_display_settings()
+        wanted = tuple(settings["names"])
+
+        eg = self._get_param_builder_for_slot(slot)
+        if eg is None or not wanted:
+            self._clear_param_display(slot)
+            return
+
+        param_dict = getattr(getattr(eg, "_coord_system", None), "param", {})
+        # Remove any previously-drawn overlays that are no longer selected
+        for stale in [n for n in slot.param_overlays if n not in wanted]:
+            self._remove_param_overlay(slot, stale)
+
+        # Current x view range in the viewer's numeric axis
+        vb = slot.plot_item.getViewBox()
+        x_range = None
+        try:
+            (x0, x1), _ = vb.viewRange()
+            if x1 > x0 and not (x0 == 0.0 and x1 == 1.0):
+                x_range = (x0, x1)
+        except Exception:
+            x_range = None
+
+        size = settings["size"]
+        max_points = settings["max_points"]
+        cmap = pgh.resolve_colormap(settings["cmap"])
+        lut = cmap.getLookupTable(nPts=256, alpha=False)
+
+        last_value_range: Optional[Tuple[float, float]] = None
+
+        for i, name in enumerate(wanted):
+            if name not in param_dict:
+                self._remove_param_overlay(slot, name)
+                continue
+
+            try:
+                # No FOV filter in builder (its bounds are raw axis units
+                # that differ from viewer axis for datetime) — we filter
+                # below in viewer-axis coordinates.
+                x, y, values = eg.get_param_for_image(
+                    name, x_range=None, max_points=None)
+            except Exception as exc:
+                report = getattr(self, "_report_error", None)
+                if callable(report):
+                    report(f"[param-display] {name!r} failed: {exc}")
+                self._remove_param_overlay(slot, name)
+                continue
+
+            if len(x) == 0:
+                self._remove_param_overlay(slot, name)
+                continue
+
+            # Datetime -> mpl-day numbers (matches image setRect convention)
+            if isinstance(x[0], datetime):
+                x_num = np.array(
+                    [self._datetime_to_mpl_num(xi) for xi in x],
+                    dtype=np.float64,
+                )
+            else:
+                x_num = np.asarray(x, dtype=np.float64)
+            y_num = np.asarray(y, dtype=np.float64)
+
+            # FOV filter in viewer-axis coordinates
+            if x_range is not None and len(x_num) > 0:
+                x0, x1 = x_range
+                mask = (x_num >= float(x0)) & (x_num <= float(x1))
+                x_num = x_num[mask]
+                y_num = y_num[mask]
+                if values is not None:
+                    values = values[mask]
+
+            # Downsample
+            if max_points is not None and len(x_num) > max_points:
+                step = int(np.ceil(len(x_num) / max_points))
+                if step > 1:
+                    x_num = x_num[::step]
+                    y_num = y_num[::step]
+                    if values is not None:
+                        values = values[::step]
+
+            if len(x_num) == 0:
+                self._remove_param_overlay(slot, name)
+                continue
+
+            # Sort by x for monotonic connecting line
+            if len(x_num) > 1:
+                order = np.argsort(x_num, kind="stable")
+                x_num = x_num[order]
+                y_num = y_num[order]
+                if values is not None:
+                    values = values[order]
+
+            outline_rgb = self._PARAM_OUTLINE_CYCLE[
+                i % len(self._PARAM_OUTLINE_CYCLE)]
+
+            # Lazy-create scatter + line per param
+            scatter = slot.param_overlays.get(name)
+            if scatter is None:
+                scatter = pg.ScatterPlotItem(
+                    pxMode=True, pen=None, antialias=True)
+                scatter.setZValue(100 + i)
+                slot.plot_item.addItem(scatter)
+                slot.param_overlays[name] = scatter
+
+            line = slot.param_lines.get(name)
+            if line is None:
+                line = pg.PlotDataItem(antialias=True)
+                line.setZValue(99 + i * 0.1)
+                slot.plot_item.addItem(line)
+                slot.param_lines[name] = line
+
+            # Line in the outline color for this param
+            line.setPen(pg.mkPen(*outline_rgb, 200, width=1))
+            line.setData(x=x_num, y=y_num)
+            line.show()
+
+            if values is not None and len(values) == len(x_num):
+                if settings["fix_range"]:
+                    vmin = settings["vmin"]
+                    vmax = settings["vmax"]
+                    if not (np.isfinite(vmin) and np.isfinite(vmax)) \
+                            or vmax <= vmin:
+                        vmax = vmin + 1.0
+                else:
+                    vmin = float(np.nanmin(values))
+                    vmax = float(np.nanmax(values))
+                    if not (np.isfinite(vmin) and np.isfinite(vmax)) \
+                            or vmax <= vmin:
+                        vmax = vmin + 1.0
+                last_value_range = (vmin, vmax)
+
+                norm = np.clip((values - vmin) / (vmax - vmin), 0.0, 1.0)
+                idx = (norm * 255).astype(np.int32)
+                colors = lut[idx]
+                brushes = [pg.mkBrush(int(c[0]), int(c[1]), int(c[2]), 230)
+                           for c in colors]
+                # No outline for value-colored points (requested); this
+                # keeps the colors readable especially for small sizes.
+                scatter.setData(
+                    x=x_num, y=y_num, size=size,
+                    brush=brushes,
+                    pen=None,
+                )
+            else:
+                scatter.setData(
+                    x=x_num, y=y_num, size=size,
+                    brush=pg.mkBrush(*outline_rgb, 220),
+                    pen=pg.mkPen(0, 0, 0, 180),
+                )
+
+            scatter.show()
+
+        # Colorbar reflects the *last* value-carrying param's range; this
+        # keeps the UX simple while still being useful for single-param use.
+        if last_value_range is not None:
+            slot.param_value_range = last_value_range
+            self._sync_param_colorbar(slot, cmap, *last_value_range)
+        else:
+            slot.param_value_range = None
+
+    def _sync_param_colorbar(self, slot: EchogramSlot, cmap, vmin: float, vmax: float) -> None:
+        """Keep the slot ColorBarItem in sync with the current param values.
+
+        Creates (once) a hidden :class:`pg.ImageItem` that carries the param
+        value range, so the existing ColorBarItem can bind to it via
+        :meth:`pg.ColorBarItem.setImageItem`.
+        """
+        if slot.colorbar is None:
+            return
+        if slot.param_colorbar_proxy is None:
+            proxy = pg.ImageItem(np.array([[vmin, vmax]], dtype=np.float32))
+            proxy.setLevels((vmin, vmax))
+            proxy.hide()
+            try:
+                slot.plot_item.addItem(proxy)
+            except Exception:
+                pass
+            slot.param_colorbar_proxy = proxy
+        else:
+            try:
+                slot.param_colorbar_proxy.setImage(
+                    np.array([[vmin, vmax]], dtype=np.float32), autoLevels=False)
+                slot.param_colorbar_proxy.setLevels((vmin, vmax))
+            except RuntimeError:
+                slot.param_colorbar_proxy = None
+                return
+
+        # Push levels/cmap into the colorbar only when it's currently in
+        # 'param' mode — otherwise leave background/layer alone.
+        if slot.active_colorbar_layer == "param":
+            try:
+                slot.colorbar.setImageItem(slot.param_colorbar_proxy)
+                if hasattr(slot.colorbar, "setColorMap"):
+                    slot.colorbar.setColorMap(cmap)
+                slot.colorbar.setLevels((vmin, vmax))
+            except Exception:
+                pass
+
+    def _refresh_param_display_options(self) -> None:
+        """Populate the two param-display dropdowns from all visible slots."""
+        # Gather the union of param names across all assigned echograms
+        names = set()
+        for slot in self.slots:
+            eg = slot.get_echogram() if slot.echogram_key is not None else None
+            if eg is None:
+                continue
+            cs = getattr(eg, "_coord_system", None) or getattr(eg, "coord_system", None)
+            if cs is None:
+                continue
+            try:
+                names.update(cs.param.keys())
+            except AttributeError:
+                continue
+
+        options = [(n, n) for n in sorted(names)]
+        try:
+            ctrl = self.panel["param_display"]
+        except KeyError:
+            return
+        old_val = ctrl.value
+        try:
+            ctrl.options = options
+        except AttributeError:
+            return
+        # Preserve whatever was previously selected that is still available
+        if old_val is None:
+            preserved = ()
+        elif isinstance(old_val, (str, bytes)):
+            preserved = (old_val,) if old_val in names else ()
+        else:
+            try:
+                preserved = tuple(v for v in old_val if v in names)
+            except TypeError:
+                preserved = ()
+        try:
+            ctrl.value = preserved
+        except Exception:
+            pass
+
+    def _on_param_display_change(self, *_args) -> None:
+        """Observer: re-render all overlays when settings change."""
+        self._update_param_display_all()
 
     # =====================================================================
     # Parameter editor

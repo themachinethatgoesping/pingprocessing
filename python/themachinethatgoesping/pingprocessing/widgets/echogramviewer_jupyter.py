@@ -27,6 +27,7 @@ from .control_spec import (
     ECHO_NAV_SPECS,
     ECHO_MISC_SPECS,
     ECHO_PARAM_SPECS,
+    ECHO_PARAM_DISPLAY_SPECS,
     DropdownSpec,
 )
 from .control_jupyter import JupyterControlPanel, JupyterControlHandle, create_jupyter_control
@@ -84,6 +85,7 @@ class EchogramViewerJupyter:
             ECHO_NAV_SPECS,
             ECHO_MISC_SPECS,
             ECHO_PARAM_SPECS,
+            ECHO_PARAM_DISPLAY_SPECS,
         )
 
         # Grid layout dropdown (needs dynamic options)
@@ -466,6 +468,17 @@ class EchogramViewerJupyter:
         param_accordion.set_title(0, "Parameter Editor")
         param_accordion.selected_index = None  # collapsed by default
 
+        # Param display in its own collapsible accordion
+        param_display_rows = ipywidgets.VBox([
+            ipywidgets.HBox(p.widgets(
+                "param_display", "btn_refresh_param_display")),
+            ipywidgets.HBox(p.widgets(
+                "param_display_cmap", "param_display_size", "param_display_max_points")),
+        ])
+        param_display_accordion = ipywidgets.Accordion(children=[param_display_rows])
+        param_display_accordion.set_title(0, "Parameter Display")
+        param_display_accordion.selected_index = None
+
         progress_box = (
             ipywidgets.HBox([self.progress]) if self.display_progress
             else ipywidgets.HBox([])
@@ -478,6 +491,7 @@ class EchogramViewerJupyter:
             controls_row,
             buttons_row,
             self.hover_label,
+            param_display_accordion,
             param_accordion,
             progress_box,
             self.output,

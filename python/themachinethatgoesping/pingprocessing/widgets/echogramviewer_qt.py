@@ -29,6 +29,7 @@ from .control_spec import (
     ECHO_NAV_SPECS,
     ECHO_MISC_SPECS,
     ECHO_PARAM_SPECS,
+    ECHO_PARAM_DISPLAY_SPECS,
     ECHO_TAB_LAYOUT,
     DropdownSpec,
 )
@@ -86,6 +87,7 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
             ECHO_NAV_SPECS,
             ECHO_MISC_SPECS,
             ECHO_PARAM_SPECS,
+            ECHO_PARAM_DISPLAY_SPECS,
         )
 
         # Grid layout dropdown
@@ -393,6 +395,22 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         param_vlayout.addStretch()
         d_settings.addWidget(param_widget)
 
+        # -- Param display dock --
+        d_param_display = Dock("Param Display", size=(300, 80))
+        pd_layout_keys = ECHO_TAB_LAYOUT.get("Param Display", [])
+        pd_widget = QtWidgets.QWidget()
+        pd_vlayout = QtWidgets.QVBoxLayout(pd_widget)
+        pd_vlayout.setContentsMargins(4, 4, 4, 4)
+        for row_names in pd_layout_keys:
+            row = QtWidgets.QHBoxLayout()
+            for n in row_names:
+                if n in self.panel:
+                    row.addWidget(self.panel[n].widget)
+            row.addStretch()
+            pd_vlayout.addLayout(row)
+        pd_vlayout.addStretch()
+        d_param_display.addWidget(pd_widget)
+
         # -- Hover dock --
         d_hover = Dock("Info", size=(800, 30))
         d_hover.addWidget(self.panel["hover_label"].widget)
@@ -403,6 +421,7 @@ class EchogramViewerQt(QtWidgets.QMainWindow):
         area.addDock(d_hover, "bottom", d_controls)
         area.addDock(d_slots, "bottom", d_hover)
         area.addDock(d_settings, "right", d_slots)
+        area.addDock(d_param_display, "above", d_settings)
 
         self._dock_area = area
 

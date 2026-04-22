@@ -23,6 +23,7 @@ from .control_spec import (
     IntSliderSpec,
     IntTextSpec,
     LabelSpec,
+    MultiSelectSpec,
     TextSpec,
 )
 
@@ -144,6 +145,9 @@ class QtControlHandle(ControlHandle):
         w = self._inner
         if isinstance(w, QtWidgets.QComboBox):
             return [w.itemData(i) for i in range(w.count())]
+        if isinstance(w, QtWidgets.QListWidget):
+            return [w.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
+                    for i in range(w.count())]
         return None
 
     @options.setter
@@ -156,6 +160,26 @@ class QtControlHandle(ControlHandle):
                     w.addItem(str(item[0]), item[1])
                 else:
                     w.addItem(str(item), item)
+        elif isinstance(w, QtWidgets.QListWidget):
+            # Preserve current selection (by stored UserRole data)
+            prev = set()
+            for i in range(w.count()):
+                item = w.item(i)
+                if item.isSelected():
+                    prev.add(item.data(QtCore.Qt.ItemDataRole.UserRole))
+            w.blockSignals(True)
+            w.clear()
+            for item in v:
+                if isinstance(item, tuple) and len(item) == 2:
+                    label, value = item
+                else:
+                    label, value = item, item
+                lw_item = QtWidgets.QListWidgetItem(str(label))
+                lw_item.setData(QtCore.Qt.ItemDataRole.UserRole, value)
+                w.addItem(lw_item)
+                if value in prev:
+                    lw_item.setSelected(True)
+            w.blockSignals(False)
 
     @property
     def widget(self) -> QtWidgets.QWidget:
@@ -281,6 +305,49 @@ def create_qt_control(spec: ControlSpecType) -> QtControlHandle:
             lambda v: w.setCurrentIndex(w.findData(v)),
             w.currentIndexChanged,
             inner=w,
+        )
+
+    if isinstance(spec, MultiSelectSpec):
+        w = QtWidgets.QListWidget()
+        w.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.MultiSelection)
+        # Compact row height — show roughly ``rows`` entries
+        row_h = w.sizeHintForRow(0) if w.sizeHintForRow(0) > 0 else 16
+        w.setMinimumHeight(row_h * max(spec.rows, 2) + 8)
+        w.setMaximumHeight(row_h * max(spec.rows, 2) + 8)
+        for opt in spec.options:
+            if isinstance(opt, tuple) and len(opt) == 2:
+                label, value = opt
+            else:
+                label, value = opt, opt
+            lw_item = QtWidgets.QListWidgetItem(str(label))
+            lw_item.setData(QtCore.Qt.ItemDataRole.UserRole, value)
+            w.addItem(lw_item)
+        initial = set(spec.value or ())
+        for i in range(w.count()):
+            item = w.item(i)
+            if item.data(QtCore.Qt.ItemDataRole.UserRole) in initial:
+                item.setSelected(True)
+
+        def _get_values():
+            return tuple(
+                it.data(QtCore.Qt.ItemDataRole.UserRole)
+                for it in w.selectedItems()
+            )
+
+        def _set_values(v):
+            wanted = set(v or ())
+            w.blockSignals(True)
+            for i in range(w.count()):
+                item = w.item(i)
+                item.setSelected(
+                    item.data(QtCore.Qt.ItemDataRole.UserRole) in wanted)
+            w.blockSignals(False)
+            w.itemSelectionChanged.emit()
+
+        container = _labelled(w, spec.description)
+        return QtControlHandle(
+            container, _get_values, _set_values,
+            w.itemSelectionChanged, inner=w,
         )
 
     if isinstance(spec, CheckboxSpec):

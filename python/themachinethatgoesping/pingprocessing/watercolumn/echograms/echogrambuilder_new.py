@@ -65,6 +65,11 @@ class EchogramBuilder:
         self.layers = {}
         self.main_layer = None
 
+        # Optional per-ping value arrays associated with a ping param. When
+        # a param has registered values, the echogram viewer auto-colors the
+        # param-display overlay by those values.
+        self._param_values: dict = {}
+
         # Set extents from backend
         min_s, max_s = backend.sample_nr_extents
         self._coord_system.set_sample_nr_extent(min_s, max_s)
@@ -909,13 +914,227 @@ class EchogramBuilder:
         self._coord_system.set_sample_nr_extent(min_sample_nrs, max_sample_nrs)
 
     # Ping parameters
-    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
-        """Add a ping parameter (e.g., bottom depth, layer boundary)."""
+    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val,
+                       values=None):
+        """Add a ping parameter (e.g., bottom depth, layer boundary).
+
+        Args:
+            name: Parameter name.
+            x_reference: Reference for ``vec_x_val`` (e.g. ``"Ping time"``,
+                ``"Date time"``, ``"Ping index"``, or the registered custom
+                axis name).
+            y_reference: Reference for ``vec_y_val`` (e.g. ``"Depth (m)"``).
+            vec_x_val: X coordinates of the control points.
+            vec_y_val: Y values at those control points.
+            values: Optional per-control-point value array aligned with
+                ``vec_x_val``/``vec_y_val``. When provided, the values are
+                interpolated onto the builder's ping axis using the same
+                ``x_reference`` and nearest-extrapolation scheme as
+                ``vec_y_val`` and the echogram viewer auto-colors the
+                param-display overlay by them. May also be a dense
+                per-ping array (length == n_pings); in that case it is
+                stored verbatim.
+        """
         self._coord_system.add_ping_param(name, x_reference, y_reference, vec_x_val, vec_y_val)
+        if values is not None:
+            self.set_param_values(name, values,
+                                  vec_x_val=vec_x_val, x_reference=x_reference)
+        else:
+            # Drop any stale values from a previous registration
+            self._param_values.pop(name, None)
+
+    def set_param_values(self, name, values, vec_x_val=None, x_reference=None):
+        """Attach a value array to an existing param.
+
+        Two input modes are supported:
+
+        * **Dense** (default): ``values`` already has one entry per ping
+          (length ``== n_pings``), aligned with the builder's ping axis.
+        * **Sparse**: ``values`` is given at the same control points as
+          the param's ``vec_x_val``. Pass ``vec_x_val`` and ``x_reference``
+          to request interpolation onto the ping axis using the same
+          nearest-extrapolation linear interpolation as
+          :meth:`EchogramCoordinateSystem.add_ping_param`.
+        """
+        n_pings = self._coord_system._n_pings
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.ndim != 1:
+            raise ValueError(
+                f"ERROR[set_param_values]: 'values' must be 1D (got shape {arr.shape})")
+
+        if arr.size == n_pings:
+            self._param_values[name] = arr
+            return
+
+        if vec_x_val is None or x_reference is None:
+            raise ValueError(
+                f"ERROR[set_param_values]: 'values' has length {arr.size}, "
+                f"expected {n_pings} (per-ping) or provide vec_x_val + "
+                f"x_reference for interpolation from sparse control points")
+
+        # Sparse mode: interpolate onto the ping axis using the same logic
+        # as coordinate_system.add_ping_param (datetime -> timestamp, NaN
+        # filtering, duplicate-x averaging, linear interp w/ nearest extrap).
+        x = vec_x_val
+        if len(x) > 0 and isinstance(x[0], dt.datetime):
+            x = [xi.timestamp() for xi in x]
+        x = np.asarray(x, dtype=np.float64)
+        v = arr
+        if x.size != v.size:
+            raise ValueError(
+                f"ERROR[set_param_values]: sparse 'values' length {v.size} "
+                f"does not match vec_x_val length {x.size}")
+
+        finite = np.isfinite(x) & np.isfinite(v)
+        x = x[finite]
+        v = v[finite]
+        if x.size == 0:
+            self._param_values[name] = np.full(n_pings, np.nan)
+            return
+
+        cs = self._coord_system
+        match x_reference:
+            case "Ping index":
+                target = np.asarray(cs.ping_numbers, dtype=np.float64)
+            case "Ping time" | "Date time":
+                target = np.asarray(cs.ping_times, dtype=np.float64)
+            case _ if (cs._custom_x_per_ping is not None
+                       and x_reference == cs._custom_x_axis_name):
+                target = np.asarray(cs._custom_x_per_ping, dtype=np.float64)
+            case _:
+                raise ValueError(
+                    f"ERROR[set_param_values]: unsupported x_reference "
+                    f"{x_reference!r}")
+
+        # Average duplicates, then linear-interp with nearest extrapolation.
+        unique_x, inv = np.unique(x, return_inverse=True)
+        if unique_x.size < x.size:
+            sums = np.bincount(inv, weights=v)
+            counts = np.bincount(inv)
+            x = unique_x
+            v = sums / counts
+
+        from themachinethatgoesping import tools
+        interp = tools.vectorinterpolators.LinearInterpolator(
+            x, v, extrapolation_mode="nearest")
+        self._param_values[name] = np.asarray(interp(target), dtype=np.float64)
+
+    def get_param_values(self, name):
+        """Return the raw per-ping value array for a param, or ``None``."""
+        return self._param_values.get(name, None)
+
+    def has_param_values(self, name):
+        """Return ``True`` when ``name`` has an associated per-ping value array."""
+        return name in self._param_values
 
     def get_ping_param(self, name, use_x_coordinates=False):
         """Get a ping parameter's values in current coordinate system."""
         return self._coord_system.get_ping_param(name, use_x_coordinates)
+
+    def get_param_names(self):
+        """Return list of currently registered ping parameter names."""
+        return list(self._coord_system.param.keys())
+
+    def get_param_for_image(
+        self,
+        name,
+        value_name=None,
+        x_range=None,
+        max_points=None,
+    ):
+        """Get a ping parameter's (x, y[, values]) for overlaying on an echogram image.
+
+        Thin, efficient wrapper around :meth:`get_ping_param` that adds:
+
+        * field-of-view (FOV) filtering via ``x_range`` (numeric, or datetime
+          objects when the current x-axis is ``"Date time"``);
+        * stride-based downsampling to at most ``max_points`` samples;
+        * an optional secondary parameter (``value_name``) whose values are
+          returned aligned with the (x, y) samples so they can be used for
+          colormap-based coloring (e.g. a colorbar).
+
+        The returned x-array has the same type as ``get_ping_param`` returns:
+        numeric for numeric axes, list of ``datetime`` objects for
+        ``"Date time"``. NaN values in y (and in ``values`` when requested)
+        are filtered out.
+
+        Args:
+            name: Parameter name (must be registered via ``add_ping_param``).
+            value_name: Optional name of a second parameter. If given, its
+                values (per ping, after the same FOV/downsampling) are
+                returned as the third element of the tuple.
+            x_range: Optional ``(x0, x1)`` bounds for FOV filtering. For a
+                datetime axis, either numeric POSIX timestamps or
+                ``datetime`` objects are accepted.
+            max_points: Optional maximum number of returned points. Uses
+                simple stride (``[::step]``) decimation which is O(1) memory
+                and preserves spatial distribution.
+
+        Returns:
+            Tuple ``(x, y, values)`` where ``values`` is ``None`` when
+            ``value_name`` is not provided. Arrays are aligned and NaN-free.
+        """
+        x, y = self._coord_system.get_ping_param(name)
+        values = None
+        if value_name is not None:
+            _, values = self._coord_system.get_ping_param(value_name)
+        elif name in self._param_values:
+            # Auto-color: use the per-ping values registered with the param.
+            # These are aligned with the builder's ping axis (one per ping),
+            # which matches get_ping_param's default output.
+            values = np.asarray(self._param_values[name], dtype=np.float64)
+            if len(values) != len(x):
+                # Mismatch (e.g. because get_ping_param was queried with
+                # use_x_coordinates=True in a derived class) -> drop values.
+                values = None
+
+        x = np.asarray(x) if not isinstance(x, list) else np.array(x, dtype=object)
+        y = np.asarray(y, dtype=np.float64)
+        if values is not None:
+            values = np.asarray(values, dtype=np.float64)
+
+        # Drop NaN samples (y and values)
+        finite = np.isfinite(y)
+        if values is not None:
+            finite &= np.isfinite(values)
+        if not finite.all():
+            x = x[finite]
+            y = y[finite]
+            if values is not None:
+                values = values[finite]
+
+        # FOV filtering
+        if x_range is not None and len(x) > 0:
+            x0, x1 = x_range
+            # Build a numeric representation of x for comparison
+            if isinstance(x[0], dt.datetime):
+                x_numeric = np.array([xi.timestamp() for xi in x], dtype=np.float64)
+            else:
+                x_numeric = np.asarray(x, dtype=np.float64)
+            if hasattr(x0, "timestamp"):
+                x0 = x0.timestamp()
+            if hasattr(x1, "timestamp"):
+                x1 = x1.timestamp()
+            if x0 is None:
+                x0 = -np.inf
+            if x1 is None:
+                x1 = np.inf
+            mask = (x_numeric >= float(x0)) & (x_numeric <= float(x1))
+            x = x[mask]
+            y = y[mask]
+            if values is not None:
+                values = values[mask]
+
+        # Stride-based downsampling
+        if max_points is not None and len(x) > max_points:
+            step = int(np.ceil(len(x) / max_points))
+            if step > 1:
+                x = x[::step]
+                y = y[::step]
+                if values is not None:
+                    values = values[::step]
+
+        return x, y, values
 
     # Index mapping
     def get_y_indices(self, wci_nr):
