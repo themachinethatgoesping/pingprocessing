@@ -105,7 +105,7 @@ class TestCombineBasic:
     """Basic combine operations with overlapping backends."""
 
     def test_combine_nanmean_shape(self, mbes_builder, sbes_builder):
-        """Combined image has same x-size as first builder, y-size matches max_steps."""
+        """Combined image spans union of input times and has valid y-size."""
         ec = EchogramBuilder.combine(
             [mbes_builder, sbes_builder], combine_func="nanmean", linear=False
         )
@@ -113,8 +113,8 @@ class TestCombineBasic:
         ec.set_y_axis_depth()
         img_c, _ = ec.build_image()
         img_m, _ = mbes_builder.build_image()
-        # x-size (pings) should match since combined uses first backend's pings
-        assert img_c.shape[0] == img_m.shape[0]
+        # Combined timeline should include at least as many pings as either input.
+        assert img_c.shape[0] >= img_m.shape[0]
         # y-size may differ since combined depth range is the union of all backends
         assert img_c.shape[1] > 0
 
@@ -152,15 +152,114 @@ class TestCombineBasic:
         assert valid.sum() > 0
         np.testing.assert_allclose(img[valid], -10.0, atol=0.5)
 
-    def test_combine_uses_first_backend_as_reference(self, mbes_builder, sbes_builder):
-        """Combined backend should use first backend's ping times and count."""
+    def test_combine_uses_union_of_backend_times(self, mbes_builder, sbes_builder):
+        """Combined backend should use the union of backend ping times."""
         ec = EchogramBuilder.combine(
             [mbes_builder, sbes_builder], combine_func="nanmean", linear=False
         )
-        assert ec.backend.n_pings == mbes_builder.backend.n_pings
-        np.testing.assert_array_equal(
-            ec.backend.ping_times, mbes_builder.backend.ping_times
+        union_times = np.unique(
+            np.concatenate([mbes_builder.backend.ping_times, sbes_builder.backend.ping_times])
         )
+        assert ec.backend.n_pings == len(union_times)
+        np.testing.assert_array_equal(ec.backend.ping_times, union_times)
+
+    def test_layer_rendering_avoids_get_column_for_named_layers(self, t0):
+        """Named layer rendering should reuse the built image instead of per-column access."""
+        n = 200
+        times = np.linspace(t0, t0 + 200, n)
+
+        img1 = np.full((n, 200), -50.0, dtype=np.float32)
+        img2 = np.full((n, 200), -40.0, dtype=np.float32)
+
+        b1 = ImageBackend.from_image(img1, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        b2 = ImageBackend.from_image(img2, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        eb1 = _make_builder(b1)
+        eb2 = _make_builder(b2)
+
+        ec = EchogramBuilder.combine([eb1, eb2], combine_func="nanmean", linear=False)
+        ec.set_x_axis_date_time(max_steps=1024)
+        ec.set_y_axis_depth()
+        ec.add_layer_from_static_layer("wc", 8.0, 20.0)
+
+        calls = {"count": 0}
+        original_get_column = ec.backend.get_column
+
+        def counting_get_column(ping_idx):
+            calls["count"] += 1
+            return original_get_column(ping_idx)
+
+        ec.backend.get_column = counting_get_column
+
+        img_main, layer_img, _ = ec.build_image_and_layer_image()
+
+        assert calls["count"] == 0
+        assert img_main.shape == layer_img.shape
+
+    def test_layer_rendering_avoids_get_column_for_main_layer(self, t0):
+        """Main-layer rendering should reuse the built image instead of per-column access."""
+        n = 200
+        times = np.linspace(t0, t0 + 200, n)
+
+        img1 = np.full((n, 200), -50.0, dtype=np.float32)
+        img2 = np.full((n, 200), -40.0, dtype=np.float32)
+
+        b1 = ImageBackend.from_image(img1, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        b2 = ImageBackend.from_image(img2, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        eb1 = _make_builder(b1)
+        eb2 = _make_builder(b2)
+
+        ec = EchogramBuilder.combine([eb1, eb2], combine_func="nanmean", linear=False)
+        ec.set_x_axis_date_time(max_steps=1024)
+        ec.set_y_axis_depth()
+        ec.add_layer_from_static_layer("main", 10.0, 20.0)
+
+        calls = {"count": 0}
+        original_get_column = ec.backend.get_column
+
+        def counting_get_column(ping_idx):
+            calls["count"] += 1
+            return original_get_column(ping_idx)
+
+        ec.backend.get_column = counting_get_column
+
+        img_main, layer_img, _ = ec.build_image_and_layer_image()
+
+        assert calls["count"] == 0
+        assert img_main.shape == layer_img.shape
+
+    def test_layer_images_rendering_avoids_get_column(self, t0):
+        """Multi-layer image rendering should reuse the built image grid."""
+        n = 200
+        times = np.linspace(t0, t0 + 200, n)
+
+        img1 = np.full((n, 200), -50.0, dtype=np.float32)
+        img2 = np.full((n, 200), -40.0, dtype=np.float32)
+
+        b1 = ImageBackend.from_image(img1, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        b2 = ImageBackend.from_image(img2, times, y_min=5.0, y_max=25.0, y_axis="depth")
+        eb1 = _make_builder(b1)
+        eb2 = _make_builder(b2)
+
+        ec = EchogramBuilder.combine([eb1, eb2], combine_func="nanmean", linear=False)
+        ec.set_x_axis_date_time(max_steps=1024)
+        ec.set_y_axis_depth()
+        ec.add_layer_from_static_layer("surface", 5.0, 10.0)
+        ec.add_layer_from_static_layer("mid", 10.0, 20.0)
+
+        calls = {"count": 0}
+        original_get_column = ec.backend.get_column
+
+        def counting_get_column(ping_idx):
+            calls["count"] += 1
+            return original_get_column(ping_idx)
+
+        ec.backend.get_column = counting_get_column
+
+        img_main, layer_images, _ = ec.build_image_and_layer_images()
+
+        assert calls["count"] == 0
+        assert set(layer_images) == {"surface", "mid"}
+        assert img_main.shape == layer_images["surface"].shape
 
 
 # =========================================================================
@@ -170,6 +269,64 @@ class TestCombineBasic:
 
 class TestCombineTimeAlignment:
     """Ensure correct time alignment between backends with different ping rates."""
+
+    def test_non_overlapping_segments_are_both_visible(self, t0):
+        """Combine should span both non-overlapping time segments.
+
+        Regression test: when backends are temporally disjoint and provided in an
+        order where the first backend starts later, the combined backend must
+        still include the earlier segment.
+        """
+        n = 120
+        # Early segment (first file in time)
+        t_early_start, t_early_end = t0, t0 + 100
+        b_early = _make_backend(
+            n_pings=n,
+            n_samples=200,
+            t_start=t_early_start,
+            t_end=t_early_end,
+            depth_min=5.0,
+            depth_max=25.0,
+            fill_value=-50.0,
+        )
+
+        # Late segment (second file in time)
+        t_late_start, t_late_end = t0 + 300, t0 + 400
+        b_late = _make_backend(
+            n_pings=n,
+            n_samples=200,
+            t_start=t_late_start,
+            t_end=t_late_end,
+            depth_min=5.0,
+            depth_max=25.0,
+            fill_value=-40.0,
+        )
+
+        eb_early = _make_builder(b_early)
+        eb_late = _make_builder(b_late)
+
+        # Intentionally pass the late backend first to catch master-timeline bugs.
+        ec = EchogramBuilder.combine([eb_late, eb_early], combine_func="nanmean", linear=False)
+        cb = ec.backend
+
+        # Combined timeline must cover both disjoint segments.
+        assert cb.n_pings >= 2 * n - 1
+        assert cb.ping_times[0] <= t_early_start + 1.0
+        assert cb.ping_times[-1] >= t_late_end - 1.0
+
+        # Early region should resolve to early backend values.
+        early_idx = int(np.argmin(np.abs(cb.ping_times - (t_early_start + t_early_end) * 0.5)))
+        early_col = cb.get_column(early_idx)
+        early_valid = np.isfinite(early_col)
+        assert early_valid.sum() > 0
+        np.testing.assert_allclose(early_col[early_valid], -50.0, atol=0.5)
+
+        # Late region should resolve to late backend values.
+        late_idx = int(np.argmin(np.abs(cb.ping_times - (t_late_start + t_late_end) * 0.5)))
+        late_col = cb.get_column(late_idx)
+        late_valid = np.isfinite(late_col)
+        assert late_valid.sum() > 0
+        np.testing.assert_allclose(late_col[late_valid], -40.0, atol=0.5)
 
     def test_sbes_nan_before_start_combined_matches_mbes(self, t0):
         """When SBES has NaN before T1, combined == MBES before T1."""
@@ -230,9 +387,12 @@ class TestCombineTimeAlignment:
         img_c, _ = ec.build_image()
 
         # After T1: combined should be ~-45 (nanmean of -50 and -40)
-        t1_idx = np.argmin(np.abs(t_mbes - T1))
+        # Use the combined image x-axis to find the correct column split.
+        t1_col = int(np.searchsorted(ec.coord_system.x_coordinates, T1))
         # Skip first few columns after T1 for transition
-        after = img_c[t1_idx + 5:, :]
+        # Limit to the overlap region (before MBES ends) so we only see -45 combined values.
+        mbes_end_col = int(np.searchsorted(ec.coord_system.x_coordinates, t_mbes[-1]))
+        after = img_c[t1_col + 5:mbes_end_col - 5, :]
         valid = np.isfinite(after)
         assert valid.sum() > 0, "No valid pixels after T1"
         # Most should be -45.0 (some edge effects possible)
@@ -269,12 +429,11 @@ class TestCombineTimeAlignment:
         # and very few should be MBES-only (-50)
         values = img_c[valid]
         n_combined = np.sum(np.abs(values - (-45.0)) < 1.0)
-        n_mbes_only = np.sum(np.abs(values - (-50.0)) < 1.0)
         assert n_combined > 0.9 * len(values), \
             f"Expected >90% combined, got {n_combined}/{len(values)} ({100*n_combined/len(values):.0f}%)"
 
-    def test_no_overlap_combined_is_first_backend(self, t0):
-        """When backends don't overlap in time, combined == first backend."""
+    def test_no_overlap_combined_contains_both_segments(self, t0):
+        """When backends don't overlap, combined timeline still contains both segments."""
         b_m = _make_backend(200, 100, t0, t0 + 200, 5.0, 25.0, -50.0)
         b_s = _make_backend(200, 100, t0 + 500, t0 + 700, 5.0, 25.0, -40.0)  # no overlap
         eb_m = _make_builder(b_m)
@@ -284,15 +443,22 @@ class TestCombineTimeAlignment:
         ec.set_x_axis_date_time(max_steps=1024)
         ec.set_y_axis_depth()
 
-        img_m, _ = eb_m.build_image()
-        img_c, _ = ec.build_image()
+        cb = ec.backend
+        assert cb.ping_times[0] <= t0 + 1.0
+        assert cb.ping_times[-1] >= t0 + 699.0
 
-        valid = np.isfinite(img_c) & np.isfinite(img_m)
-        assert valid.sum() > 0
-        np.testing.assert_allclose(
-            img_c[valid], img_m[valid], atol=0.5,
-            err_msg="No overlap: combined should equal first backend"
-        )
+        early_idx = int(np.argmin(np.abs(cb.ping_times - (t0 + 100))))
+        late_idx = int(np.argmin(np.abs(cb.ping_times - (t0 + 600))))
+
+        early_col = cb.get_column(early_idx)
+        late_col = cb.get_column(late_idx)
+
+        early_valid = np.isfinite(early_col)
+        late_valid = np.isfinite(late_col)
+        assert early_valid.sum() > 0
+        assert late_valid.sum() > 0
+        np.testing.assert_allclose(early_col[early_valid], -50.0, atol=0.5)
+        np.testing.assert_allclose(late_col[late_valid], -40.0, atol=0.5)
 
 
 # =========================================================================
@@ -608,29 +774,35 @@ class TestCombineEdgeCases:
         img_c, _ = ec.build_image()
         y_grid = ec.coord_system.y_coordinates
 
-        # Before SBES starts (first half of MBES range):
-        # Combined should match MBES at shallow depth
-        sbes_start_idx = np.argmin(np.abs(t_mbes - (t0 + 300)))
+        # Compute split column from the combined image x-axis (union timeline).
+        x_coords_c = ec.coord_system.x_coordinates
+        sbes_start_c = int(np.searchsorted(x_coords_c, t0 + 300))
+        # Same split for the standalone MBES image.
+        x_coords_m = eb_m.coord_system.x_coordinates
+        sbes_start_m = int(np.searchsorted(x_coords_m, t0 + 300))
+
         d15_idx = np.argmin(np.abs(y_grid - 15.0))
         d40_idx = np.argmin(np.abs(y_grid - 40.0))
 
         # Check early columns (before SBES)
-        early_combined = img_c[:sbes_start_idx - 5, d15_idx]
-        early_mbes = img_m[:sbes_start_idx - 5, d15_idx]
-        valid = np.isfinite(early_combined) & np.isfinite(early_mbes)
-        if valid.sum() > 0:
+        early_combined = img_c[:sbes_start_c - 5, d15_idx]
+        early_mbes = img_m[:sbes_start_m - 5, d15_idx]
+        valid_c = np.isfinite(early_combined)
+        if valid_c.sum() > 0:
             np.testing.assert_allclose(
-                early_combined[valid], early_mbes[valid], atol=0.5,
+                early_combined[valid_c], -50.0, atol=0.5,
                 err_msg="Before SBES starts, combined should match MBES in shallow"
             )
 
         # Deep region before SBES: should be NaN (no data)
-        early_deep = img_c[:sbes_start_idx - 5, d40_idx]
+        early_deep = img_c[:sbes_start_c - 5, d40_idx]
         assert np.all(np.isnan(early_deep)), \
             "Deep region should be NaN before SBES starts"
 
         # After SBES starts: shallow should be combined (-45)
-        late_combined = img_c[sbes_start_idx + 5:, d15_idx]
+        # Limit to overlap zone (SBES start to MBES end) to avoid SBES-only region (-40).
+        mbes_end_c = int(np.searchsorted(x_coords_c, t_mbes[-1]))
+        late_combined = img_c[sbes_start_c + 5:mbes_end_c - 5, d15_idx]
         valid_late = np.isfinite(late_combined)
         if valid_late.sum() > 0:
             n_combined = np.sum(np.abs(late_combined[valid_late] - (-45.0)) < 1.0)
@@ -638,7 +810,7 @@ class TestCombineEdgeCases:
                 "After SBES starts, shallow should be ~-45 (combined)"
 
         # After SBES starts: deep should be SBES (-40)
-        late_deep = img_c[sbes_start_idx + 5:, d40_idx]
+        late_deep = img_c[sbes_start_c + 5:, d40_idx]
         valid_deep = np.isfinite(late_deep)
         if valid_deep.sum() > 0:
             n_sbes = np.sum(np.abs(late_deep[valid_deep] - (-40.0)) < 1.0)
@@ -684,7 +856,7 @@ class TestCombineLayerTimeAlignment:
         y_grid = ec.coord_system.y_coordinates
         d15_idx = np.argmin(np.abs(y_grid - 15.0))
 
-        sbes_start_col = np.argmin(np.abs(t_mbes - (t0 + 300)))
+        sbes_start_col = int(np.searchsorted(ec.coord_system.x_coordinates, t0 + 300))
         # Before SBES: both main and layer must be MBES-only (-50)
         before_main = img_main[:sbes_start_col - 2, d15_idx]
         before_layer = layer_img[:sbes_start_col - 2, d15_idx]
@@ -718,10 +890,12 @@ class TestCombineLayerTimeAlignment:
 
         y_grid = ec.coord_system.y_coordinates
         d15_idx = np.argmin(np.abs(y_grid - 15.0))
-        sbes_start_col = np.argmin(np.abs(t_mbes - (t0 + 300)))
+        sbes_start_col = int(np.searchsorted(ec.coord_system.x_coordinates, t0 + 300))
 
         # After SBES: layer should be combined (-45)
-        after_layer = layer_img[sbes_start_col + 5:, d15_idx]
+        # Limit to overlap region so we only check where both backends are present (-45).
+        mbes_end_col = int(np.searchsorted(ec.coord_system.x_coordinates, t_mbes[-1]))
+        after_layer = layer_img[sbes_start_col + 5:mbes_end_col - 5, d15_idx]
         valid = np.isfinite(after_layer)
         assert valid.sum() > 0
         n_combined = np.sum(np.abs(after_layer[valid] - (-45.0)) < 1.0)
@@ -822,7 +996,7 @@ class TestCombineLayerTimeAlignment:
         y_grid = ec.coord_system.y_coordinates
         d21_idx = np.argmin(np.abs(y_grid - 21.0))
 
-        sbes_start_col = np.argmin(np.abs(t_mbes - (t0 + 300)))
+        sbes_start_col = int(np.searchsorted(ec.coord_system.x_coordinates, t0 + 300))
 
         # Before SBES: layer at 21m (inside bottom layer) must be MBES-only
         before_layer = layer_img[:sbes_start_col - 5, d21_idx]
@@ -834,7 +1008,9 @@ class TestCombineLayerTimeAlignment:
             )
 
         # After SBES: should show combined
-        after_layer = layer_img[sbes_start_col + 5:, d21_idx]
+        # Limit to overlap zone (SBES start → MBES end) to avoid SBES-only region (-40).
+        mbes_end_col = int(np.searchsorted(ec.coord_system.x_coordinates, t_mbes[-1]))
+        after_layer = layer_img[sbes_start_col + 5:mbes_end_col - 5, d21_idx]
         valid_after = np.isfinite(after_layer)
         if valid_after.sum() > 0:
             n_combined = np.sum(np.abs(after_layer[valid_after] - (-45.0)) < 1.0)
@@ -918,7 +1094,7 @@ class TestCombineLayerTimeAlignment:
         y_grid = ec.coord_system.y_coordinates
         d15_idx = np.argmin(np.abs(y_grid - 15.0))
         d7_idx = np.argmin(np.abs(y_grid - 7.0))
-        sbes_start_col = np.argmin(np.abs(t_mbes - (t0 + 200)))
+        sbes_start_col = int(np.searchsorted(ec.coord_system.x_coordinates, t0 + 200))
 
         # Outside main layer (7m): should be NaN
         mid_x = img_main.shape[0] // 2
@@ -1115,7 +1291,7 @@ class TestCombinePingParamNoExtrapolation:
         # Check that at 21m depth (inside MBES layer: 15-22m), before SBES,
         # the layer has data (MBES values)
         d21_idx = np.argmin(np.abs(y_grid - 21.0))
-        sbes_start_col = np.argmin(np.abs(t_mbes - (t0 + 300)))
+        sbes_start_col = int(np.searchsorted(ec.coord_system.x_coordinates, t0 + 300))
         before_layer = layer_img[:sbes_start_col - 5, d21_idx]
         valid = np.isfinite(before_layer)
         if valid.sum() > 0:

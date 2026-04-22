@@ -1056,6 +1056,46 @@ class EchogramBuilder:
     def _has_data_transforms(self):
         return self._factor != 1.0 or self._offset != 0.0 or self._transform is not None
 
+    def _build_base_image(self, cs: EchogramCoordinateSystem, nx: int, ny: int) -> np.ndarray:
+        """Build the full image on the current grid using the backend fast path."""
+        if self._has_oversampling:
+            request = cs.make_oversampled_image_request(
+                x_oversampling=self._x_oversampling,
+                y_oversampling=self._y_oversampling,
+            )
+            oversampled_image = self._backend.get_image(request)
+            if self._has_data_transforms:
+                oversampled_image = self._apply_data_transforms(oversampled_image)
+            return self._downsample_image(oversampled_image, nx, ny)
+
+        request = cs.make_image_request()
+        image = self._backend.get_image(request)
+        if self._has_data_transforms:
+            image = self._apply_data_transforms(image)
+        return image
+
+    def _apply_layer_mask_to_image(
+        self,
+        source_image: np.ndarray,
+        layer: EchoLayer,
+        image_indices: np.ndarray,
+        wci_indices: np.ndarray,
+    ) -> np.ndarray:
+        """Project one layer onto an already rendered image grid.
+
+        This avoids calling backend.get_column() for every visible x position.
+        """
+        masked = np.full_like(source_image, np.nan, dtype=np.float32)
+        ny = source_image.shape[1]
+
+        for image_index, wci_index in zip(image_indices, wci_indices):
+            start_y = max(0, int(layer.y0[wci_index]))
+            end_y = min(ny, int(layer.y1[wci_index]))
+            if start_y < end_y:
+                masked[image_index, start_y:end_y] = source_image[image_index, start_y:end_y]
+
+        return masked
+
     def build_image(self, progress=None):
         """Build the echogram image.
         
@@ -1074,30 +1114,9 @@ class EchogramBuilder:
         """
         self.reinit()
         cs = self._coord_system
-        
-        if self._has_oversampling:
-            # Oversampled path: request larger image, then block-average down
-            target_nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
-            target_ny = len(cs.y_coordinates)
-            
-            request = cs.make_oversampled_image_request(
-                x_oversampling=self._x_oversampling,
-                y_oversampling=self._y_oversampling,
-            )
-            oversampled_image = self._backend.get_image(request)
-            
-            # Apply transforms before averaging
-            if self._has_data_transforms:
-                oversampled_image = self._apply_data_transforms(oversampled_image)
-            
-            image = self._downsample_image(oversampled_image, target_nx, target_ny)
-        else:
-            # Standard path: no oversampling
-            request = cs.make_image_request()
-            image = self._backend.get_image(request)
-            
-            if self._has_data_transforms:
-                image = self._apply_data_transforms(image)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+        ny = len(cs.y_coordinates)
+        image = self._build_base_image(cs, nx, ny)
         
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1120,53 +1139,29 @@ class EchogramBuilder:
         cs = self._coord_system
         ny = len(cs.y_coordinates)
         nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+        image_indices, wci_indices = self.get_x_indices()
 
-        # Fast path: use vectorized get_image for main echogram if no main_layer
+        base_image = self._build_base_image(cs, nx, ny)
+
+        # Apply main layer as a mask over the already rendered image grid.
         if self.main_layer is None:
-            if self._has_oversampling:
-                request = cs.make_oversampled_image_request(
-                    x_oversampling=self._x_oversampling,
-                    y_oversampling=self._y_oversampling,
-                )
-                oversampled_image = self._backend.get_image(request)
-                if self._has_data_transforms:
-                    oversampled_image = self._apply_data_transforms(oversampled_image)
-                image = self._downsample_image(oversampled_image, nx, ny)
-            else:
-                request = cs.make_image_request()
-                image = self._backend.get_image(request)
-                if self._has_data_transforms:
-                    image = self._apply_data_transforms(image)
+            image = base_image
         else:
-            # Slow path: need per-column iteration for main_layer
-            # (oversampling not supported for main_layer path)
-            image = np.full((nx, ny), np.nan, dtype=np.float32)
-            image_indices, wci_indices = self.get_x_indices()
-            for image_index, wci_index in zip(image_indices, wci_indices):
-                wci = self.get_column(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.main_layer.get_y_indices(wci_index)
-                    if y1 is not None and len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-            if self._has_data_transforms:
-                image = self._apply_data_transforms(image)
+            image = self._apply_layer_mask_to_image(
+                base_image, self.main_layer, image_indices, wci_indices
+            )
 
-        # Build layer image (requires per-column iteration, no oversampling)
+        # Build layer image by masking the base image, avoiding per-column backend calls.
         layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
         if len(self.layers) > 0:
-            image_indices, wci_indices = self.get_x_indices()
             image_indices = get_progress_iterator(image_indices, progress, desc="Building layer image")
             
             for image_index, wci_index in zip(image_indices, wci_indices):
-                wci = self.get_column(wci_index)
-                if len(wci) > 1:
-                    for k, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_image[image_index, y1_layer] = wci[y2_layer]
-
-        if self._has_data_transforms:
-            layer_image = self._apply_data_transforms(layer_image)
+                for layer in self.layers.values():
+                    start_y = max(0, int(layer.y0[wci_index]))
+                    end_y = min(ny, int(layer.y1[wci_index]))
+                    if start_y < end_y:
+                        layer_image[image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1189,36 +1184,16 @@ class EchogramBuilder:
         cs = self._coord_system
         ny = len(cs.y_coordinates)
         nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+        image_indices, wci_indices = self.get_x_indices()
 
-        # Fast path: use vectorized get_image for main echogram if no main_layer
+        base_image = self._build_base_image(cs, nx, ny)
+
         if self.main_layer is None:
-            if self._has_oversampling:
-                request = cs.make_oversampled_image_request(
-                    x_oversampling=self._x_oversampling,
-                    y_oversampling=self._y_oversampling,
-                )
-                oversampled_image = self._backend.get_image(request)
-                if self._has_data_transforms:
-                    oversampled_image = self._apply_data_transforms(oversampled_image)
-                image = self._downsample_image(oversampled_image, nx, ny)
-            else:
-                request = cs.make_image_request()
-                image = self._backend.get_image(request)
-                if self._has_data_transforms:
-                    image = self._apply_data_transforms(image)
+            image = base_image
         else:
-            # Slow path: need per-column iteration for main_layer
-            # (oversampling not supported for main_layer path)
-            image = np.full((nx, ny), np.nan, dtype=np.float32)
-            image_indices, wci_indices = self.get_x_indices()
-            for image_index, wci_index in zip(image_indices, wci_indices):
-                wci = self.get_column(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.main_layer.get_y_indices(wci_index)
-                    if y1 is not None and len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-            if self._has_data_transforms:
-                image = self._apply_data_transforms(image)
+            image = self._apply_layer_mask_to_image(
+                base_image, self.main_layer, image_indices, wci_indices
+            )
 
         # Build layer images (requires per-column iteration, no oversampling)
         layer_images = {}
@@ -1226,20 +1201,14 @@ class EchogramBuilder:
             layer_images[key] = np.full((nx, ny), np.nan, dtype=np.float32)
 
         if len(self.layers) > 0:
-            image_indices, wci_indices = self.get_x_indices()
             image_indices = get_progress_iterator(image_indices, progress, desc="Building layer images")
 
             for image_index, wci_index in zip(image_indices, wci_indices):
-                wci = self.get_column(wci_index)
-                if len(wci) > 1:
-                    for key, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
-
-        if self._has_data_transforms:
-            for key in layer_images:
-                layer_images[key] = self._apply_data_transforms(layer_images[key])
+                for key, layer in self.layers.items():
+                    start_y = max(0, int(layer.y0[wci_index]))
+                    end_y = min(ny, int(layer.y1[wci_index]))
+                    if start_y < end_y:
+                        layer_images[key][image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)

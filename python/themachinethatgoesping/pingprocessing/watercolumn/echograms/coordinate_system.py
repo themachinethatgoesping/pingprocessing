@@ -105,6 +105,11 @@ class EchogramCoordinateSystem:
         return self._n_pings
 
     @property
+    def x_coordinates(self) -> np.ndarray:
+        """X coordinate values for the current rendered image columns (one per column)."""
+        return np.array(self.feature_mapper.get_feature_values("X coordinate"))
+
+    @property
     def initialized(self) -> bool:
         """Whether coordinate system is fully initialized."""
         return self._initialized

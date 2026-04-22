@@ -341,6 +341,98 @@ class TestCombineBackend:
         for func_name in expected_funcs:
             assert func_name in COMBINE_FUNCTIONS, f"Missing combine function: {func_name}"
 
+    def test_combine_get_image_skips_disjoint_backend_calls(self):
+        """Backends outside the visible time window should not render images."""
+        # Two disjoint backends in time
+        times1 = np.arange(10, dtype=float)          # visible request window
+        times2 = np.arange(100, 110, dtype=float)    # far away, should be skipped
+        data1 = np.ones((10, 10), dtype=float) * 1.0
+        data2 = np.ones((10, 10), dtype=float) * 3.0
+        backend1 = MockBackend(times1, data1)
+        backend2 = MockBackend(times2, data2)
+
+        combine = CombineBackend(
+            [backend1, backend2],
+            combine_func="nanmean",
+            x_align="time",
+            linear=False,
+        )
+
+        # Count per-backend get_image calls
+        calls = {"b1": 0, "b2": 0}
+        b1_orig_get_image = backend1.get_image
+        b2_orig_get_image = backend2.get_image
+
+        def b1_counting(request):
+            calls["b1"] += 1
+            return b1_orig_get_image(request)
+
+        def b2_counting(request):
+            calls["b2"] += 1
+            return b2_orig_get_image(request)
+
+        backend1.get_image = b1_counting
+        backend2.get_image = b2_counting
+
+        # Request only the first 10 combined pings (times ~0..9)
+        nx, ny = 10, 5
+        request = EchogramImageRequest(
+            nx=nx,
+            ny=ny,
+            y_coordinates=np.arange(ny, dtype=np.float32),
+            ping_indexer=np.arange(nx, dtype=np.int64),
+            affine_a=np.zeros(combine.n_pings, dtype=np.float32),
+            affine_b=np.ones(combine.n_pings, dtype=np.float32),
+            max_sample_indices=combine.max_sample_counts.astype(np.int64) + 1,
+            fill_value=np.nan,
+        )
+
+        img = combine.get_image(request)
+
+        # Backend 1 contributes, backend 2 is disjoint and should be skipped.
+        assert calls["b1"] == 1
+        assert calls["b2"] == 0
+        assert img.shape == (nx, ny)
+
+    def test_combine_get_column_skips_disjoint_backend_calls(self):
+        """Per-column path (used by layers) must skip disjoint backends."""
+        times1 = np.arange(10, dtype=float)
+        times2 = np.arange(100, 110, dtype=float)
+        data1 = np.ones((10, 10), dtype=float) * 1.0
+        data2 = np.ones((10, 10), dtype=float) * 3.0
+        backend1 = MockBackend(times1, data1)
+        backend2 = MockBackend(times2, data2)
+
+        combine = CombineBackend(
+            [backend1, backend2],
+            combine_func="nanmean",
+            x_align="time",
+            linear=False,
+        )
+
+        calls = {"b1": 0, "b2": 0}
+        b1_orig_get_column = backend1.get_column
+        b2_orig_get_column = backend2.get_column
+
+        def b1_counting(ping_idx):
+            calls["b1"] += 1
+            return b1_orig_get_column(ping_idx)
+
+        def b2_counting(ping_idx):
+            calls["b2"] += 1
+            return b2_orig_get_column(ping_idx)
+
+        backend1.get_column = b1_counting
+        backend2.get_column = b2_counting
+
+        # Query a ping in the first time segment; backend2 is disjoint and should not be touched.
+        col = combine.get_column(0)
+
+        assert calls["b1"] == 1
+        assert calls["b2"] == 0
+        assert np.all(np.isfinite(col))
+        np.testing.assert_allclose(col, 1.0)
+
 
 # =============================================================================
 # Integration Tests

@@ -250,19 +250,34 @@ class CombineBackend(EchogramDataBackend):
 
     def _compute_combined_metadata(self):
         """Compute metadata that spans all backends."""
-        # Use first backend as reference for most metadata
+        # Use first backend as scalar metadata fallback
         first = self._backends[0]
-        
-        # For combined echograms, we need the union of all time ranges
-        # Use the first backend's ping structure as the "master"
-        # Other backends will be resampled to match during get_image
-        self._n_pings = first.n_pings
-        self._ping_times = first.ping_times.copy()
-        
-        # Sample extents from first backend
-        self._sample_nr_min, self._sample_nr_max = first.sample_nr_extents
-        self._sample_nr_min = self._sample_nr_min.copy()
-        self._sample_nr_max = self._sample_nr_max.copy()
+
+        # Build combined time grid as the sorted union of all backend ping times.
+        # This allows combining temporally disjoint echograms into one timeline.
+        all_times = []
+        for backend in self._backends:
+            bt = np.asarray(backend.ping_times, dtype=np.float64)
+            if len(bt) == 0:
+                continue
+            all_times.append(bt[np.isfinite(bt)])
+        if all_times:
+            self._ping_times = np.unique(np.concatenate(all_times))
+        else:
+            self._ping_times = np.array([], dtype=np.float64)
+        self._n_pings = len(self._ping_times)
+
+        # Sample-index extents across all backends, aligned to combined timeline.
+        aligned_min_s = []
+        aligned_max_s = []
+        for i, b in enumerate(self._backends):
+            min_s, max_s = b.sample_nr_extents
+            aligned_min_s.append(self._align_backend_array_to_combined(min_s, i))
+            aligned_max_s.append(self._align_backend_array_to_combined(max_s, i))
+        all_min_s = np.stack(aligned_min_s, axis=0)
+        all_max_s = np.stack(aligned_max_s, axis=0)
+        self._sample_nr_min = np.nanmin(all_min_s, axis=0)
+        self._sample_nr_max = np.nanmax(all_max_s, axis=0)
         
         # Range extents - use union (min of mins, max of maxes) across backends
         # Time-aligned: each backend's extents placed at correct combined indices
@@ -304,13 +319,13 @@ class CombineBackend(EchogramDataBackend):
         # preserves the finest backend resolution.
         self._max_sample_counts = self._compute_combined_max_sample_counts()
         
-        # Lat/lon from first backend that has it
+        # Lat/lon from first backend that has it, time-aligned to combined grid
         self._latitudes = None
         self._longitudes = None
-        for backend in self._backends:
+        for i, backend in enumerate(self._backends):
             if backend.has_latlon:
-                self._latitudes = backend.latitudes
-                self._longitudes = backend.longitudes
+                self._latitudes = self._align_backend_array_to_combined(backend.latitudes, i)
+                self._longitudes = self._align_backend_array_to_combined(backend.longitudes, i)
                 break
         
         # Scalar metadata from first backend
@@ -334,17 +349,12 @@ class CombineBackend(EchogramDataBackend):
     def _align_backend_array_to_combined(self, arr: np.ndarray, backend_idx: int) -> np.ndarray:
         """Align a per-ping array from a sub-backend to combined ping indices.
 
-        For backend 0 (the reference), pads/truncates to combined length since
-        the combined ping times ARE the first backend's times.
-        For other backends, maps each COMBINED ping to the nearest BACKEND
+        Maps each COMBINED ping to the nearest BACKEND
         ping by time.  Only combined pings within the backend's time range
         receive a value; all others remain NaN.  This gives dense coverage
         across the entire overlap region (every combined ping gets a value
         from the nearest backend ping).
         """
-        if backend_idx == 0:
-            return self._pad_to_length(arr, self._n_pings)
-
         backend = self._backends[backend_idx]
         backend_times = backend.ping_times
         combined_times = self._ping_times
@@ -355,6 +365,9 @@ class CombineBackend(EchogramDataBackend):
 
         arr = np.asarray(arr, dtype=np.float64)
         n_backend = len(backend_times)
+        n = min(len(arr), n_backend)
+        if n <= 0:
+            return result
 
         # For each combined ping, find the nearest backend ping
         insert_pos = np.searchsorted(backend_times, combined_times)
@@ -378,7 +391,6 @@ class CombineBackend(EchogramDataBackend):
             half_interval = 0.5
         in_range = (combined_times >= t_min - half_interval) & (combined_times <= t_max + half_interval)
 
-        n = min(len(arr), n_backend)
         # Clip backend indices to valid array range
         safe_idx = np.clip(best_backend_idx, 0, n - 1)
         result[in_range] = arr[safe_idx[in_range]]
@@ -595,17 +607,12 @@ class CombineBackend(EchogramDataBackend):
 
     def _find_backend_ping_index(self, backend_idx: int, combined_ping_index: int) -> int:
         """Find the ping index in a sub-backend that matches the combined ping's time.
-        
-        For the first backend (backend_idx == 0), the combined ping index IS
-        the backend ping index.  For other backends, we find the nearest ping
+
+        We find the nearest ping
         by timestamp, respecting an adaptive time tolerance.
-        
+
         Returns -1 if no matching ping exists in the backend.
         """
-        if backend_idx == 0:
-            backend = self._backends[0]
-            return combined_ping_index if combined_ping_index < backend.n_pings else -1
-        
         backend = self._backends[backend_idx]
         if combined_ping_index >= len(self._ping_times):
             return -1
@@ -616,13 +623,20 @@ class CombineBackend(EchogramDataBackend):
         if len(backend_times) == 0:
             return -1
         
-        # Compute adaptive tolerance (same logic as _create_time_aligned_ping_indexer)
-        intervals = []
-        if len(self._ping_times) > 1:
-            intervals.append(np.median(np.abs(np.diff(self._ping_times))))
+        # Compute tolerance from this backend's own cadence only.
+        # Using the combined union timeline here can over-inflate tolerance
+        # when files are temporally disjoint.
         if len(backend_times) > 1:
-            intervals.append(np.median(np.abs(np.diff(backend_times))))
-        tolerance = max(intervals) if intervals else 0.5
+            backend_intervals = np.abs(np.diff(backend_times))
+            tolerance = float(np.nanquantile(backend_intervals, 0.95))
+            if not np.isfinite(tolerance) or tolerance <= 0:
+                tolerance = 0.5
+        else:
+            tolerance = 0.5
+
+        # Fast reject if query time is outside this backend's time extent.
+        if query_time < (backend_times[0] - tolerance) or query_time > (backend_times[-1] + tolerance):
+            return -1
         
         # Find nearest ping by time
         idx = int(np.searchsorted(backend_times, query_time))
@@ -837,13 +851,13 @@ class CombineBackend(EchogramDataBackend):
         time_tolerance: Optional[float] = None,
     ) -> np.ndarray:
         """Create a ping indexer for a backend aligned by time.
-        
-        The request's ping_indexer maps x-positions to ping indices of the 
-        COMBINED backend (first backend). This method translates those to
+
+        The request's ping_indexer maps x-positions to ping indices of the
+        COMBINED backend. This method translates those to
         the equivalent ping indices in a sub-backend based on matching times.
         
         Args:
-            request_ping_indexer: Ping indices from request (into combined/first backend).
+            request_ping_indexer: Ping indices from request (into combined backend).
             backend: The sub-backend to create indexer for.
             time_tolerance: Maximum time difference (seconds) to consider a match.
                 If None, automatically computed as the median ping interval of the
@@ -869,16 +883,17 @@ class CombineBackend(EchogramDataBackend):
         if len(valid_indices) == 0 or len(backend_times) == 0:
             return backend_indexer
         
-        # Auto-compute tolerance from backend's ping interval if not specified.
-        # Use the median interval of the sparser backend so that every ping
-        # in either backend can be reached by at least one ping in the other.
+        # Auto-compute tolerance from this backend's own ping cadence.
+        # Do not use the combined union timeline here: large gaps between
+        # disjoint files would inflate tolerance and cause false matches.
         if time_tolerance is None:
-            intervals = []
-            if len(combined_times) > 1:
-                intervals.append(np.median(np.abs(np.diff(combined_times))))
             if len(backend_times) > 1:
-                intervals.append(np.median(np.abs(np.diff(backend_times))))
-            time_tolerance = max(intervals) if intervals else 0.5
+                backend_intervals = np.abs(np.diff(backend_times))
+                time_tolerance = float(np.nanquantile(backend_intervals, 0.95))
+                if not np.isfinite(time_tolerance) or time_tolerance <= 0:
+                    time_tolerance = 0.5
+            else:
+                time_tolerance = 0.5
         
         # Get the combined ping indices we need to map
         combined_ping_indices = request_ping_indexer[valid_mask]
@@ -890,6 +905,20 @@ class CombineBackend(EchogramDataBackend):
         
         # Get times for those pings
         query_times = combined_times[combined_ping_indices[in_range]]
+
+        # Fast short-circuit: if the visible request window does not overlap this
+        # backend's time extent (within tolerance), no ping can match.
+        backend_t_min = backend_times[0]
+        backend_t_max = backend_times[-1]
+        if query_times[-1] < (backend_t_min - time_tolerance) or query_times[0] > (backend_t_max + time_tolerance):
+            return backend_indexer
+
+        # Restrict matching work to query times that can plausibly hit this backend.
+        # This avoids unnecessary searchsorted work for far-away disjoint windows.
+        plausible = (query_times >= (backend_t_min - time_tolerance)) & (query_times <= (backend_t_max + time_tolerance))
+        if not np.any(plausible):
+            return backend_indexer
+        query_times = query_times[plausible]
         
         # Use searchsorted to find nearest ping in backend for each query time
         # This is O(n log m) instead of O(n*m)
@@ -915,7 +944,7 @@ class CombineBackend(EchogramDataBackend):
         best_indices[best_diffs > time_tolerance] = -1
         
         # Map back to output array
-        valid_indices_in_range = valid_indices[in_range]
+        valid_indices_in_range = valid_indices[in_range][plausible]
         backend_indexer[valid_indices_in_range] = best_indices
         
         return backend_indexer
@@ -943,19 +972,22 @@ class CombineBackend(EchogramDataBackend):
         
         for backend_idx, backend in enumerate(self._backends):
             backend_n_pings = backend.n_pings
-            
-            # Create a TIME-ALIGNED ping indexer for this backend
-            # The first backend uses the original indexer (it's the reference)
-            if backend_idx == 0:
-                backend_ping_indexer = request.ping_indexer.copy()
-                # Just mark out-of-range as invalid
-                out_of_range = backend_ping_indexer >= backend_n_pings
-                backend_ping_indexer[out_of_range] = -1
-            else:
-                # For other backends, align by time
+
+            # Create backend ping indexer according to selected x alignment mode.
+            if self._x_align == "time":
                 backend_ping_indexer = self._create_time_aligned_ping_indexer(
                     request.ping_indexer, backend
                 )
+            else:
+                backend_ping_indexer = request.ping_indexer.copy()
+                out_of_range = backend_ping_indexer >= backend_n_pings
+                backend_ping_indexer[out_of_range] = -1
+
+            # If this backend has no mapped pings for the current view/request,
+            # skip expensive backend image generation entirely.
+            if not np.any(backend_ping_indexer >= 0):
+                images.append(np.full((request.nx, request.ny), request.fill_value, dtype=np.float32))
+                continue
             
             # Determine if we need depth-aligned y-axis based on y_align setting
             use_depth_affines = self._y_align in ("depth", "range")
@@ -1014,8 +1046,9 @@ class CombineBackend(EchogramDataBackend):
                 # Sample index mode - use original affines but with correct ping indexer
                 backend_max_samples = backend.max_sample_counts.astype(np.int64) + 1
                 
-                # For sample index mode, we need to map the affines if x_align is "time"
-                if self._x_align == "time" and backend_idx > 0:
+                # For sample index mode in time alignment, map request affines
+                # from combined ping indices to this backend's ping indices.
+                if self._x_align == "time":
                     n_request = len(request.affine_a)
                     backend_affine_a = np.full(backend_n_pings, np.nan, dtype=np.float32)
                     backend_affine_b = np.full(backend_n_pings, np.nan, dtype=np.float32)
