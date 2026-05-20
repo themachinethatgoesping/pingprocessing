@@ -1,1104 +1,1458 @@
-import numpy as np
+"""Builder for echogram images with coordinate system and layer management.
 
-from typing import Tuple
-from collections import defaultdict
-from copy import deepcopy
-import datetime as dt
-from tqdm.auto import tqdm
+This module provides the EchogramBuilder class which handles:
+- Image building from data backends
+- Layer management for region selection
+- Coordinate system delegation to EchogramCoordinateSystem
+"""
 
-import matplotlib as mpl
-import matplotlib.dates as mdates
 import warnings
 
+import numpy as np
+from typing import Optional, Tuple
+from copy import deepcopy
+from pathlib import Path
+import datetime as dt
+
 # external Ping packages
-import themachinethatgoesping as theping
 from themachinethatgoesping import echosounders
-from themachinethatgoesping import tools
 
 # internal Ping.pingprocessing packages
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-from themachinethatgoesping.pingprocessing.core.asserts import assert_length, assert_valid_argument
-from themachinethatgoesping.algorithms.geoprocessing.functions import to_raypoints
-from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 
-from themachinethatgoesping.algorithms_nanopy.featuremapping import NearestFeatureMapper
-
-from themachinethatgoesping.pingprocessing.watercolumn import helper as wchelper
-
-# subpackages
+# Local imports
+from .coordinate_system import EchogramCoordinateSystem
+from .backends import EchogramDataBackend, PingDataBackend
 from .layers.echolayer import EchoLayer, PingData
 
 
 class EchogramBuilder:
-    def __init__(self, pings, times, beam_sample_selections, wci_value, linear_mean, depth_stack=False):
-        assert_length("EchoData", pings, [times])
-        if len(pings) == 0:
-            raise RuntimeError("ERROR[EchoData]: trying to initialize empty data (no valid pings)")
+    """Builder for echogram images with coordinate system and layer management.
+    
+    The EchogramBuilder controls:
+    - Image building using data from a backend
+    - Layer management for region selection
+    
+    Coordinate systems are delegated to an EchogramCoordinateSystem instance.
+    Data access is delegated to an EchogramDataBackend.
+    """
 
-        assert len(pings) == len(
-            beam_sample_selections
-        ), "ERROR[EchoData]: pings and beam_sample_selections must have the same length"
-        self.beam_sample_selections = beam_sample_selections
-        self.feature_mapper = NearestFeatureMapper()
+    def __init__(
+        self,
+        backend: "EchogramDataBackend",
+        ping_numbers: Optional[np.ndarray] = None,
+    ):
+        """Initialize EchogramBuilder with a data backend.
+        
+        Args:
+            backend: Data backend providing access to echogram data.
+            ping_numbers: Optional array of ping numbers. If None, uses 0..n_pings-1.
+        """
+        if backend.n_pings == 0:
+            raise RuntimeError("ERROR[EchogramBuilder]: trying to initialize with empty data (no valid pings)")
 
-        self.depth_stack = depth_stack
+        self._backend = backend
+        
+        # Create coordinate system
+        self._coord_system = EchogramCoordinateSystem(
+            n_pings=backend.n_pings,
+            max_number_of_samples=backend.max_sample_counts,
+            ping_times=backend.ping_times,
+            ping_numbers=ping_numbers,
+        )
+
+        # Layer management
         self.layers = {}
         self.main_layer = None
-        self.linear_mean = linear_mean
-        self.wci_value = wci_value
-        self.pings = pings
-        # self.wc_data = wc_data
-        self.x_axis_name = None
-        self.y_axis_name = None
-        self.max_number_of_samples = np.array(
-            [sel.get_number_of_samples_ensemble() - 1 for sel in self.beam_sample_selections]
-        )
-        self.set_ping_numbers(np.arange(len(self.pings)))
-        self.set_ping_times(times)
 
-        self.param = {}
+        # Optional per-ping value arrays associated with a ping param. When
+        # a param has registered values, the echogram viewer auto-colors the
+        # param-display overlay by those values.
+        self._param_values: dict = {}
 
-        self.has_ranges = False
-        self.has_depths = False
-        self.has_sample_nrs = False
-        self.set_y_axis_y_indice()
-        self.set_x_axis_ping_index()
-        self.initialized = True
+        # Set extents from backend
+        min_s, max_s = backend.sample_nr_extents
+        self._coord_system.set_sample_nr_extent(min_s, max_s)
+        
+        if backend.range_extents is not None:
+            min_r, max_r = backend.range_extents
+            self._coord_system.set_range_extent(min_r, max_r)
+            
+        if backend.depth_extents is not None:
+            min_d, max_d = backend.depth_extents
+            self._coord_system.set_depth_extent(min_d, max_d)
+
+        # Initialize ping params from backend
+        self._init_ping_params_from_backend()
+
+        # Set default axes
+        self._coord_system.set_y_axis_y_indice(layer_update_callback=self._update_layers)
+        self._coord_system.set_x_axis_ping_index()
         
         self.mp_cores = 1
-
-    def set_depth_stack(self, depth_stack=True):
-        self.depth_stack = depth_stack
-
-    def set_range_stack(self, range_stack=True):
-        self.depth_stack = not range_stack
-
-    def set_linear_mean(self, linear_mean):
-        self.linear_mean = linear_mean
-        self.initialized = False
-
-    def set_ping_numbers(self, ping_numbers):
-        assert_length("set_ping_numbers", self.pings, [ping_numbers])
-        self.feature_mapper.set_feature("Ping index", ping_numbers)
-        self.ping_numbers = ping_numbers
-        self.initialized = False
-
-    def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
-        assert_length("set_ping_times", self.pings, [ping_times])
-        self.feature_mapper.set_feature("Ping time", ping_times)
-        self.feature_mapper.set_feature("Date time", ping_times)
-        self.ping_times = ping_times
-        self.time_zone = time_zone
-        self.initialized = False
-
-    def set_range_extent(self, min_ranges, max_ranges):
-        assert_length("set_range_extent", self.pings, [min_ranges, max_ranges])
-        self.min_ranges = np.array(min_ranges).astype(np.float32)
-        self.max_ranges = np.array(max_ranges).astype(np.float32)
-        self.res_ranges = ((self.max_ranges - self.min_ranges) / self.max_number_of_samples).astype(np.float32)
-        self.has_ranges = True
-        self.initialized = False
-
-    def set_depth_extent(self, min_depths, max_depths):
-        assert_length("set_depth_extent", self.pings, [min_depths, max_depths])
-        self.min_depths = np.array(min_depths).astype(np.float32)
-        self.max_depths = np.array(max_depths).astype(np.float32)
-        self.res_depths = ((self.max_depths - self.min_depths) / self.max_number_of_samples).astype(np.float32)
-        self.has_depths = True
-        self.initialized = False
-
-    def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
-        assert_length("set_sample_nr_extent", self.pings, [min_sample_nrs, max_sample_nrs])
-        self.min_sample_nrs = np.array(min_sample_nrs).astype(np.float32)
-        self.max_sample_nrs = np.array(max_sample_nrs).astype(np.float32)
-        self.res_sample_nrs = ((self.max_sample_nrs - self.min_sample_nrs) / self.max_number_of_samples).astype(
-            np.float32
-        )
-        self.has_sample_nrs = True
-        self.initialized = False
-
-    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val):
-        assert_valid_argument("add_ping_param", x_reference, ["Ping index", "Ping time", "Date time"])
-        assert_valid_argument("add_ping_param", y_reference, ["Y indice", "Sample number", "Depth (m)", "Range (m)"])
-
-        # convert datetimes to timestamps
-        if isinstance(vec_x_val[0], dt.datetime):
-            vec_x_val = [x.timestamp() for x in vec_x_val]
-
-        # convert to numpy arrays
-        vec_x_val = np.array(vec_x_val)
-        vec_y_val = np.array(vec_y_val)
-
-        # filter nans and infs
-        arg = np.where(np.isfinite(vec_x_val))[0]
-        vec_x_val = vec_x_val[arg]
-        vec_y_val = vec_y_val[arg]
-        arg = np.where(np.isfinite(vec_y_val))[0]
-        vec_x_val = vec_x_val[arg]
-        vec_y_val = vec_y_val[arg]
-
-        match x_reference:
-            case "Ping index":
-                comp_vec_x_val = self.ping_numbers
-            case "Ping time":
-                comp_vec_x_val = self.ping_times
-            case "Date time":
-                comp_vec_x_val = self.ping_times
-                # comp_vec_x_val = [dt.datetime.fromtimestamp(t, self.time_zone) for t in self.ping_times]
-
-        # average vec_y_val for all double vec_x_vals
-        unique_x_vals, indices = np.unique(vec_x_val, return_inverse=True)
-        averaged_y_vals = np.zeros(len(unique_x_vals))
-        counts = np.bincount(indices)
-        for i in range(len(unique_x_vals)):
-            start_index = np.where(indices == i)[0][0]
-            end_index = start_index + counts[i]
-            averaged_y_vals[i] = np.mean(vec_y_val[start_index:end_index])
-
-        vec_x_val = unique_x_vals
-        vec_y_val = averaged_y_vals
-
-        # convert to to represent indices
-        vec_y_val = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_y_val, extrapolation_mode="nearest")(
-            comp_vec_x_val
-        )
-
-        self.param[name] = y_reference, vec_y_val
-
-    def get_ping_param(self, name, use_x_coordinates=False):
-        self.reinit()
-        assert name in self.param.keys(), f"ERROR[get_ping_param]: name '{name}' not registered"
-        if use_x_coordinates:
-            x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
-            x_indices = np.array(self.feature_mapper.feature_to_index(self.x_axis_name, x_coordinates), mp_cores=self.mp_cores)
-        else:
-            x_indices = np.arange(len(self.pings))
-            x_coordinates = self.feature_mapper.get_feature_values(self.x_axis_name)
-
-        reference, param = self.param[name]
-        param = np.array(param)[x_indices]
-
-        return_param = np.empty(len(param))
-        return_param.fill(np.nan)
-
-        match reference:
-            case "Y indice":
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.y_indice_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
-            case "Sample number":
-                assert (
-                    self.has_sample_nrs
-                ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
-
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.sample_nr_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
-            case "Depth (m)":
-                assert (
-                    self.has_depths
-                ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
-
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.depth_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
-            case "Range (m)":
-                assert (
-                    self.has_ranges
-                ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
-
-                for nr, (indice, p) in enumerate(zip(x_indices, param)):
-                    if np.isfinite(p):
-                        I = self.range_to_y_coordinate_interpolator[indice]
-                        if I is not None:
-                            return_param[nr] = I(p)
-
-            case _:
-                raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
-
-        if self.x_axis_name == "Date time":
-            x_coordinates = [dt.datetime.fromtimestamp(t, self.time_zone) for t in x_coordinates]
-
-        return x_coordinates, return_param
-
-    def get_x_kwargs(self):
-        return deepcopy(self.__x_kwargs)
-
-    def get_y_kwargs(self):
-        return deepcopy(self.__y_kwargs)
-
-    @classmethod
-    def from_pings(
-        cls,
-        pings,
-        pss=echosounders.pingtools.PingSampleSelector(),
-        wci_value: str = "sv/av/pv/rv",
-        linear_mean=True,
-        no_navigation=False,
-        apply_pss_to_bottom=False,
-        force_angle=None,
-        depth_stack=False,
-        verbose=True,
-    ):
-
-        # wc_data = [np.empty(0) for _ in pings]
-        min_s = np.empty(len(pings), dtype=np.float32)
-        max_s = np.empty(len(pings), dtype=np.float32)
-        min_r = np.empty(len(pings), dtype=np.float32)
-        max_r = np.empty(len(pings), dtype=np.float32)
-        min_d = np.empty(len(pings), dtype=np.float32)
-        max_d = np.empty(len(pings), dtype=np.float32)
-        times = np.empty(len(pings), dtype=np.float64)
-
-        bottom_d_times = []
-        bottom_d = []
-        minslant_d = []
-        echosounder_d_times = []
-        echosounder_d = []
-
-        for arg in [min_s, max_s, min_r, max_r, min_d, max_d, times]:
-            arg.fill(np.nan)
-
-        beam_sample_selections = []
-
-        for nr, ping in enumerate(tqdm(pings, disable=(not verbose), delay=1)):
-            sel = wchelper.apply_pss(ping, pss, apply_pss_to_bottom)
-
-            beam_sample_selections.append(sel)
-
-            times[nr] = ping.get_timestamp()
-            if len(sel.get_beam_numbers()) == 0:
-                continue
-
-            c = ping.watercolumn.get_sound_speed_at_transducer()
-            range_res = ping.watercolumn.get_sample_interval() * c * 0.5
-
-            if force_angle is None:
-                angle_factor = np.cos(
-                    np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
-                )
-            else:
-                angle_factor = np.cos(np.radians(force_angle))
-
-            min_s[nr] = sel.get_first_sample_number_ensemble()
-            max_s[nr] = sel.get_last_sample_number_ensemble()
-            min_r[nr] = min_s[nr] * range_res
-            max_r[nr] = max_s[nr] * range_res
-            echosounder_d_times.append(times[nr])
-
-            if not no_navigation:
-                if not ping.has_geolocation():
-                    raise RuntimeError(
-                        f"ERROR: ping {nr} has no geolocation. Either filter pings based on geolocation feature or set no_navigation to True"
-                    )
-
-                z = ping.get_geolocation().z
-                min_d[nr] = z + min_r[nr] * angle_factor
-                max_d[nr] = z + max_r[nr] * angle_factor
-                echosounder_d.append(z)
-
-            if max_d[nr] > 6000:
-                print(
-                    f"ERROR [{nr}], s0{min_s[nr]}, s1{max_s[nr]}, r0{min_r[nr]}, r1{max_r[nr]}, d0{min_d[nr]}, d1{max_d[nr]}",
-                    z,
-                    angle_factor,
-                )
-
-            if ping.has_bottom():
-                if ping.bottom.has_xyz():
-                    try:
-                        # Compute bottom depth from watercolumn bottom range samples
-                        # using the PSS-filtered selection (sel). This avoids the
-                        # angle/beam-index mismatch between watercolumn and bottom
-                        # objects (they can have different beam counts and angle
-                        # definitions, especially for KMALL data).
-                        bottom_samples = ping.watercolumn.get_bottom_range_samples(sel)
-                        valid = bottom_samples[bottom_samples > 0]
-                        if len(valid) > 0:
-                            br = float(np.median(valid)) * range_res * angle_factor
-                        else:
-                            br = float(np.median(bottom_samples)) * range_res * angle_factor
-                        mr = ping.watercolumn.get_minslant_sample_nr(sel) * range_res * angle_factor
-                        bottom_d_times.append(times[nr])
-
-                        if not no_navigation:
-                            bd = br + z
-                            md = mr + z
-                            bottom_d.append(bd)
-                            minslant_d.append(md)
-                    except Exception as e:
-                        pass
-                        # TODO: this should create a warning in the log
-
-        data = cls(pings, times, beam_sample_selections, wci_value, linear_mean=linear_mean, depth_stack=depth_stack)
-        data.set_sample_nr_extent(min_s, max_s)
-        data.set_range_extent(min_r, max_r)
-        if not no_navigation:
-            data.set_depth_extent(min_d, max_d)
-
-        if len(bottom_d) > 0:
-            data.add_ping_param("bottom", "Ping time", "Depth (m)", bottom_d_times, bottom_d)
-            data.add_ping_param("minslant", "Ping time", "Depth (m)", bottom_d_times, minslant_d)
-        if len(echosounder_d) > 0:
-            data.add_ping_param("echosounder", "Ping time", "Depth (m)", echosounder_d_times, echosounder_d)
-
-        data.verbose = verbose
-        return data
-
-    def get_wci_range_stack(self, nr):
-        sel = self.beam_sample_selections[nr]
-        ping = self.pings[nr]
-
-        # select which ping.watercolumn.get_ function to call based on wci_value
-        wci = wchelper.select_get_wci_image(ping, sel, self.wci_value, self.mp_cores)
-
-        if wci.shape[0] == 1:
-            return wci[0]
-        else:
-            if self.linear_mean:
-                wci = np.power(10, wci * 0.1)
-
-            wci = np.nanmean(wci, axis=0)
-
-            if self.linear_mean:
-                wci = 10 * np.log10(wci)
-
-            return wci
-
-    def get_wci_depth_stack(self, nr, from_bottom_xyz=False):
-        sel = self.beam_sample_selections[nr]
-
-        if not sel.empty():
-            ping = self.pings[nr]
-
-            # select which ping.watercolumn.get_ function to call based on wci_value
-            wci = wchelper.select_get_wci_image(ping, sel, self.wci_value, self.mp_cores)
-
-            if from_bottom_xyz:
-                xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_bottom(ping, selection=sel)
-            else:
-                xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=sel)
-
-            geolocation = ping.get_geolocation()
-
-            # y = to_raypoints(
-            #     0.,
-            #     np.array(xyz.y).astype(np.float32),
-            #     0.5,
-            #     np.array(bdsn+0.5).astype(np.float32),
-            #     np.array(range(wci.shape[1])).astype(np.float32))
-
-            z = to_raypoints(
-                geolocation.z,
-                np.array(xyz.z).astype(np.float32),
-                0.5,
-                np.array(bdsn + 0.5).astype(np.float32),
-                np.array(range(wci.shape[1])).astype(np.float32),
-            )
-
-            arg = np.where(np.isfinite(wci.flatten()))
-
-            if self.linear_mean:
-                wci = np.power(10, 0.1 * wci.flatten()[arg])
-            else:
-                wci = wci.flatten()[arg]
-            # y = y.flatten()[arg]
-            z = z.flatten()[arg]
-
-            v, w = self.y_gridder.interpolate_block_mean(z, wci)
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                if self.linear_mean:
-                    column = 10 * np.log10(v / w)
+        self.verbose = True
+        
+        # Value transforms (applied to all data values)
+        self._offset = 0.0
+        self._factor = 1.0
+        self._transform = None  # callable(data) -> data, e.g. lambda d: np.power(10, 0.1*d)
+        
+        # Oversampling settings
+        self._x_oversampling = 1
+        self._y_oversampling = 1
+        self._oversampling_mode = "linear_mean"  # "linear_mean" or "db_mean"
+
+    def _init_ping_params_from_backend(self):
+        """Initialize ping parameters from backend's pre-computed values."""
+        ping_params = self._backend.get_ping_params()
+        for name, (y_reference, (times, values)) in ping_params.items():
+            self._coord_system.add_ping_param(name, "Ping time", y_reference, times, values)
+
+    def _get_all_ping_params(self):
+        """Collect all ping parameters from backend and coordinate system.
+        
+        Returns all params in the backend format:
+            {name: (y_reference, (timestamps, values))}
+        
+        Backend params are included first, then any additional params from
+        the coordinate system that were added via add_ping_param() after
+        construction are appended using ping_times as their timestamps.
+        """
+        # Start with backend params
+        result = dict(self._backend.get_ping_params())
+        
+        # Add coord system params not already in backend
+        for name, param_data in self._coord_system.param.items():
+            if name not in result:
+                y_reference, dense_values = param_data
+                # dense_values may be a tuple (sparse format) or ndarray (dense)
+                if isinstance(dense_values, tuple) and len(dense_values) == 2:
+                    # Already in sparse (timestamps, values) format
+                    result[name] = (y_reference, dense_values)
                 else:
-                    column = v / w
+                    # Dense format: one value per ping -> use ping_times as x
+                    result[name] = (y_reference, (self._backend.ping_times, np.asarray(dense_values, dtype=np.float64)))
+        
+        return result
 
-        else:
-            column = np.empty((len(self.y_coordinates)))
-            column.fill(np.nan)
-        return column
-
-    def reinit(self):
-        if self.initialized:
-            return
-
-        self.y_axis_function(**self.__y_kwargs)
-        self.x_axis_function(**self.__x_kwargs)
-
-    def set_y_coordinates(self, name, y_coordinates, vec_min_y, vec_max_y):
-        assert (
-            len(vec_min_y) == len(vec_max_y) == len(self.pings)
-        ), f"ERROR min/max y vectors must have the same length as internal pings vector"
-        self.y_axis_name = name
-        self.y_coordinates = y_coordinates
-        self.y_resolution = y_coordinates[1] - y_coordinates[0]
-        self.y_extent = [
-            self.y_coordinates[-1] + self.y_resolution / 2,
-            self.y_coordinates[0] - self.y_resolution / 2,
-        ]
-        self.vec_min_y = vec_min_y
-        self.vec_max_y = vec_max_y
-
-        self.y_gridder = ForwardGridder1D.from_res(self.y_resolution, self.y_coordinates[0], self.y_coordinates[-1])
+    def _update_layers(self):
+        """Update all layers after coordinate system change."""
         if self.main_layer is not None:
             self.main_layer.update_y_gridder()
         for layer in self.layers.values():
             layer.update_y_gridder()
 
-        self.y_coordinate_indice_interpolator = [None for _ in self.pings]
-        self.y_indice_to_y_coordinate_interpolator = [None for _ in self.pings]
-        self.depth_to_y_coordinate_interpolator = [None for _ in self.pings]
-        self.range_to_y_coordinate_interpolator = [None for _ in self.pings]
-        self.sample_nr_to_y_coordinate_interpolator = [None for _ in self.pings]
-        self.y_indice_to_depth_interpolator = [None for _ in self.pings]
-        self.y_indice_to_range_interpolator = [None for _ in self.pings]
-        self.y_indice_to_sample_nr_interpolator = [None for _ in self.pings]
+    # =========================================================================
+    # Factory methods
+    # =========================================================================
 
-        for nr, (y1, y2, sel) in enumerate(zip(vec_min_y, vec_max_y, self.beam_sample_selections)):
-            try:
-                # Skip pings with empty beam selection or invalid y values
-                if len(sel.get_beam_numbers()) == 0:
-                    continue
-                if not (np.isfinite(y1) and np.isfinite(y2)):
-                    continue
-                if y1 >= y2:
-                    continue
-                    
-                n_samples = sel.get_number_of_samples_ensemble()
-
-                if n_samples > 1:
-                    I = tools.vectorinterpolators.LinearInterpolatorF([y1, y2], [0, n_samples - 1])
-                    self.y_coordinate_indice_interpolator[nr] = I
-
-                    I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [y1, y2])
-                    self.y_indice_to_y_coordinate_interpolator[nr] = I
-
-                    if self.has_depths:
-                        d1, d2 = self.min_depths[nr], self.max_depths[nr]
-                        if np.isfinite(d1) and np.isfinite(d2) and d1 < d2:
-                            I = tools.vectorinterpolators.LinearInterpolatorF([d1, d2], [y1, y2])
-                            self.depth_to_y_coordinate_interpolator[nr] = I
-                            I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [d1, d2])
-                            self.y_indice_to_depth_interpolator[nr] = I
-
-                    if self.has_ranges:
-                        r1, r2 = self.min_ranges[nr], self.max_ranges[nr]
-                        if np.isfinite(r1) and np.isfinite(r2) and r1 < r2:
-                            I = tools.vectorinterpolators.LinearInterpolatorF([r1, r2], [y1, y2])
-                            self.range_to_y_coordinate_interpolator[nr] = I
-                            I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [r1, r2])
-                            self.y_indice_to_range_interpolator[nr] = I
-
-                    if self.has_sample_nrs:
-                        s1, s2 = self.min_sample_nrs[nr], self.max_sample_nrs[nr]
-                        if np.isfinite(s1) and np.isfinite(s2) and s1 < s2:
-                            I = tools.vectorinterpolators.LinearInterpolatorF([s1, s2], [y1, y2])
-                            self.sample_nr_to_y_coordinate_interpolator[nr] = I
-                            I = tools.vectorinterpolators.LinearInterpolatorF([0, n_samples - 1], [s1, s2])
-                            self.y_indice_to_sample_nr_interpolator[nr] = I
-
-            except Exception as e:
-                message = f"{e}\n- nr {nr}\n- y1 {y1}\n -y2 {y2}\n -n_samples {n_samples}"
-                raise RuntimeError(message)
-
-    def get_filtered_by_y_extent(self, vec_x_val, vec_min_y, vec_max_y):
-        assert_length("get_filtered_by_y_extent", vec_x_val, [vec_min_y, vec_max_y])
-
-        # convert datetimes to timestamps
-        if isinstance(vec_x_val[0], dt.datetime):
-            vec_x_val = [x.timestamp() for x in vec_x_val]
-
-        # convert to numpy arrays
-        vec_x_val = np.array(vec_x_val)
-        vec_min_y = np.array(vec_min_y)
-        vec_max_y = np.array(vec_max_y)
-
-        # filter nans and infs
-        arg = np.where(np.isfinite(vec_x_val))[0]
-        vec_min_y = vec_min_y[arg]
-        vec_max_y = vec_max_y[arg]
-        vec_x_val = vec_x_val[arg]
-        arg = np.where(np.isfinite(vec_min_y))[0]
-        vec_min_y = vec_min_y[arg]
-        vec_max_y = vec_max_y[arg]
-        vec_x_val = vec_x_val[arg]
-        arg = np.where(np.isfinite(vec_max_y))[0]
-        vec_min_y = vec_min_y[arg]
-        vec_max_y = vec_max_y[arg]
-        vec_x_val = vec_x_val[arg]
-
-        # convert to to represent indices
-        vec_min_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_min_y, extrapolation_mode="nearest")(
-            self.feature_mapper.get_feature_values(self.x_axis_name)
-        )
-        vec_max_y = tools.vectorinterpolators.LinearInterpolator(vec_x_val, vec_max_y, extrapolation_mode="nearest")(
-            self.feature_mapper.get_feature_values(self.x_axis_name)
-        )
-
-        # wc_data = [np.empty(0) for _ in self.wc_data]
-        beam_sample_selections = deepcopy(self.beam_sample_selections)
-        min_s = np.empty(len(self.pings), dtype=np.float32)
-        max_s = np.empty(len(self.pings), dtype=np.float32)
-        min_r = np.empty(len(self.pings), dtype=np.float32)
-        max_r = np.empty(len(self.pings), dtype=np.float32)
-        min_d = np.empty(len(self.pings), dtype=np.float32)
-        max_d = np.empty(len(self.pings), dtype=np.float32)
-
-        for arg in [min_s, max_s, min_r, max_r, min_d, max_d]:
-            arg.fill(np.nan)
-        global nr, bss, i1, i2
-        for nr, (y1, y2, bss) in enumerate(zip(vec_min_y, vec_max_y, beam_sample_selections)):
-            nsamples = bss.get_number_of_samples_ensemble()
-            if nsamples > 0:
-                i1 = int(self.y_coordinate_indice_interpolator[nr](y1) + 0.5)
-                i2 = int(self.y_coordinate_indice_interpolator[nr](y2) + 0.5)
-                iy1 = self.y_indice_to_y_coordinate_interpolator[nr](i1)
-                iy2 = self.y_indice_to_y_coordinate_interpolator[nr](i2)
-                isn1 = self.y_indice_to_sample_nr_interpolator[nr](i1)
-                isn2 = self.y_indice_to_sample_nr_interpolator[nr](i2)
-
-                if iy1 < y1:
-                    iy1 += self.y_resolution
-                    i1 += 1
-
-                if iy2 > y2:
-                    iy2 -= self.y_resolution
-                    i2 -= 1
-
-                if i1 < 0:
-                    i1 = 0
-                if i2 < 0:
-                    i2 = 0
-                isn1 = int(self.y_indice_to_sample_nr_interpolator[nr](i1) + 0.5)
-                isn2 = int(self.y_indice_to_sample_nr_interpolator[nr](i2) + 0.5)
-
-                # #self.wc_data[nr = self.wc_data[nr][i1 : i2 + 1]
-                bss.set_first_sample_number_ensemble(isn1)
-                bss.set_last_sample_number_ensemble(isn2)
-                if bss.get_number_of_samples_ensemble() > 1:
-                    if self.has_depths:
-                        min_d[nr] = self.y_indice_to_depth_interpolator[nr](i1)
-                        max_d[nr] = self.y_indice_to_depth_interpolator[nr](i2)
-                    if self.has_ranges:
-                        min_r[nr] = self.y_indice_to_range_interpolator[nr](i1)
-                        max_r[nr] = self.y_indice_to_range_interpolator[nr](i2)
-                    if self.has_sample_nrs:
-                        min_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i1)
-                        max_s[nr] = self.y_indice_to_sample_nr_interpolator[nr](i2)
-
-        out = EchogramBuilder(
-            pings=self.pings,
-            times=self.ping_times,
-            beam_sample_selections=beam_sample_selections,
-            wci_value=self.wci_value,
-            linear_mean=self.linear_mean,
-        )
-        if self.has_depths:
-            out.set_depth_extent(min_d, max_d)
-        if self.has_ranges:
-            out.set_range_extent(min_r, max_r)
-        if self.has_sample_nrs:
-            out.set_sample_nr_extent(min_s, max_s)
-
-        out.set_ping_times(self.ping_times, self.time_zone)
-        out.set_ping_numbers(self.ping_numbers.copy())
-        out.param = self.param.copy()
-
-        self.copy_xy_axis(out)
-
-        return out
-
-    def copy_xy_axis(self, other):
-        match self.x_axis_name:
-            case "Date time":
-                other.set_x_axis_date_time(**self.__x_kwargs)
-            case "Ping time":
-                other.set_x_axis_ping_time(**self.__x_kwargs)
-            case "Ping index":
-                other.set_x_axis_ping_index(**self.__x_kwargs)
-            case _:
-                raise RuntimeError(f"ERROR: unknown x axis name '{self.x_axis_name}'")
-
-        match self.y_axis_name:
-            case "Depth (m)":
-                other.set_y_axis_depth(**self.__y_kwargs)
-            case "Range (m)":
-                other.set_y_axis_range(**self.__y_kwargs)
-            case "Sample number":
-                other.set_y_axis_sample_nr(**self.__y_kwargs)
-            case "Y indice":
-                other.set_y_axis_y_indice(**self.__y_kwargs)
-            case _:
-                raise RuntimeError(f"ERROR: unknown y axis name '{self.y_axis_name}'")
-
-    def set_x_coordinates(self, name, x_coordinates, x_interpolation_limit):
-        if len(x_coordinates) < 2:
-            raise RuntimeError("ERROR: x_coordinates must contain at least two values")
+    @classmethod
+    def from_pings(
+        cls,
+        pings,
+        pss=None,
+        wci_value: str = "sv/av/pv/rv",
+        linear_mean: bool = True,
+        no_navigation: bool = False,
+        apply_pss_to_bottom: bool = False,
+        force_angle: Optional[float] = None,
+        depth_stack: bool = False,
+        verbose: bool = True,
+        mp_cores: int = 1,
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from a list of pings.
         
-        self.x_axis_name = name
+        Args:
+            pings: List of ping objects.
+            pss: PingSampleSelector for beam/sample selection. If None, uses default.
+            wci_value: Water column image value type (e.g., 'sv', 'av', 'sv/av/pv/rv').
+            linear_mean: Whether to use linear mean for beam averaging.
+            no_navigation: If True, skip depth calculations.
+            apply_pss_to_bottom: Whether to apply PSS to bottom detection.
+            force_angle: Force a specific angle for depth projection (degrees).
+            depth_stack: If True, use depth stacking mode (requires navigation).
+            verbose: Whether to show progress bar.
+            mp_cores: Number of cores for parallel processing.
+            
+        Returns:
+            EchogramBuilder instance.
+        """
+        if pss is None:
+            pss = echosounders.pingtools.PingSampleSelector()
+            
+        backend = PingDataBackend.from_pings(
+            pings=pings,
+            pss=pss,
+            wci_value=wci_value,
+            linear_mean=linear_mean,
+            no_navigation=no_navigation,
+            apply_pss_to_bottom=apply_pss_to_bottom,
+            force_angle=force_angle,
+            depth_stack=depth_stack,
+            verbose=verbose,
+            mp_cores=mp_cores,
+        )
         
-        x_resolution = x_coordinates[1] - x_coordinates[0]
+        builder = cls(backend=backend)
+        builder.verbose = verbose
+        builder.mp_cores = mp_cores
+        return builder
+
+    @classmethod
+    def from_backend(
+        cls,
+        backend: "EchogramDataBackend",
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from an existing backend.
         
-        self.x_interpolation_limit = x_interpolation_limit
-        self.x_extent = [
-            x_coordinates[0] - x_resolution / 2,
-            x_coordinates[-1] + x_resolution / 2,
-        ]
+        Args:
+            backend: Data backend instance.
+            
+        Returns:
+            EchogramBuilder instance.
+        """
+        return cls(backend=backend)
 
-        self.feature_mapper.set_feature("X coordinate", x_coordinates)
+    @classmethod
+    def from_image(
+        cls,
+        image: np.ndarray,
+        ping_times: np.ndarray,
+        y_min,
+        y_max,
+        *,
+        y_axis: str = "range",
+        wci_value: str = "sv",
+        linear_mean: bool = True,
+        latitudes: Optional[np.ndarray] = None,
+        longitudes: Optional[np.ndarray] = None,
+        ping_params: Optional[dict] = None,
+    ) -> "EchogramBuilder":
+        """Create an EchogramBuilder from a 2D image array with extent metadata.
 
-    def set_y_axis_y_indice(
-        self,
-        min_sample_nr=0,
-        max_sample_nr=np.nan,
-        max_steps=1024,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-        vec_min_y = np.zeros((len(self.pings))).astype(np.float32)
-        vec_max_y = self.max_number_of_samples.astype(np.float32)
+        This is the replacement for the old ``EchoData`` helper. Pass any 2D
+        numpy array (in-memory or memory-mapped) together with per-ping
+        y-axis extents and timestamps.
 
-        y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_steps": max_steps}
-        self.y_axis_function = self.set_y_axis_y_indice
-        if self.y_axis_name == "Y indice" and self.__y_kwargs == y_kwargs:
-            return
-        self.__y_kwargs = y_kwargs
+        Args:
+            image: 2D array of shape (n_pings, n_samples).  Accepts both
+                regular ``ndarray`` and ``np.memmap``.
+            ping_times: Unix timestamps per ping, shape (n_pings,).
+            y_min: Per-ping minimum y value (float or array).
+            y_max: Per-ping maximum y value (float or array).
+            y_axis: Coordinate type for the y-axis.  One of
+                ``"range"`` (default), ``"depth"``, or ``"sample_index"``.
+            wci_value: Label for the stored quantity (e.g. ``"sv"``).
+            linear_mean: Whether beam averaging was done in linear domain.
+            latitudes: Optional per-ping latitudes.
+            longitudes: Optional per-ping longitudes.
+            ping_params: Optional dict of pre-computed ping parameters,
+                ``{name: (y_reference, (timestamps, values))}``.
 
-        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
-            values_min=vec_min_y,
-            values_max=vec_max_y,
-            values_res=np.ones((len(self.pings))).astype(np.float32),
-            grid_min=min_sample_nr,
-            grid_max=max_sample_nr,
-            max_steps=max_steps,
+        Returns:
+            EchogramBuilder instance.
+
+        Examples:
+            >>> import numpy as np
+            >>> image = np.random.rand(100, 200).astype(np.float32)
+            >>> times = np.linspace(0, 100, 100)
+            >>> builder = EchogramBuilder.from_image(
+            ...     image, times, y_min=0.5, y_max=50.0, y_axis="depth"
+            ... )
+        """
+        from .backends import ImageBackend
+
+        backend = ImageBackend.from_image(
+            image,
+            ping_times,
+            y_min,
+            y_max,
+            y_axis=y_axis,
+            wci_value=wci_value,
+            linear_mean=linear_mean,
+            latitudes=latitudes,
+            longitudes=longitudes,
+            ping_params=ping_params,
         )
+        return cls(backend=backend)
 
-        self.set_y_coordinates("Y indice", y_coordinates, vec_min_y, vec_max_y)
+    @classmethod
+    def from_pings_dict(
+        cls,
+        pings_dict: dict,
+        progress: bool = True,
+        **kwargs,
+    ) -> dict:
+        """Create multiple EchogramBuilders from a dictionary of ping lists.
+        
+        Convenience method for creating multiple echograms at once, e.g., from
+        pings grouped by frequency or channel.
+        
+        Args:
+            pings_dict: Dictionary mapping keys (e.g., frequency) to ping lists.
+            progress: Show progress bar for each echogram. Default True.
+            **kwargs: Additional arguments passed to from_pings() for each echogram.
+                Common kwargs: pss, wci_value, linear_mean, depth_stack, mp_cores.
+            
+        Returns:
+            Dictionary mapping the same keys to EchogramBuilder instances.
+            
+        Examples:
+            >>> pings_by_freq = {18000: pings_18k, 38000: pings_38k, 120000: pings_120k}
+            >>> echograms = EchogramBuilder.from_pings_dict(
+            ...     pings_by_freq,
+            ...     pss=pss,
+            ...     depth_stack=True,
+            ...     progress=True
+            ... )
+            >>> # echograms = {18000: EchogramBuilder, 38000: EchogramBuilder, ...}
+            >>> 
+            >>> # Access individual echograms
+            >>> echogram_38k = echograms[38000]
+        """
+        result = {}
+        for key, pings in pings_dict.items():
+            result[key] = cls.from_pings(
+                pings,
+                verbose=progress,
+                **kwargs,
+            )
+        return result
 
-    def set_y_axis_depth(
-        self,
-        min_depth=np.nan,
-        max_depth=np.nan,
-        max_steps=1024,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-        assert self.has_depths, "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
-
-        y_kwargs = {"min_depth": min_depth, "max_depth": max_depth, "max_steps": max_steps}
-        self.y_axis_function = self.set_y_axis_depth
-        if self.y_axis_name == "Depth (m)" and self.__y_kwargs == y_kwargs:
-            return
-        self.__y_kwargs = y_kwargs
-
-        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
-            values_min=self.min_depths,
-            values_max=self.max_depths,
-            values_res=self.res_depths,
-            grid_min=min_depth,
-            grid_max=max_depth,
-            max_steps=max_steps,
-        )
-
-        self.set_y_coordinates("Depth (m)", y_coordinates, self.min_depths, self.max_depths)
-
-    def set_y_axis_range(
-        self,
-        min_range=np.nan,
-        max_range=np.nan,
-        max_steps=1024,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-        assert self.has_ranges, "ERROR: Range values not initialized for ech data, call set_angess method"
-
-        y_kwargs = {"min_range": min_range, "max_range": max_range, "max_steps": max_steps}
-        self.y_axis_function = self.set_y_axis_range
-        if self.y_axis_name == "Range (m)" and self.__y_kwargs == y_kwargs:
-            return
-        self.__y_kwargs = y_kwargs
-
-        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
-            values_min=self.min_ranges,
-            values_max=self.max_ranges,
-            values_res=self.res_ranges,
-            grid_min=min_range,
-            grid_max=max_range,
-            max_steps=max_steps,
-        )
-
-        self.set_y_coordinates("Range (m)", y_coordinates, self.min_ranges, self.max_ranges)
-
-    def set_y_axis_sample_nr(
-        self,
-        min_sample_nr=0,
-        max_sample_nr=np.nan,
-        max_steps=1024,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-        assert (
-            self.has_sample_nrs
-        ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
-
-        y_kwargs = {"min_sample_nr": min_sample_nr, "max_sample_nr": max_sample_nr, "max_steps": max_steps}
-        self.y_axis_function = self.set_y_axis_sample_nr
-        if self.y_axis_name == "Sample number" and self.__y_kwargs == y_kwargs:
-            return
-        self.__y_kwargs = y_kwargs
-
-        y_coordinates = theping.algorithms.gridding.functions.compute_resampled_coordinates(
-            values_min=self.min_sample_nrs,
-            values_max=self.max_sample_nrs,
-            values_res=self.res_sample_nrs,
-            grid_min=min_sample_nr,
-            grid_max=max_sample_nr,
-            max_steps=max_steps,
-        )
-
-        self.set_y_coordinates("Sample number", y_coordinates, self.min_sample_nrs, self.max_sample_nrs)
-
-    def set_x_axis_ping_index(
-        self,
-        min_ping_index=0,
-        max_ping_index=np.nan,
-        max_steps=4096,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-
-        x_kwargs = {
-            "min_ping_index": min_ping_index,
-            "max_ping_index": max_ping_index,
-            "max_steps": max_steps,
-        }
-
-        self.x_axis_function = self.set_x_axis_ping_index
-        if self.x_axis_name == "Ping index" and self.__x_kwargs == x_kwargs:
-            return
-
-        self.__x_kwargs = x_kwargs
-
-        if not np.isfinite(max_ping_index):
-            max_ping_index = np.max(self.ping_numbers)
-
-        if not np.isfinite(max_ping_index):
-            max_ping_index = np.max(self.ping_numbers)
-
-        npings = int(max_ping_index - min_ping_index) + 1
-
-        if npings > len(self.pings):
-            npings = len(self.pings)
-
-        if npings > max_steps:
-            npings = max_steps
-
-        x_coordinates = np.linspace(min_ping_index, max_ping_index, npings)
-
-        self.set_x_coordinates("Ping index", x_coordinates, 1)
-
-    def set_x_axis_ping_time(
-        self,
-        min_timestamp=np.nan,
-        max_timestamp=np.nan,
-        time_resolution=np.nan,
-        time_interpolation_limit=np.nan,
-        max_steps=4096,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-
-        x_kwargs = {
-            "min_timestamp": min_timestamp,
-            "max_timestamp": max_timestamp,
-            "time_resolution": time_resolution,
-            "time_interpolation_limit": time_interpolation_limit,
-            "max_steps": max_steps,
-        }
-
-        self.x_axis_function = self.set_x_axis_ping_time
-        if self.x_axis_name == "Ping time" and self.__x_kwargs == x_kwargs:
-            return
-
-        self.__x_kwargs = x_kwargs
-
-        if not np.isfinite(min_timestamp):
-            min_timestamp = np.min(self.ping_times)
-
-        if not np.isfinite(max_timestamp):
-            max_timestamp = np.max(self.ping_times)
-
-        ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
-        if len(ping_delta_t[ping_delta_t < 0]) > 0:
-            raise RuntimeError("ERROR: ping times are not sorted in ascending order!")
-
-        zero_time_diff = np.where(abs(ping_delta_t) < 0.000001)[0]
-        while len(zero_time_diff) > 0:
-            self.ping_times[zero_time_diff + 1] += 0.0001
-            ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
-            zero_time_diff = np.where(abs(ping_delta_t) < 0.0001)[0]
-
-        if not np.isfinite(time_resolution):
-            time_resolution = np.nanquantile(ping_delta_t, 0.05)
-
-        if not np.isfinite(time_interpolation_limit):
-            time_interpolation_limit = np.nanquantile(ping_delta_t, 0.95)
-
-        try:
-            arange = False
-            if (max_timestamp + time_resolution - min_timestamp) / time_resolution + 1 <= max_steps:
-                x_coordinates = np.arange(min_timestamp, max_timestamp + time_resolution, time_resolution)
+    @classmethod
+    def concat(
+        cls,
+        builders_or_backends: list,
+        gap_handling: str = "preserve",
+    ) -> "EchogramBuilder":
+        """Concatenate multiple echograms along the time/ping axis.
+        
+        Creates a virtual echogram that spans all input echograms. Data is
+        loaded lazily from the original backends as needed.
+        
+        Args:
+            builders_or_backends: List of EchogramBuilder or EchogramDataBackend instances.
+                Must be in temporal order.
+            gap_handling: How to handle gaps between echograms:
+                - "preserve": Keep real time gaps (x-axis shows true times)
+                - "continuous": Virtual continuous (ignore gaps between files)
+        
+        Returns:
+            EchogramBuilder with ConcatBackend.
+            
+        Examples:
+            >>> # Concatenate echograms from multiple files
+            >>> echograms = [EchogramBuilder.from_zarr(f) for f in file_list]
+            >>> combined = EchogramBuilder.concat(echograms)
+            >>> 
+            >>> # Build full timeline image
+            >>> image, extent = combined.build_image()
+        """
+        from .backends import ConcatBackend
+        
+        # Extract backends from builders if needed
+        backends = []
+        for item in builders_or_backends:
+            if isinstance(item, EchogramBuilder):
+                backends.append(item.backend)
+            elif isinstance(item, EchogramDataBackend):
+                backends.append(item)
             else:
-                arange = True
+                raise TypeError(
+                    f"Expected EchogramBuilder or EchogramDataBackend, got {type(item)}"
+                )
+        
+        concat_backend = ConcatBackend(backends, gap_handling=gap_handling)
+        return cls(concat_backend)
 
-            if arange or len(x_coordinates) > max_steps:
-                x_coordinates = np.linspace(min_timestamp, max_timestamp, max_steps)
-        except Exception as e:
-            message = f"{e}\n -min_timestamp: {min_timestamp}\n -max_timestamp: {max_timestamp}\n -time_resolution: {time_resolution}\n -max_steps: {max_steps}"
+    @classmethod
+    def combine(
+        cls,
+        builders_or_backends,
+        combine_func: str = "nanmean",
+        name: str = "combined",
+        linear: bool = True,
+    ) -> "EchogramBuilder":
+        """Combine multiple echograms with a mathematical operation.
+        
+        Creates a virtual echogram that combines all input echograms using
+        the specified function (mean, median, sum, etc.). Useful for combining
+        different frequencies or averaging multiple acquisitions.
+        
+        Combination happens AFTER downsampling for efficiency - each backend
+        produces its downsampled image, then they are combined.
+        
+        The view settings (x_axis, y_axis) from the first EchogramBuilder are
+        preserved in the combined result.
+        
+        Args:
+            builders_or_backends: List or dict of EchogramBuilder or EchogramDataBackend
+                instances. If a dict, uses dict.values(). Should have overlapping 
+                time ranges.
+            combine_func: Function to combine images, either:
+                - String name: "nanmean", "nanmedian", "nansum", "nanmax", 
+                  "nanmin", "nanstd", "mean", "first_valid"
+                - Callable with signature (stack, axis) -> result
+                  Stack has shape (n_backends, nx, ny), reduce along axis=0.
+            name: Name for the combined echogram.
+            linear: If True (default), convert dB data to linear domain before
+                combining, then convert back to dB. This gives acoustically
+                correct averaging of intensities. Set to False to combine
+                directly in dB domain.
+        
+        Returns:
+            EchogramBuilder with CombineBackend.
+            
+        Examples:
+            >>> # Combine different frequencies with mean (linear domain)
+            >>> echograms = {18000: echo_18k, 38000: echo_38k, 120000: echo_120k}
+            >>> combined = EchogramBuilder.combine(echograms)  # dict works directly
+            >>> 
+            >>> # Use median instead of mean
+            >>> combined = EchogramBuilder.combine(echograms, combine_func="nanmedian")
+            >>> 
+            >>> # Combine directly in dB domain (not acoustically correct)
+            >>> combined = EchogramBuilder.combine(echograms, linear=False)
+            >>> 
+            >>> # Custom RMS combination
+            >>> def rms(stack, axis):
+            ...     return np.sqrt(np.nanmean(stack**2, axis=axis))
+            >>> combined = EchogramBuilder.combine(echograms, combine_func=rms, linear=False)
+        """
+        # Handle dict input - extract values
+        if isinstance(builders_or_backends, dict):
+            builders_or_backends = list(builders_or_backends.values())
+        from .backends import CombineBackend
+        
+        # Track the first builder for copying view settings
+        first_builder = None
+        
+        # Extract backends and per-builder data transforms
+        backends = []
+        data_transforms = []
+        has_any_transforms = False
+        for item in builders_or_backends:
+            if isinstance(item, EchogramBuilder):
+                if first_builder is None:
+                    first_builder = item
+                backends.append(item.backend)
+                if item._has_data_transforms:
+                    data_transforms.append((item._factor, item._offset, item._transform))
+                    has_any_transforms = True
+                else:
+                    data_transforms.append(None)
+            elif isinstance(item, EchogramDataBackend):
+                backends.append(item)
+                data_transforms.append(None)
+            else:
+                raise TypeError(
+                    f"Expected EchogramBuilder or EchogramDataBackend, got {type(item)}"
+                )
+        
+        # Determine alignment modes from first builder's coordinate system
+        x_align = "ping_index"  # Default: align by ping index
+        y_align = "sample_index"  # Default: align by sample index
+        
+        if first_builder is not None:
+            cs = first_builder.coord_system
+            # Determine x alignment from x_axis_name
+            if cs.x_axis_name in ("Ping time", "Date time"):
+                x_align = "time"
+            # else: "Ping index" → ping_index (default)
+            
+            # Determine y alignment from y_axis_name  
+            if cs.y_axis_name == "Depth (m)":
+                y_align = "depth"
+            elif cs.y_axis_name == "Range (m)":
+                y_align = "range"
+            # else: "Y indice", "Sample number" → sample_index (default)
+        
+        combine_backend = CombineBackend(
+            backends, combine_func=combine_func, name=name,
+            x_align=x_align, y_align=y_align, linear=linear,
+            data_transforms=data_transforms if has_any_transforms else None
+        )
+        result = cls(combine_backend)
+        
+        # Copy view settings from first builder if available
+        if first_builder is not None:
+            first_builder._copy_view_settings(result)
+        
+        return result
 
-            raise RuntimeError(message)
+    # =========================================================================
+    # Coordinate system access
+    # =========================================================================
 
-        self.set_x_coordinates("Ping time", x_coordinates, time_interpolation_limit)
+    @property
+    def coord_system(self) -> EchogramCoordinateSystem:
+        """Access the coordinate system.
+        
+        All coordinate-related properties are available through this object:
+        - x_axis_name, y_axis_name: Current axis names
+        - x_extent, y_extent: Data extents
+        - y_coordinates, y_resolution, y_gridder: Y-axis grid info
+        - feature_mapper: X-axis mapping
+        - ping_times, ping_numbers: Ping information
+        - time_zone: Timezone for datetime conversions
+        - max_number_of_samples: Per-ping sample counts
+        - has_depths, has_ranges, has_sample_nrs: Available coordinate types
+        - Various interpolators for coordinate transformations
+        """
+        return self._coord_system
 
-    def set_x_axis_date_time(
+    # =========================================================================
+    # Backend access
+    # =========================================================================
+
+    @property
+    def backend(self) -> "EchogramDataBackend":
+        """Access the data backend."""
+        return self._backend
+
+    @property
+    def pings(self):
+        """Direct access to pings (for backward compatibility).
+        
+        Only works with PingDataBackend.
+        """
+        if hasattr(self._backend, 'pings'):
+            return self._backend.pings
+        raise AttributeError("Backend does not provide direct ping access")
+
+    @property
+    def beam_sample_selections(self):
+        """Direct access to beam sample selections (for backward compatibility).
+        
+        Only works with PingDataBackend.
+        """
+        if hasattr(self._backend, 'beam_sample_selections'):
+            return self._backend.beam_sample_selections
+        raise AttributeError("Backend does not provide beam sample selections")
+
+    @property
+    def wci_value(self) -> str:
+        """Water column image value type from backend."""
+        return self._backend.wci_value
+
+    @property
+    def linear_mean(self) -> bool:
+        """Whether linear mean is used for beam averaging."""
+        return self._backend.linear_mean
+
+    @property
+    def offset(self) -> float:
+        """Value offset applied to all data.
+        
+        This offset is added to all echogram values when building images
+        (build_image, build_image_and_layer_image, build_image_and_layer_images)
+        and permanently applied when saving (to_mmap, to_zarr).
+        
+        Returns:
+            Current offset value (default 0.0).
+        """
+        return self._offset
+    
+    @offset.setter
+    def offset(self, value: float):
+        """Set the value offset applied to all data.
+        
+        Args:
+            value: Offset to add to all echogram values (e.g., calibration correction).
+        """
+        self._offset = float(value)
+
+    @property
+    def factor(self) -> float:
+        """Multiplicative factor applied to all data.
+        
+        Data is multiplied by this factor before adding the offset.
+        Applied in order: data * factor + offset, then transform.
+        
+        Returns:
+            Current factor value (default 1.0).
+        """
+        return self._factor
+    
+    @factor.setter
+    def factor(self, value: float):
+        """Set the multiplicative factor applied to all data.
+        
+        Args:
+            value: Factor to multiply all echogram values by (e.g., -1 to invert).
+        """
+        self._factor = float(value)
+
+    @property
+    def transform(self):
+        """Callable transform applied to all data after factor and offset.
+        
+        The transform is a function f(data) -> data applied element-wise
+        to the image array. Set to None to disable.
+        
+        Applied in order: data * factor + offset, then transform(result).
+        
+        Returns:
+            Current transform callable, or None.
+        
+        Example:
+            >>> # Convert from dB to linear
+            >>> echogram.transform = lambda d: np.power(10, 0.1 * d)
+            >>> # Reset
+            >>> echogram.transform = None
+        """
+        return self._transform
+    
+    @transform.setter
+    def transform(self, value):
+        """Set the transform function applied to all data.
+        
+        Args:
+            value: Callable f(data) -> data, or None to disable.
+        """
+        if value is not None and not callable(value):
+            raise TypeError("transform must be callable or None")
+        self._transform = value
+
+    # =========================================================================
+    # Navigation/track access
+    # =========================================================================
+
+    def get_track(
         self,
-        min_ping_time=np.nan,
-        max_ping_time=np.nan,
-        time_resolution=np.nan,
-        time_interpolation_limit=np.nan,
-        max_steps=4096,
-        **kwargs,  # to catch [and ignore] any additional arguments
-    ):
-        x_kwargs = {
-            "min_ping_time": min_ping_time,
-            "max_ping_time": max_ping_time,
-            "time_resolution": time_resolution,
-            "time_interpolation_limit": time_interpolation_limit,
-            "max_steps": max_steps,
-        }
+        start_ping: Optional[int] = None,
+        end_ping: Optional[int] = None,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Get the navigation track (latitudes, longitudes) for this echogram.
+        
+        Returns the lat/lon coordinates stored in the backend, which represent
+        the ship position for each ping.
+        
+        Args:
+            start_ping: Optional start ping index. Default: 0.
+            end_ping: Optional end ping index (exclusive). Default: n_pings.
+            
+        Returns:
+            Tuple of (latitudes, longitudes) arrays in degrees, or None if
+            navigation data is not available.
+            
+        Example:
+            >>> lats, lons = echogram.get_track()
+            >>> # Get track for visible range
+            >>> lats_visible, lons_visible = echogram.get_track(100, 500)
+        """
+        if not self._backend.has_latlon:
+            return None
+        
+        if start_ping is None:
+            start_ping = 0
+        if end_ping is None:
+            end_ping = self._backend.n_pings
+            
+        return (
+            self._backend.latitudes[start_ping:end_ping],
+            self._backend.longitudes[start_ping:end_ping],
+        )
+    
+    @property
+    def has_track(self) -> bool:
+        """Check if navigation track data is available."""
+        return self._backend.has_latlon
 
-        self.x_axis_function = self.set_x_axis_date_time
-        if self.x_axis_name == "Date time" and self.__x_kwargs == x_kwargs:
-            return
+    def _copy_view_settings(self, other: "EchogramBuilder"):
+        """Copy view settings (x_axis, y_axis, offset, factor, transform) to another EchogramBuilder.
+        
+        This is used when combining echograms to preserve the view from
+        the first echogram in the list.
+        """
+        self.copy_xy_axis(other)
+        other._offset = self._offset
+        other._factor = self._factor
+        other._transform = self._transform
 
-        if isinstance(min_ping_time, dt.datetime):
-            min_ping_time = min_ping_time.timestamp()
+    def _apply_axis_type(self, x_axis_name: str, y_axis_name: str):
+        """Apply axis type settings without specific zoom parameters.
+        
+        This restores the type of axis (e.g., "Date time", "Depth (m)")
+        when loading from saved data, using default extents.
+        
+        Args:
+            x_axis_name: Saved x-axis name ("Ping index", "Ping time", "Date time")
+            y_axis_name: Saved y-axis name ("Y indice", "Sample number", "Depth (m)", "Range (m)")
+        """
+        # Apply y-axis type
+        if y_axis_name == "Depth (m)":
+            self.set_y_axis_depth()
+        elif y_axis_name == "Range (m)":
+            self.set_y_axis_range()
+        elif y_axis_name == "Sample number":
+            self.set_y_axis_sample_nr()
+        elif y_axis_name in ("Y indice", None):
+            self.set_y_axis_y_indice()
+        
+        # Apply x-axis type
+        if x_axis_name == "Date time":
+            self.set_x_axis_date_time()
+        elif x_axis_name == "Ping time":
+            self.set_x_axis_ping_time()
+        elif x_axis_name in ("Ping index", None):
+            self.set_x_axis_ping_index()
 
-        if isinstance(max_ping_time, dt.datetime):
-            max_ping_time = max_ping_time.timestamp()
+    def _save_layers_to_dir(self, output_path: Path, metadata: dict):
+        """Save layer boundary arrays to a directory and update metadata dict.
+        
+        Stores per-ping vec_min_y/vec_max_y for each named layer and the
+        main layer (if set) as .npy files. Adds layer_names and has_main_layer
+        to the metadata dict.
+        
+        Args:
+            output_path: Directory to write .npy files into.
+            metadata: Metadata dict to update with layer info.
+        """
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y.astype(np.float32))
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y.astype(np.float32))
+        if self.main_layer is not None:
+            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y.astype(np.float32))
+            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y.astype(np.float32))
+        metadata["layer_names"] = layer_names
+        metadata["has_main_layer"] = self.main_layer is not None
 
-        if isinstance(time_resolution, dt.timedelta):
-            time_resolution = time_resolution.total_seconds()
+    def _restore_layers_from_store(self, layer_names_json, has_main_layer, get_array):
+        """Restore layers from stored boundary arrays.
+        
+        Reconstructs EchoLayer objects from saved vec_min_y/vec_max_y arrays
+        using ping times as x-coordinates.
+        
+        Args:
+            layer_names_json: JSON string of layer name list, or a list.
+            has_main_layer: Whether a main layer was stored.
+            get_array: Callable(name) -> np.ndarray or None. Retrieves a stored
+                       array by name (e.g. "layer_bottom_min_y").
+        """
+        import json as json_mod
+        
+        if isinstance(layer_names_json, str):
+            layer_names = json_mod.loads(layer_names_json)
+        else:
+            layer_names = list(layer_names_json)
+        
+        ping_times = self._backend.ping_times
+        
+        for name in layer_names:
+            min_y = get_array(f"layer_{name}_min_y")
+            max_y = get_array(f"layer_{name}_max_y")
+            if min_y is not None and max_y is not None:
+                try:
+                    self.add_layer(name, ping_times, min_y, max_y)
+                except Exception:
+                    pass  # Skip layers that fail to reconstruct
+        
+        if has_main_layer:
+            min_y = get_array("layer_main_min_y")
+            max_y = get_array("layer_main_max_y")
+            if min_y is not None and max_y is not None:
+                try:
+                    layer = EchoLayer(self, ping_times, min_y, max_y)
+                    self._set_layer("main", layer)
+                except Exception:
+                    pass  # Skip main layer if it fails to reconstruct
 
-        if isinstance(time_interpolation_limit, dt.timedelta):
-            time_interpolation_limit = time_interpolation_limit.total_seconds()
+    # =========================================================================
+    # Coordinate system methods (delegating to coord_system)
+    # =========================================================================
 
-        self.set_x_axis_ping_time(
-            min_timestamp=min_ping_time,
-            max_timestamp=max_ping_time,
+    def reinit(self):
+        """Reinitialize coordinate systems if needed."""
+        self._coord_system.reinit()
+
+    def get_x_axis_name(self):
+        return self._coord_system.x_axis_name
+
+    def get_y_axis_name(self):
+        return self._coord_system.y_axis_name
+
+    def get_x_kwargs(self):
+        return self._coord_system.get_x_kwargs()
+
+    def get_y_kwargs(self):
+        return self._coord_system.get_y_kwargs()
+
+    # Y-axis setters
+    def set_y_axis_y_indice(self, min_sample_nr=0, max_sample_nr=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to sample indices."""
+        self._coord_system.set_y_axis_y_indice(
+            min_sample_nr=min_sample_nr,
+            max_sample_nr=max_sample_nr,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_depth(self, min_depth=np.nan, max_depth=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to depth in meters."""
+        self._coord_system.set_y_axis_depth(
+            min_depth=min_depth,
+            max_depth=max_depth,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_range(self, min_range=np.nan, max_range=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to range in meters."""
+        self._coord_system.set_y_axis_range(
+            min_range=min_range,
+            max_range=max_range,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    def set_y_axis_sample_nr(self, min_sample_nr=0, max_sample_nr=np.nan, max_steps=1024, **kwargs):
+        """Set Y axis to sample numbers."""
+        self._coord_system.set_y_axis_sample_nr(
+            min_sample_nr=min_sample_nr,
+            max_sample_nr=max_sample_nr,
+            max_steps=max_steps,
+            layer_update_callback=self._update_layers,
+            **kwargs
+        )
+
+    # X-axis setters
+    def set_x_axis_ping_index(self, min_ping_index=0, max_ping_index=np.nan, max_steps=4096, **kwargs):
+        """Set X axis to ping index."""
+        self._coord_system.set_x_axis_ping_index(
+            min_ping_index=min_ping_index,
+            max_ping_index=max_ping_index,
+            max_steps=max_steps,
+            **kwargs
+        )
+
+    def set_x_axis_ping_time(self, min_timestamp=np.nan, max_timestamp=np.nan,
+                             time_resolution=np.nan, time_interpolation_limit=np.nan,
+                             max_steps=4096, **kwargs):
+        """Set X axis to ping time (Unix timestamp)."""
+        self._coord_system.set_x_axis_ping_time(
+            min_timestamp=min_timestamp,
+            max_timestamp=max_timestamp,
             time_resolution=time_resolution,
             time_interpolation_limit=time_interpolation_limit,
             max_steps=max_steps,
+            **kwargs
         )
 
-        self.x_extent[0] = dt.datetime.fromtimestamp(self.x_extent[0], self.time_zone)
-        self.x_extent[1] = dt.datetime.fromtimestamp(self.x_extent[1], self.time_zone)
-        self.x_axis_name = "Date time"
-        self.x_axis_function = self.set_x_axis_date_time
-        self.__x_kwargs = x_kwargs
+    def set_x_axis_date_time(self, min_ping_time=np.nan, max_ping_time=np.nan,
+                             time_resolution=np.nan, time_interpolation_limit=np.nan,
+                             max_steps=4096, **kwargs):
+        """Set X axis to datetime."""
+        self._coord_system.set_x_axis_date_time(
+            min_ping_time=min_ping_time,
+            max_ping_time=max_ping_time,
+            time_resolution=time_resolution,
+            time_interpolation_limit=time_interpolation_limit,
+            max_steps=max_steps,
+            **kwargs
+        )
 
-    def get_y_indices_range_stack(self, wci_nr):
-        # Handle pings with no valid data (interpolator is None)
-        interpolator = self.y_coordinate_indice_interpolator[wci_nr]
-        if interpolator is None:
-            return np.array([], dtype=int), np.array([], dtype=int)
-            
-        n_samples = self.beam_sample_selections[wci_nr].get_number_of_samples_ensemble()
-        y_indices_image = np.arange(len(self.y_coordinates))
-        y_indices_wci = np.round(interpolator(self.y_coordinates)).astype(int)
+    def set_x_axis_custom(self, axis_name, per_ping_coordinates,
+                          min_value=np.nan, max_value=np.nan,
+                          resolution=np.nan, interpolation_limit=np.nan,
+                          max_steps=4096, axis_format=None, **kwargs):
+        """Set X axis to custom per-ping coordinates.
 
-        valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < n_samples))[0]
+        Args:
+            axis_name: Display name for the axis (e.g. "Distance (m)").
+            per_ping_coordinates: 1-D array of length n_pings, monotonically
+                increasing. May contain timedelta objects.
+            min_value: Minimum coordinate to display (nan = auto).
+            max_value: Maximum coordinate to display (nan = auto).
+            resolution: Grid resolution (nan = auto from data).
+            interpolation_limit: Max gap for interpolation (nan = auto).
+            max_steps: Maximum number of X pixels.
+            axis_format: Optional format hint ("timedelta" for adaptive time
+                formatting). Auto-detected when passing timedelta input.
+        """
+        self._coord_system.set_x_axis_custom(
+            axis_name=axis_name,
+            per_ping_coordinates=per_ping_coordinates,
+            min_value=min_value,
+            max_value=max_value,
+            resolution=resolution,
+            interpolation_limit=interpolation_limit,
+            max_steps=max_steps,
+            axis_format=axis_format,
+            **kwargs
+        )
 
-        return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
+    def copy_xy_axis(self, other: "EchogramBuilder"):
+        """Copy X/Y axis settings to another EchogramBuilder."""
+        self._coord_system.copy_xy_axis_to(other._coord_system)
 
-    def get_y_indices_depth_stack(self, wci_nr, y_gridder=None):
-        y_indices_image = np.arange(len(self.y_coordinates))
+    # Ping numbers/times setters
+    def set_ping_numbers(self, ping_numbers):
+        """Set ping numbers for x-axis indexing."""
+        self._coord_system.set_ping_numbers(ping_numbers)
 
-        if y_gridder is None:
-            return y_indices_image, y_indices_image
+    def set_ping_times(self, ping_times, time_zone=dt.timezone.utc):
+        """Set ping times for x-axis time display."""
+        self._coord_system.set_ping_times(ping_times, time_zone)
 
-        y_indices_wci = y_gridder.get_x_index(self.y_coordinates)
+    # Extent setters
+    def set_range_extent(self, min_ranges, max_ranges):
+        """Set range extents."""
+        self._coord_system.set_range_extent(min_ranges, max_ranges)
 
-        valid_coordinates = np.where(np.logical_and(y_indices_wci >= 0, y_indices_wci < y_gridder.get_nx()))[0]
+    def set_depth_extent(self, min_depths, max_depths):
+        """Set depth extents."""
+        self._coord_system.set_depth_extent(min_depths, max_depths)
 
-        return y_indices_image[valid_coordinates], y_indices_wci[valid_coordinates]
+    def set_sample_nr_extent(self, min_sample_nrs, max_sample_nrs):
+        """Set sample number extents."""
+        self._coord_system.set_sample_nr_extent(min_sample_nrs, max_sample_nrs)
+
+    # Ping parameters
+    def add_ping_param(self, name, x_reference, y_reference, vec_x_val, vec_y_val,
+                       values=None):
+        """Add a ping parameter (e.g., bottom depth, layer boundary).
+
+        Args:
+            name: Parameter name.
+            x_reference: Reference for ``vec_x_val`` (e.g. ``"Ping time"``,
+                ``"Date time"``, ``"Ping index"``, or the registered custom
+                axis name).
+            y_reference: Reference for ``vec_y_val`` (e.g. ``"Depth (m)"``).
+            vec_x_val: X coordinates of the control points.
+            vec_y_val: Y values at those control points.
+            values: Optional per-control-point value array aligned with
+                ``vec_x_val``/``vec_y_val``. When provided, the values are
+                interpolated onto the builder's ping axis using the same
+                ``x_reference`` and nearest-extrapolation scheme as
+                ``vec_y_val`` and the echogram viewer auto-colors the
+                param-display overlay by them. May also be a dense
+                per-ping array (length == n_pings); in that case it is
+                stored verbatim.
+        """
+        self._coord_system.add_ping_param(name, x_reference, y_reference, vec_x_val, vec_y_val)
+        if values is not None:
+            self.set_param_values(name, values,
+                                  vec_x_val=vec_x_val, x_reference=x_reference)
+        else:
+            # Drop any stale values from a previous registration
+            self._param_values.pop(name, None)
+
+    def set_param_values(self, name, values, vec_x_val=None, x_reference=None):
+        """Attach a value array to an existing param.
+
+        Two input modes are supported:
+
+        * **Dense** (default): ``values`` already has one entry per ping
+          (length ``== n_pings``), aligned with the builder's ping axis.
+        * **Sparse**: ``values`` is given at the same control points as
+          the param's ``vec_x_val``. Pass ``vec_x_val`` and ``x_reference``
+          to request interpolation onto the ping axis using the same
+          nearest-extrapolation linear interpolation as
+          :meth:`EchogramCoordinateSystem.add_ping_param`.
+        """
+        n_pings = self._coord_system._n_pings
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.ndim != 1:
+            raise ValueError(
+                f"ERROR[set_param_values]: 'values' must be 1D (got shape {arr.shape})")
+
+        if arr.size == n_pings:
+            self._param_values[name] = arr
+            return
+
+        if vec_x_val is None or x_reference is None:
+            raise ValueError(
+                f"ERROR[set_param_values]: 'values' has length {arr.size}, "
+                f"expected {n_pings} (per-ping) or provide vec_x_val + "
+                f"x_reference for interpolation from sparse control points")
+
+        # Sparse mode: interpolate onto the ping axis using the same logic
+        # as coordinate_system.add_ping_param (datetime -> timestamp, NaN
+        # filtering, duplicate-x averaging, linear interp w/ nearest extrap).
+        x = vec_x_val
+        if len(x) > 0 and isinstance(x[0], dt.datetime):
+            x = [xi.timestamp() for xi in x]
+        x = np.asarray(x, dtype=np.float64)
+        v = arr
+        if x.size != v.size:
+            raise ValueError(
+                f"ERROR[set_param_values]: sparse 'values' length {v.size} "
+                f"does not match vec_x_val length {x.size}")
+
+        finite = np.isfinite(x) & np.isfinite(v)
+        x = x[finite]
+        v = v[finite]
+        if x.size == 0:
+            self._param_values[name] = np.full(n_pings, np.nan)
+            return
+
+        cs = self._coord_system
+        match x_reference:
+            case "Ping index":
+                target = np.asarray(cs.ping_numbers, dtype=np.float64)
+            case "Ping time" | "Date time":
+                target = np.asarray(cs.ping_times, dtype=np.float64)
+            case _ if (cs._custom_x_per_ping is not None
+                       and x_reference == cs._custom_x_axis_name):
+                target = np.asarray(cs._custom_x_per_ping, dtype=np.float64)
+            case _:
+                raise ValueError(
+                    f"ERROR[set_param_values]: unsupported x_reference "
+                    f"{x_reference!r}")
+
+        # Average duplicates, then linear-interp with nearest extrapolation.
+        unique_x, inv = np.unique(x, return_inverse=True)
+        if unique_x.size < x.size:
+            sums = np.bincount(inv, weights=v)
+            counts = np.bincount(inv)
+            x = unique_x
+            v = sums / counts
+
+        from themachinethatgoesping import tools
+        interp = tools.vectorinterpolators.LinearInterpolator(
+            x, v, extrapolation_mode="nearest")
+        self._param_values[name] = np.asarray(interp(target), dtype=np.float64)
+
+    def get_param_values(self, name):
+        """Return the raw per-ping value array for a param, or ``None``."""
+        return self._param_values.get(name, None)
+
+    def has_param_values(self, name):
+        """Return ``True`` when ``name`` has an associated per-ping value array."""
+        return name in self._param_values
+
+    def get_ping_param(self, name, use_x_coordinates=False):
+        """Get a ping parameter's values in current coordinate system."""
+        return self._coord_system.get_ping_param(name, use_x_coordinates)
+
+    def get_param_names(self):
+        """Return list of currently registered ping parameter names."""
+        return list(self._coord_system.param.keys())
+
+    def get_param_for_image(
+        self,
+        name,
+        value_name=None,
+        x_range=None,
+        max_points=None,
+    ):
+        """Get a ping parameter's (x, y[, values]) for overlaying on an echogram image.
+
+        Thin, efficient wrapper around :meth:`get_ping_param` that adds:
+
+        * field-of-view (FOV) filtering via ``x_range`` (numeric, or datetime
+          objects when the current x-axis is ``"Date time"``);
+        * stride-based downsampling to at most ``max_points`` samples;
+        * an optional secondary parameter (``value_name``) whose values are
+          returned aligned with the (x, y) samples so they can be used for
+          colormap-based coloring (e.g. a colorbar).
+
+        The returned x-array has the same type as ``get_ping_param`` returns:
+        numeric for numeric axes, list of ``datetime`` objects for
+        ``"Date time"``. NaN values in y (and in ``values`` when requested)
+        are filtered out.
+
+        Args:
+            name: Parameter name (must be registered via ``add_ping_param``).
+            value_name: Optional name of a second parameter. If given, its
+                values (per ping, after the same FOV/downsampling) are
+                returned as the third element of the tuple.
+            x_range: Optional ``(x0, x1)`` bounds for FOV filtering. For a
+                datetime axis, either numeric POSIX timestamps or
+                ``datetime`` objects are accepted.
+            max_points: Optional maximum number of returned points. Uses
+                simple stride (``[::step]``) decimation which is O(1) memory
+                and preserves spatial distribution.
+
+        Returns:
+            Tuple ``(x, y, values)`` where ``values`` is ``None`` when
+            ``value_name`` is not provided. Arrays are aligned and NaN-free.
+        """
+        x, y = self._coord_system.get_ping_param(name)
+        values = None
+        if value_name is not None:
+            _, values = self._coord_system.get_ping_param(value_name)
+        elif name in self._param_values:
+            # Auto-color: use the per-ping values registered with the param.
+            # These are aligned with the builder's ping axis (one per ping),
+            # which matches get_ping_param's default output.
+            values = np.asarray(self._param_values[name], dtype=np.float64)
+            if len(values) != len(x):
+                # Mismatch (e.g. because get_ping_param was queried with
+                # use_x_coordinates=True in a derived class) -> drop values.
+                values = None
+
+        x = np.asarray(x) if not isinstance(x, list) else np.array(x, dtype=object)
+        y = np.asarray(y, dtype=np.float64)
+        if values is not None:
+            values = np.asarray(values, dtype=np.float64)
+
+        # Drop NaN samples (y and values)
+        finite = np.isfinite(y)
+        if values is not None:
+            finite &= np.isfinite(values)
+        if not finite.all():
+            x = x[finite]
+            y = y[finite]
+            if values is not None:
+                values = values[finite]
+
+        # FOV filtering
+        if x_range is not None and len(x) > 0:
+            x0, x1 = x_range
+            # Build a numeric representation of x for comparison
+            if isinstance(x[0], dt.datetime):
+                x_numeric = np.array([xi.timestamp() for xi in x], dtype=np.float64)
+            else:
+                x_numeric = np.asarray(x, dtype=np.float64)
+            if hasattr(x0, "timestamp"):
+                x0 = x0.timestamp()
+            if hasattr(x1, "timestamp"):
+                x1 = x1.timestamp()
+            if x0 is None:
+                x0 = -np.inf
+            if x1 is None:
+                x1 = np.inf
+            mask = (x_numeric >= float(x0)) & (x_numeric <= float(x1))
+            x = x[mask]
+            y = y[mask]
+            if values is not None:
+                values = values[mask]
+
+        # Stride-based downsampling
+        if max_points is not None and len(x) > max_points:
+            step = int(np.ceil(len(x) / max_points))
+            if step > 1:
+                x = x[::step]
+                y = y[::step]
+                if values is not None:
+                    values = values[::step]
+
+        return x, y, values
+
+    # Index mapping
+    def get_y_indices(self, wci_nr):
+        """Get Y indices mapping image coordinates to data indices."""
+        return self._coord_system.get_y_indices(wci_nr)
 
     def get_x_indices(self):
-        x_coordinates = np.array(self.feature_mapper.get_feature_values("X coordinate"))
-        vec_x_val = np.array(self.feature_mapper.get_feature_values(self.x_axis_name))
+        """Get X indices mapping image coordinates to ping indices."""
+        return self._coord_system.get_x_indices()
+
+    # =========================================================================
+    # Data access methods (delegate to backend)
+    # =========================================================================
+
+    def get_column(self, nr):
+        """Get column data for a ping from backend."""
+        return self._backend.get_column(nr)
+
+    # =========================================================================
+    # Oversampling configuration
+    # =========================================================================
+
+    def set_oversampling(self, x_oversampling=1, y_oversampling=1, mode="linear_mean"):
+        """Configure oversampling for image building.
         
-        image_index = np.array(self.feature_mapper.get_feature_indices("X coordinate"))
-        wci_index = self.feature_mapper.feature_to_index(
-            self.x_axis_name, x_coordinates,
-            mp_cores=self.mp_cores
+        When oversampling > 1, build_image() will request a higher-resolution
+        image from the backend (max_steps * oversampling) and then block-average
+        it down to the original output resolution. This reduces aliasing artifacts
+        from nearest-neighbor sampling.
+        
+        Args:
+            x_oversampling: Integer oversampling factor for X axis (pings). Default 1.
+            y_oversampling: Integer oversampling factor for Y axis (samples). Default 1.
+            mode: Averaging mode for block downsampling.
+                - 'linear_mean': Convert dB to linear (power(10, 0.1*v)), average,
+                  convert back (10*log10). Correct for dB-domain data.
+                - 'db_mean': Average directly in dB domain (geometric mean in
+                  linear domain). Faster but less physically correct.
+        """
+        if x_oversampling < 1 or y_oversampling < 1:
+            raise ValueError("Oversampling factors must be >= 1")
+        if mode not in ("linear_mean", "db_mean"):
+            raise ValueError(f"Invalid oversampling mode '{mode}'. Use 'linear_mean' or 'db_mean'.")
+        
+        self._x_oversampling = int(x_oversampling)
+        self._y_oversampling = int(y_oversampling)
+        self._oversampling_mode = mode
+        # Force reinit so coordinate system recomputes with new oversampling
+        self._coord_system._initialized = False
+
+    @property
+    def _has_oversampling(self):
+        """Whether any oversampling is active."""
+        return self._x_oversampling > 1 or self._y_oversampling > 1
+
+    def _downsample_image(self, oversampled_image, target_nx, target_ny):
+        """Block-average an oversampled image down to target resolution.
+        
+        Computes block sizes dynamically from the actual oversampled image
+        shape vs target shape. This handles cases where the oversampled grid
+        was clamped to native resolution (fewer pixels than requested).
+        
+        Args:
+            oversampled_image: Array of shape (os_nx, os_ny) with oversampled data.
+            target_nx: Desired number of X pixels in output.
+            target_ny: Desired number of Y pixels in output.
+            
+        Returns:
+            Array of shape (target_nx, target_ny) with block-averaged data.
+        """
+        os_nx, os_ny = oversampled_image.shape
+        
+        # If oversampled image is same size as target, no averaging needed
+        if os_nx == target_nx and os_ny == target_ny:
+            return oversampled_image
+        
+        # Compute actual block sizes from image dimensions
+        bx = os_nx // target_nx
+        by = os_ny // target_ny
+        
+        # Clamp to at least 1
+        bx = max(bx, 1)
+        by = max(by, 1)
+        
+        # Usable pixels = target * block_size (trim remainder)
+        actual_nx = min(target_nx, os_nx // bx)
+        actual_ny = min(target_ny, os_ny // by)
+        
+        if actual_nx == 0 or actual_ny == 0:
+            return np.full((target_nx, target_ny), np.nan, dtype=np.float32)
+        
+        # Reshape into blocks: (actual_nx, bx, actual_ny, by)
+        blocked = oversampled_image[:actual_nx * bx, :actual_ny * by].reshape(
+            actual_nx, bx, actual_ny, by
         )
+        
+        if self._oversampling_mode == "linear_mean":
+            # dB → linear → nanmean → dB
+            # Use float64 for precision in power conversion
+            with warnings.catch_warnings(), np.errstate(invalid='ignore'):
+                warnings.simplefilter("ignore", RuntimeWarning)
+                linear = np.power(10.0, np.float64(blocked) * 0.1)
+                mean_linear = np.nanmean(linear, axis=(1, 3))
+                result = (10.0 * np.log10(mean_linear)).astype(np.float32)
+        else:
+            # db_mean: average directly in dB domain
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                result = np.nanmean(blocked, axis=(1, 3)).astype(np.float32)
+        
+        # If target is larger than what we computed (edge case), pad with NaN
+        if actual_nx < target_nx or actual_ny < target_ny:
+            padded = np.full((target_nx, target_ny), np.nan, dtype=np.float32)
+            padded[:actual_nx, :actual_ny] = result
+            return padded
+        
+        return result
 
-        delta_x = np.abs(vec_x_val[wci_index] - x_coordinates)
-        valid = np.where(delta_x < self.x_interpolation_limit)[0]
-        return image_index[valid], wci_index[valid]
+    # =========================================================================
+    # Image building
+    # =========================================================================
 
-    def build_image(self, progress=None):
-        self.reinit()
-        ny = len(self.y_coordinates)
-        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
+    def _apply_data_transforms(self, data):
+        """Apply factor, offset, and transform to data array (in-place when possible).
+        
+        Applied in order: data * factor + offset, then transform(result).
+        Skips no-op steps for performance.
+        """
+        if self._factor != 1.0:
+            data = data * self._factor
+        if self._offset != 0.0:
+            data = data + self._offset
+        if self._transform is not None:
+            data = self._transform(data)
+        return data
 
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
+    @property
+    def _has_data_transforms(self):
+        return self._factor != 1.0 or self._offset != 0.0 or self._transform is not None
 
-        image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="sBuilding echogram image")
+    def _build_base_image(self, cs: EchogramCoordinateSystem, nx: int, ny: int) -> np.ndarray:
+        """Build the full image on the current grid using the backend fast path."""
+        if self._has_oversampling:
+            request = cs.make_oversampled_image_request(
+                x_oversampling=self._x_oversampling,
+                y_oversampling=self._y_oversampling,
+            )
+            oversampled_image = self._backend.get_image(request)
+            if self._has_data_transforms:
+                oversampled_image = self._apply_data_transforms(oversampled_image)
+            return self._downsample_image(oversampled_image, nx, ny)
+
+        request = cs.make_image_request()
+        image = self._backend.get_image(request)
+        if self._has_data_transforms:
+            image = self._apply_data_transforms(image)
+        return image
+
+    def _apply_layer_mask_to_image(
+        self,
+        source_image: np.ndarray,
+        layer: EchoLayer,
+        image_indices: np.ndarray,
+        wci_indices: np.ndarray,
+    ) -> np.ndarray:
+        """Project one layer onto an already rendered image grid.
+
+        This avoids calling backend.get_column() for every visible x position.
+        """
+        masked = np.full_like(source_image, np.nan, dtype=np.float32)
+        ny = source_image.shape[1]
 
         for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    y1, y2 = self.get_y_indices_range_stack(wci_index)
-                    if len(y1) > 0:
-                        image[image_index, y1] = wci[y2]
+            start_y = max(0, int(layer.y0[wci_index]))
+            end_y = min(ny, int(layer.y1[wci_index]))
+            if start_y < end_y:
+                masked[image_index, start_y:end_y] = source_image[image_index, start_y:end_y]
 
-        extent = deepcopy(self.x_extent)
-        extent.extend(self.y_extent)
+        return masked
+
+    def build_image(self, progress=None):
+        """Build the echogram image.
+        
+        Uses the backend's get_image() method with affine indexing for efficiency.
+        Backends can override get_image() for vectorized implementations (e.g., Zarr/Dask).
+        
+        When oversampling is configured (via set_oversampling()), requests a higher-
+        resolution image and block-averages it down for anti-aliasing.
+        
+        Args:
+            progress: Optional progress bar or None (not currently used).
+            
+        Returns:
+            Tuple of (image, extent) where image is a 2D numpy array of shape (nx, ny)
+            and extent is [x_min, x_max, y_max, y_min].
+        """
+        self.reinit()
+        cs = self._coord_system
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+        ny = len(cs.y_coordinates)
+        image = self._build_base_image(cs, nx, ny)
+        
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
 
         return image, extent
 
-    # --- layer functions ---
     def build_image_and_layer_image(self, progress=None):
+        """Build echogram image and combined layer image.
+        
+        Uses fast vectorized get_image() for the main echogram when no main_layer
+        is set. Falls back to per-column iteration only for layer processing.
+        
+        Note: Oversampling is applied to the main echogram image only.
+        Layer images are built at native resolution (per-column iteration).
+        
+        Returns:
+            Tuple of (image, layer_image, extent).
+        """
         self.reinit()
-        ny = len(self.y_coordinates)
-        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
-
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
-        layer_image = image.copy()
-
+        cs = self._coord_system
+        ny = len(cs.y_coordinates)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
         image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
 
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_depth_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
+        base_image = self._build_base_image(cs, nx, ny)
 
-                    for k, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_depth_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_image[image_index, y1_layer] = wci[y2_layer]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_range_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_range_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
+        # Apply main layer as a mask over the already rendered image grid.
+        if self.main_layer is None:
+            image = base_image
+        else:
+            image = self._apply_layer_mask_to_image(
+                base_image, self.main_layer, image_indices, wci_indices
+            )
 
-                    for k, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_range_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_image[image_index, y1_layer] = wci[y2_layer]
+        # Build layer image by masking the base image, avoiding per-column backend calls.
+        layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
+        if len(self.layers) > 0:
+            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer image")
+            
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                for layer in self.layers.values():
+                    start_y = max(0, int(layer.y0[wci_index]))
+                    end_y = min(ny, int(layer.y1[wci_index]))
+                    if start_y < end_y:
+                        layer_image[image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
 
-        extent = deepcopy(self.x_extent)
-        extent.extend(self.y_extent)
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
 
         return image, layer_image, extent
 
     def build_image_and_layer_images(self, progress=None):
+        """Build echogram image and individual layer images.
+        
+        Uses fast vectorized get_image() for the main echogram when no main_layer
+        is set. Falls back to per-column iteration only for layer processing.
+        
+        Note: Oversampling is applied to the main echogram image only.
+        Layer images are built at native resolution (per-column iteration).
+        
+        Returns:
+            Tuple of (image, layer_images_dict, extent).
+        """
         self.reinit()
-        ny = len(self.y_coordinates)
-        nx = len(self.feature_mapper.get_feature_values("X coordinate"))
+        cs = self._coord_system
+        ny = len(cs.y_coordinates)
+        nx = len(cs.feature_mapper.get_feature_values("X coordinate"))
+        image_indices, wci_indices = self.get_x_indices()
 
-        image = np.empty((nx, ny), dtype=np.float32)
-        image.fill(np.nan)
+        base_image = self._build_base_image(cs, nx, ny)
 
+        if self.main_layer is None:
+            image = base_image
+        else:
+            image = self._apply_layer_mask_to_image(
+                base_image, self.main_layer, image_indices, wci_indices
+            )
+
+        # Build layer images (requires per-column iteration, no oversampling)
         layer_images = {}
         for key in self.layers.keys():
-            layer_images[key] = image.copy()
+            layer_images[key] = np.full((nx, ny), np.nan, dtype=np.float32)
 
-        image_indices, wci_indices = self.get_x_indices()
-        image_indices = get_progress_iterator(image_indices, progress, desc="Building echogram image")
+        if len(self.layers) > 0:
+            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer images")
 
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            if self.depth_stack:
-                wci = self.get_wci_depth_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_depth_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_depth_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
+            for image_index, wci_index in zip(image_indices, wci_indices):
+                for key, layer in self.layers.items():
+                    start_y = max(0, int(layer.y0[wci_index]))
+                    end_y = min(ny, int(layer.y1[wci_index]))
+                    if start_y < end_y:
+                        layer_images[key][image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
 
-                    for key, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_depth_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
-            else:
-                wci = self.get_wci_range_stack(wci_index)
-                if len(wci) > 1:
-                    if self.main_layer is None:
-                        y1, y2 = self.get_y_indices_range_stack(wci_index)
-                        if len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-                    else:
-                        y1, y2 = self.main_layer.get_y_indices_range_stack(wci_index)
-                        if y1 is not None and len(y1) > 0:
-                            image[image_index, y1] = wci[y2]
-
-                    for key, layer in self.layers.items():
-                        y1_layer, y2_layer = layer.get_y_indices_range_stack(wci_index)
-                        if y1_layer is not None and len(y1_layer) > 0:
-                            layer_images[key][image_index, y1_layer] = wci[y2_layer]
-
-        extent = deepcopy(self.x_extent)
-        extent.extend(self.y_extent)
+        extent = deepcopy(cs.x_extent)
+        extent.extend(cs.y_extent)
 
         return image, layer_images, extent
 
-    def get_wci_layers_range_stack(self, nr):
-        wci = self.get_wci_range_stack(nr)
+    # =========================================================================
+    # Layer management
+    # =========================================================================
+
+    def get_wci_layers(self, nr):
+        """Get WCI data split by layers."""
+        wci = self.get_column(nr)
 
         wci_layers = {}
         for key, layer in self.layers.items():
-            wci_layers[key] = wci[layer.i0[nr] : layer.i1[nr]]
+            wci_layers[key] = wci[int(layer.i0[nr]):int(layer.i1[nr])]
 
         return wci_layers
 
     def get_extent_layers(self, nr, axis_name=None):
+        """Get extents for each layer at a given ping."""
+        cs = self._coord_system
         if axis_name is None:
-            axis_name = self.y_axis_name
+            axis_name = cs.y_axis_name
         extents = {}
 
         for key, layer in self.layers.items():
@@ -1107,34 +1461,27 @@ class EchogramBuilder:
                     extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
 
                 case "Sample number":
-                    assert (
-                        self.has_sample_nrs
-                    ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
-
-                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_sample_nr, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case "Depth (m)":
-                    assert (
-                        self.has_depths
-                    ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
-
-                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    assert cs.has_depths, "ERROR: Depths values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_depth, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case "Range (m)":
-                    assert (
-                        self.has_ranges
-                    ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
-
-                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
+                    assert cs.has_ranges, "ERROR: Ranges values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_range, nr, [layer.i0[nr] - 0.5, layer.i1[nr] - 0.5])
 
                 case _:
-                    raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
 
         return extents
 
     def get_limits_layers(self, nr, axis_name=None):
+        """Get limits for each layer at a given ping."""
+        cs = self._coord_system
         if axis_name is None:
-            axis_name = self.y_axis_name
+            axis_name = cs.y_axis_name
         extents = {}
 
         for key, layer in self.layers.items():
@@ -1143,32 +1490,24 @@ class EchogramBuilder:
                     extents[key] = layer.i0[nr] - 0.5, layer.i1[nr] - 0.5
 
                 case "Sample number":
-                    assert (
-                        self.has_sample_nrs
-                    ), "ERROR: Sample nr values not initialized for ech data, call set_sample_nr_extent method"
-
-                    extents[key] = self.y_indice_to_sample_nr_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    assert cs.has_sample_nrs, "ERROR: Sample nr values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_sample_nr, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case "Depth (m)":
-                    assert (
-                        self.has_depths
-                    ), "ERROR: Depths values not initialized for ech data, call set_depth_extent method"
-
-                    extents[key] = self.y_indice_to_depth_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    assert cs.has_depths, "ERROR: Depths values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_depth, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case "Range (m)":
-                    assert (
-                        self.has_ranges
-                    ), "ERROR: Ranges values not initialized for ech data, call set_range_extent method"
-
-                    extents[key] = self.y_indice_to_range_interpolator[nr]([layer.i0[nr], layer.i1[nr] - 1])
+                    assert cs.has_ranges, "ERROR: Ranges values not initialized"
+                    extents[key] = cs._affine_eval(cs._affine_sample_to_range, nr, [layer.i0[nr], layer.i1[nr] - 1])
 
                 case _:
-                    raise RuntimeError(f"Invalid reference '{reference}'. This should not happen, please report")
+                    raise RuntimeError(f"Invalid axis_name '{axis_name}'")
 
         return extents
 
-    def __set_layer__(self, name, layer):
+    def _set_layer(self, name, layer):
+        """Internal method to set or combine layers."""
         if name == "main":
             if self.main_layer is not None:
                 self.main_layer.combine(layer)
@@ -1180,39 +1519,2188 @@ class EchogramBuilder:
             else:
                 self.layers[name] = layer
 
+    # Backward compatibility alias
+    __set_layer__ = _set_layer
+
     def add_layer(self, name, vec_x_val, vec_min_y, vec_max_y):
+        """Add a layer with explicit boundaries."""
         layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
-        self.__set_layer__(name, layer)
+        self._set_layer(name, layer)
 
     def add_layer_from_static_layer(self, name, min_y, max_y):
+        """Add a layer with static boundaries."""
         layer = EchoLayer.from_static_layer(self, min_y, max_y)
-        self.__set_layer__(name, layer)
+        self._set_layer(name, layer)
 
     def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on absolute offsets from a ping parameter."""
         layer = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
-        self.__set_layer__(name, layer)
+        self._set_layer(name, layer)
 
     def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
+        """Add a layer based on relative offsets from a ping parameter."""
         layer = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
-        self.__set_layer__(name, layer)
+        self._set_layer(name, layer)
 
     def remove_layer(self, name):
+        """Remove a layer by name."""
         if name == "main":
             self.main_layer = None
         elif name in self.layers.keys():
             self.layers.pop(name)
 
     def clear_layers(self):
+        """Remove all layers except main."""
         self.layers = {}
 
     def clear_main_layer(self):
+        """Remove the main layer."""
         self.main_layer = None
 
     def iterate_ping_data(self, keep_to_xlimits=True):
+        """Iterate over ping data objects."""
         if keep_to_xlimits:
             xcoord = self.get_x_indices()[1]
             nrs = np.arange(xcoord[0], xcoord[-1] + 1)
         else:
-            nrs = range(len(self.ping_times))
+            nrs = range(self._backend.n_pings)
 
         return [PingData(self, nr) for nr in nrs]
+
+    # =========================================================================
+    # Raw data access (for layers, non-downsampled)
+    # =========================================================================
+
+    def get_raw_layer_data(self, layer_name, ping_indices=None):
+        """Get raw (non-downsampled) data for a specific layer.
+        
+        Args:
+            layer_name: Name of the layer to extract data from.
+            ping_indices: Optional list of ping indices. If None, uses visible x range.
+            
+        Yields:
+            Tuples of (ping_index, raw_data, (sample_start, sample_end)).
+        """
+        if layer_name not in self.layers:
+            raise KeyError(f"Layer '{layer_name}' not found")
+        
+        layer = self.layers[layer_name]
+        
+        if ping_indices is None:
+            _, ping_indices = self.get_x_indices()
+        
+        for ping_idx in ping_indices:
+            raw_column = self._backend.get_raw_column(ping_idx)
+            sample_start = int(layer.i0[ping_idx])
+            sample_end = int(layer.i1[ping_idx])
+            
+            if sample_start < len(raw_column) and sample_end > sample_start:
+                layer_data = raw_column[sample_start:sample_end]
+                yield ping_idx, layer_data, (sample_start, sample_end)
+
+    def get_raw_data_at_coordinates(self, x_coord, y_start, y_end):
+        """Get raw (non-downsampled) data at specific coordinates.
+        
+        Args:
+            x_coord: X coordinate (ping time, index, or datetime).
+            y_start: Start Y coordinate (depth, range, or sample number).
+            y_end: End Y coordinate.
+            
+        Returns:
+            Tuple of (raw_data, (sample_start, sample_end)) or None if not found.
+        """
+        self.reinit()
+        
+        # Convert x_coord to ping index
+        if isinstance(x_coord, dt.datetime):
+            x_coord = x_coord.timestamp()
+        
+        cs = self._coord_system
+        x_coordinates = np.array([x_coord])
+        ping_indices = cs.feature_mapper.feature_to_index(
+            cs.x_axis_name, x_coordinates, mp_cores=self.mp_cores
+        )
+        
+        if len(ping_indices) == 0:
+            return None
+            
+        ping_idx = ping_indices[0]
+        
+        # Convert y coordinates to sample indices using affine transform
+        if cs._affine_y_to_sample is None:
+            return None
+        
+        a_inv, b_inv = cs._affine_y_to_sample
+        a, b = a_inv[ping_idx], b_inv[ping_idx]
+        
+        if not np.isfinite(a) or not np.isfinite(b):
+            return None
+            
+        sample_start = int(a + b * y_start + 0.5)
+        sample_end = int(a + b * y_end + 0.5)
+        
+        # Get raw data
+        raw_column = self._backend.get_raw_column(ping_idx)
+        
+        # Clamp to valid range
+        sample_start = max(0, sample_start)
+        sample_end = min(len(raw_column), sample_end)
+        
+        if sample_end <= sample_start:
+            return None
+            
+        return raw_column[sample_start:sample_end], (sample_start, sample_end)
+
+    # =========================================================================
+    # Update store metadata (no WCI data rewrite)
+    # =========================================================================
+
+    def update_store(self, path: str = None):
+        """Write current axis, oversampling, ping-param and layer settings to
+        an existing store **and** synchronise the in-memory backend state.
+        
+        Only the metadata of the mmap / zarr store is touched — the
+        (potentially huge) WCI data array is left untouched.  Call this after
+        changing view settings on a loaded echogram, e.g.::
+        
+            builder = EchogramBuilder.from_mmap("my_store.mmap")
+            builder.set_y_axis_depth()
+            builder.set_oversampling(x_oversampling=2, y_oversampling=2)
+            builder.add_ping_param("my_line", "Ping time", "Depth (m)", ts, vals)
+            builder.add_layer_from_static_layer("roi", 10, 50)
+            builder.update_store()          # writes back to the same store
+            
+            # …or save to a *different* store's metadata
+            builder.update_store("other_store.mmap")
+        
+        After the on-disk store is updated the backend's cached data
+        structures are refreshed so that subsequent calls to e.g.
+        ``backend.get_ping_params()`` return the new values.
+        
+        Args:
+            path: Path to the store directory / zarr group.  If *None*, writes
+                back to the store the current backend was loaded from
+                (requires a backend with a ``store_path`` attribute).
+                
+        Raises:
+            ValueError: If *path* is None and the backend has no ``store_path``.
+            FileNotFoundError: If the target path does not exist.
+        """
+        import json
+        from pathlib import Path as _Path
+        
+        # Resolve target path
+        if path is None:
+            if not hasattr(self._backend, "store_path") or self._backend.store_path is None:
+                raise ValueError(
+                    "Cannot infer store path from backend. "
+                    "Pass the path explicitly: update_store('/path/to/store')"
+                )
+            path = self._backend.store_path
+        
+        target = _Path(path)
+        
+        if not target.exists():
+            raise FileNotFoundError(f"Store path does not exist: {target}")
+        
+        # Detect store type
+        is_zarr = (target / ".zgroup").exists() or (target / "zarr.json").exists() or (target / ".zmetadata").exists()
+        is_mmap = (target / "metadata.json").exists() and (target / "wci_data.bin").exists()
+        
+        if is_zarr:
+            self._save_settings_zarr(target)
+        elif is_mmap:
+            self._save_settings_mmap(target)
+        else:
+            raise ValueError(
+                f"Cannot determine store type at '{target}'. "
+                "Expected a zarr store or mmap directory."
+            )
+        
+        # Keep the in-memory backend in sync with what we just wrote
+        self._sync_backend_state()
+
+    def _sync_backend_state(self):
+        """Refresh the backend's in-memory caches to match current settings.
+        
+        Called automatically at the end of :meth:`update_store` so that
+        ``backend.get_ping_params()`` and similar accessors reflect any
+        additions made via :meth:`add_ping_param`, :meth:`add_layer*`, etc.
+        """
+        from .backends.mmap_backend import MmapDataBackend
+        from .backends.zarr_backend import ZarrDataBackend
+        
+        ping_params = self._get_all_ping_params()
+        
+        if isinstance(self._backend, MmapDataBackend):
+            # MmapDataBackend stores params in
+            #   _metadata["ping_params"][name] = {y_reference, timestamps, values}
+            mmap_params = {}
+            param_names = []
+            params_meta = {}
+            for name, (y_ref, (times, values)) in ping_params.items():
+                param_names.append(name)
+                params_meta[name] = y_ref
+                mmap_params[name] = {
+                    "y_reference": y_ref,
+                    "timestamps": np.asarray(times, dtype=np.float64),
+                    "values": np.asarray(values, dtype=np.float32),
+                }
+            self._backend._metadata["ping_params"] = mmap_params
+            self._backend._metadata["ping_param_names"] = param_names
+            self._backend._metadata["ping_params_meta"] = params_meta
+        
+        elif isinstance(self._backend, ZarrDataBackend):
+            # ZarrDataBackend caches params in
+            #   _ping_params[name] = (y_ref, (times, values))
+            self._backend._ping_params = {
+                name: (y_ref, (np.asarray(times, dtype=np.float64),
+                               np.asarray(values, dtype=np.float32)))
+                for name, (y_ref, (times, values)) in ping_params.items()
+            }
+
+    def _save_settings_zarr(self, target):
+        """Write metadata-only update to an existing Zarr store."""
+        import zarr
+        import json
+        
+        store = zarr.open_group(str(target), mode="r+")
+        
+        # Axis settings
+        store.attrs["x_axis_name"] = self._coord_system.x_axis_name
+        store.attrs["y_axis_name"] = self._coord_system.y_axis_name
+        
+        # Oversampling
+        store.attrs["x_oversampling"] = self._x_oversampling
+        store.attrs["y_oversampling"] = self._y_oversampling
+        store.attrs["oversampling_mode"] = self._oversampling_mode
+        
+        # Ping parameters – remove old ones, write all current ones
+        old_params_meta = store.attrs.get("ping_params_meta", "{}")
+        if isinstance(old_params_meta, str):
+            old_params_meta = json.loads(old_params_meta)
+        for old_name in old_params_meta:
+            for suffix in ("_times", "_values"):
+                arr_name = f"ping_param_{old_name}{suffix}"
+                if arr_name in store:
+                    del store[arr_name]
+        
+        ping_params = self._get_all_ping_params()
+        params_meta = {}
+        for name, (y_ref, (times, values)) in ping_params.items():
+            params_meta[name] = y_ref
+            store.create_array(
+                f"ping_param_{name}_times",
+                data=np.asarray(times, dtype=np.float64),
+                dimension_names=[f"param_{name}"],
+                overwrite=True,
+            )
+            store.create_array(
+                f"ping_param_{name}_values",
+                data=np.asarray(values, dtype=np.float32),
+                dimension_names=[f"param_{name}"],
+                overwrite=True,
+            )
+        store.attrs["ping_params_meta"] = json.dumps(params_meta)
+        
+        # Layers – remove old ones, write all current ones
+        old_layer_names = store.attrs.get("layer_names", "[]")
+        if isinstance(old_layer_names, str):
+            old_layer_names = json.loads(old_layer_names)
+        for old_name in old_layer_names:
+            for suffix in ("_min_y", "_max_y"):
+                arr_name = f"layer_{old_name}{suffix}"
+                if arr_name in store:
+                    del store[arr_name]
+        for suffix in ("_min_y", "_max_y"):
+            arr_name = f"layer_main{suffix}"
+            if arr_name in store:
+                del store[arr_name]
+        
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            store.create_array(
+                f"layer_{layer_name}_min_y",
+                data=layer.vec_min_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+            store.create_array(
+                f"layer_{layer_name}_max_y",
+                data=layer.vec_max_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+        if self.main_layer is not None:
+            store.create_array(
+                "layer_main_min_y",
+                data=self.main_layer.vec_min_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+            store.create_array(
+                "layer_main_max_y",
+                data=self.main_layer.vec_max_y.astype(np.float32),
+                dimension_names=["ping"],
+                overwrite=True,
+            )
+        store.attrs["layer_names"] = json.dumps(layer_names)
+        store.attrs["has_main_layer"] = self.main_layer is not None
+        
+        # Re-consolidate metadata
+        zarr.consolidate_metadata(str(target))
+
+    def _save_settings_mmap(self, target):
+        """Write metadata-only update to an existing mmap store."""
+        import json
+        from pathlib import Path as _Path
+        
+        metadata_file = target / "metadata.json"
+        with open(metadata_file, "r") as f:
+            metadata = json.load(f)
+        
+        # Axis settings
+        metadata["x_axis_name"] = self._coord_system.x_axis_name
+        metadata["y_axis_name"] = self._coord_system.y_axis_name
+        
+        # Oversampling
+        metadata["x_oversampling"] = self._x_oversampling
+        metadata["y_oversampling"] = self._y_oversampling
+        metadata["oversampling_mode"] = self._oversampling_mode
+        
+        # Ping parameters – remove old .npy files, write all current ones
+        for old_name in metadata.get("ping_param_names", []):
+            for suffix in ("_times", "_values"):
+                f = target / f"ping_param_{old_name}{suffix}.npy"
+                if f.exists():
+                    f.unlink()
+        
+        ping_params = self._get_all_ping_params()
+        ping_param_names = []
+        ping_params_meta = {}
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            np.save(target / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(target / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        metadata["ping_param_names"] = ping_param_names
+        metadata["ping_params_meta"] = ping_params_meta
+        
+        # Layers – remove old .npy files, write all current ones
+        for old_name in metadata.get("layer_names", []):
+            for suffix in ("_min_y", "_max_y"):
+                f = target / f"layer_{old_name}{suffix}.npy"
+                if f.exists():
+                    f.unlink()
+        for suffix in ("_min_y", "_max_y"):
+            f = target / f"layer_main{suffix}.npy"
+            if f.exists():
+                f.unlink()
+        
+        self._save_layers_to_dir(target, metadata)
+        
+        # Write updated metadata
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f)
+
+    # =========================================================================
+    # Zarr export
+    # =========================================================================
+
+    def to_zarr(
+        self,
+        path: str,
+        mode: str = "native",
+        chunks: tuple = (64, -1),
+        compressor: str = "zstd",
+        compression_level: int = 3,
+        progress: bool = True,
+        resolution: float = None,
+        interpolation: str = "nearest",
+    ) -> str:
+        """Export echogram data to a Zarr store for fast lazy loading.
+        
+        Reads and writes data in chunks for memory efficiency and speed.
+        Each chunk of pings is read, assembled in memory, and written at once.
+        
+        Args:
+            path: Path for the Zarr store (directory, will be created).
+            mode: Storage mode:
+                - "native": Store raw sample indices (fastest, smallest overhead)
+                - "view": Transform to match current axis settings (depth/range)
+            chunks: Chunk sizes as (ping_chunk, sample_chunk). 
+                    Use -1 for full dimension. Default (64, -1) = 64 pings per chunk.
+            compressor: Compression algorithm ('zstd', 'lz4', 'zlib', 'none').
+            compression_level: Compression level (1-22 for zstd, higher = smaller/slower).
+            progress: Whether to show progress bar.
+            resolution: Y-axis resolution in meters (auto-detected if None).
+                        Only used when mode="view" with depth/range axis.
+            interpolation: Resampling method ("nearest" or "linear").
+            
+        Returns:
+            Path to the created Zarr store.
+            
+        Examples:
+            >>> # Default: store in native sample indices
+            >>> builder.to_zarr("output.zarr")
+            >>> 
+            >>> # First set view to depth mode, then save in those coordinates
+            >>> builder.set_y_axis_depth()
+            >>> builder.to_zarr("output.zarr", mode="view")
+        """
+        try:
+            import zarr
+            import json
+            from tqdm.auto import tqdm
+        except ImportError:
+            raise ImportError(
+                "zarr is required for to_zarr(). Install with: pip install zarr"
+            )
+        
+        from .backends.zarr_backend import ZARR_FORMAT_VERSION
+        from .backends.storage_mode import StorageAxisMode
+        
+        # Validate parameters
+        if mode not in ("native", "view"):
+            raise ValueError(f"mode must be 'native' or 'view', got '{mode}'")
+        if interpolation not in ("nearest", "linear"):
+            raise ValueError(f"interpolation must be 'nearest' or 'linear', got '{interpolation}'")
+        
+        # Derive transformation settings from current axis settings
+        y_coords = None
+        if mode == "view":
+            y_axis_name = self._coord_system.y_axis_name
+            if y_axis_name == "Depth (m)":
+                y_coords = "depth"
+            elif y_axis_name == "Range (m)":
+                y_coords = "range"
+            # "Sample number" and "Y indice" stay as native
+        
+        # Check if we need coordinate transformation
+        needs_transform = y_coords is not None
+        
+        if needs_transform:
+            # Check for required extents
+            if y_coords == "depth" and self._backend.depth_extents is None:
+                raise ValueError("Backend does not have depth extents. Cannot transform to depth coordinates.")
+            if y_coords == "range" and self._backend.range_extents is None:
+                raise ValueError("Backend does not have range extents. Cannot transform to range coordinates.")
+            
+            y_extents = None
+            if y_coords == "depth":
+                y_extents = self._backend.depth_extents
+            elif y_coords == "range":
+                y_extents = self._backend.range_extents
+            
+            # Compute output grid
+            ping_times, y_grid, storage_mode = self._compute_output_grid(
+                y_coords=y_coords,
+                y_resolution=resolution,
+                y_extents=y_extents,
+                x_strategy="primary",
+                x_resolution=None,
+                time_tolerance=0.5,
+            )
+            
+            n_pings = len(ping_times)
+            max_samples = len(y_grid) if y_grid is not None else int(self._backend.max_sample_counts.max()) + 1
+        else:
+            ping_times = self._backend.ping_times
+            y_grid = None
+            storage_mode = self._backend.storage_mode
+            n_pings = self._backend.n_pings
+            max_samples = int(self._backend.max_sample_counts.max()) + 1
+        
+        # Configure chunks
+        ping_chunk = chunks[0] if chunks[0] > 0 else n_pings
+        sample_chunk = chunks[1] if chunks[1] > 0 else max_samples
+        
+        # Configure compressor
+        if compressor == "none":
+            comp = None
+        elif compressor == "zstd":
+            comp = zarr.codecs.ZstdCodec(level=compression_level)
+        elif compressor == "lz4":
+            # LZ4 is available via BloscCodec in Zarr v3
+            comp = zarr.codecs.BloscCodec(cname="lz4", clevel=compression_level)
+        elif compressor == "zlib":
+            comp = zarr.codecs.GzipCodec(level=compression_level)
+        elif compressor == "blosc":
+            comp = zarr.codecs.BloscCodec(cname="zstd", clevel=compression_level)
+        else:
+            raise ValueError(f"Unknown compressor: {compressor}. Options: none, zstd, lz4, zlib, blosc")
+        
+        # Create Zarr store (v3)
+        store = zarr.open_group(path, mode="w")
+        
+        # Create the main data array with dimension names for xarray compatibility
+        wci_data = store.create_array(
+            "wci_data",
+            shape=(n_pings, max_samples),
+            chunks=(ping_chunk, sample_chunk),
+            dtype=np.float32,
+            fill_value=np.nan,
+            compressors=[comp] if comp else None,
+            dimension_names=["ping", "sample"],
+        )
+        
+        # Write in chunks for efficiency
+        n_chunks = (n_pings + ping_chunk - 1) // ping_chunk
+        
+        chunk_iter = range(n_chunks)
+        if progress:
+            chunk_iter = tqdm(
+                chunk_iter, 
+                desc="Writing WCI data" + (f" ({y_coords} coords)" if needs_transform else ""), 
+                delay=1,
+                unit="chunk",
+                postfix={"pings": 0},
+            )
+        
+        pings_written = 0
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * ping_chunk
+            chunk_end = min(chunk_start + ping_chunk, n_pings)
+            chunk_size = chunk_end - chunk_start
+            
+            if needs_transform:
+                # Use transformation method
+                chunk_buffer = self._transform_chunk(
+                    chunk_start=chunk_start,
+                    chunk_end=chunk_end,
+                    output_ping_times=ping_times,
+                    y_grid=y_grid,
+                    y_coords=y_coords,
+                    x_strategy=x_strategy,
+                    time_tolerance=time_tolerance,
+                    interpolation=interpolation,
+                )
+            else:
+                # Original behavior: read columns directly
+                chunk_buffer = np.full((chunk_size, max_samples), np.nan, dtype=np.float32)
+                for i, ping_idx in enumerate(range(chunk_start, chunk_end)):
+                    column = self._backend.get_column(ping_idx)
+                    chunk_buffer[i, :len(column)] = column
+            
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_buffer = self._apply_data_transforms(chunk_buffer)
+            
+            # Write entire chunk at once
+            wci_data[chunk_start:chunk_end, :] = chunk_buffer
+            
+            pings_written += chunk_size
+            if progress:
+                # Update progress with pings/sec
+                elapsed = chunk_iter.format_dict.get('elapsed', 1) or 1
+                pings_per_sec = pings_written / elapsed
+                chunk_iter.set_postfix({"pings/s": f"{pings_per_sec:.0f}"})
+        
+        # Write metadata arrays - use transformed data if applicable
+        if needs_transform:
+            store.create_array("ping_times", data=ping_times.astype(np.float64), dimension_names=["ping"])
+            # For transformed data, max_sample_counts is uniform
+            max_sample_counts = np.full(n_pings, max_samples - 1, dtype=np.int32)
+            store.create_array("max_sample_counts", data=max_sample_counts, dimension_names=["ping"])
+            
+            # Sample number extents
+            store.create_array("sample_nr_min", data=np.zeros(n_pings, dtype=np.float32), dimension_names=["ping"])
+            store.create_array("sample_nr_max", data=np.full(n_pings, max_samples - 1, dtype=np.float32), dimension_names=["ping"])
+            
+            # For depth/range transformed data, store uniform extents
+            if y_coords == "depth" and y_grid is not None:
+                store.create_array("depth_min", data=np.full(n_pings, y_grid[0], dtype=np.float32), dimension_names=["ping"])
+                store.create_array("depth_max", data=np.full(n_pings, y_grid[-1], dtype=np.float32), dimension_names=["ping"])
+            elif y_coords == "range" and y_grid is not None:
+                store.create_array("range_min", data=np.full(n_pings, y_grid[0], dtype=np.float32), dimension_names=["ping"])
+                store.create_array("range_max", data=np.full(n_pings, y_grid[-1], dtype=np.float32), dimension_names=["ping"])
+            
+            # Lat/lon - interpolate to new ping times
+            if self._backend.has_latlon:
+                new_lats, new_lons = self._interpolate_latlon_to_times(ping_times)
+                store.create_array("latitudes", data=new_lats.astype(np.float64), dimension_names=["ping"])
+                store.create_array("longitudes", data=new_lons.astype(np.float64), dimension_names=["ping"])
+        else:
+            store.create_array("ping_times", data=self._backend.ping_times.astype(np.float64), dimension_names=["ping"])
+            store.create_array("max_sample_counts", data=self._backend.max_sample_counts.astype(np.int32), dimension_names=["ping"])
+            
+            # Sample number extents
+            min_s, max_s = self._backend.sample_nr_extents
+            store.create_array("sample_nr_min", data=min_s.astype(np.float32), dimension_names=["ping"])
+            store.create_array("sample_nr_max", data=max_s.astype(np.float32), dimension_names=["ping"])
+            
+            # Range extents (optional)
+            range_ext = self._backend.range_extents
+            if range_ext is not None:
+                min_r, max_r = range_ext
+                store.create_array("range_min", data=min_r.astype(np.float32), dimension_names=["ping"])
+                store.create_array("range_max", data=max_r.astype(np.float32), dimension_names=["ping"])
+            
+            # Depth extents (optional)
+            depth_ext = self._backend.depth_extents
+            if depth_ext is not None:
+                min_d, max_d = depth_ext
+                store.create_array("depth_min", data=min_d.astype(np.float32), dimension_names=["ping"])
+                store.create_array("depth_max", data=max_d.astype(np.float32), dimension_names=["ping"])
+            
+            # Lat/lon coordinates (optional)
+            if self._backend.has_latlon:
+                store.create_array("latitudes", data=self._backend.latitudes.astype(np.float64), dimension_names=["ping"])
+                store.create_array("longitudes", data=self._backend.longitudes.astype(np.float64), dimension_names=["ping"])
+        
+        # Ping parameters (these are per-param, not per-ping, so use different dim name)
+        ping_params = self._get_all_ping_params()
+        params_meta = {}
+        for name, (y_ref, (times, values)) in ping_params.items():
+            # Update y_ref to match the new coordinate system if transformed
+            if needs_transform and y_coords == "depth":
+                y_ref = "Depth (m)"
+            elif needs_transform and y_coords == "range":
+                y_ref = "Range (m)"
+            params_meta[name] = y_ref
+            store.create_array(f"ping_param_{name}_times", data=np.asarray(times, dtype=np.float64), dimension_names=[f"param_{name}"])
+            store.create_array(f"ping_param_{name}_values", data=np.asarray(values, dtype=np.float32), dimension_names=[f"param_{name}"])
+        
+        # Determine axis names for saved metadata
+        if needs_transform:
+            if y_coords == "depth":
+                saved_y_axis_name = "Depth (m)"
+            elif y_coords == "range":
+                saved_y_axis_name = "Range (m)"
+            else:
+                saved_y_axis_name = self._coord_system.y_axis_name
+            
+            if x_strategy == "regular":
+                saved_x_axis_name = "Ping time"
+            else:
+                saved_x_axis_name = self._coord_system.x_axis_name or "Date time"
+        else:
+            saved_x_axis_name = self._coord_system.x_axis_name
+            saved_y_axis_name = self._coord_system.y_axis_name
+        
+        # Store attributes
+        store.attrs["format_version"] = ZARR_FORMAT_VERSION
+        store.attrs["wci_value"] = self._backend.wci_value
+        store.attrs["linear_mean"] = self._backend.linear_mean
+        store.attrs["has_navigation"] = self._backend.has_navigation
+        store.attrs["has_latlon"] = self._backend.has_latlon
+        store.attrs["ping_params_meta"] = json.dumps(params_meta)
+        store.attrs["n_pings"] = n_pings
+        store.attrs["max_samples"] = max_samples
+        store.attrs["storage_mode"] = json.dumps(storage_mode.to_dict())
+        # View axis settings (type only, not zoom level)
+        store.attrs["x_axis_name"] = saved_x_axis_name
+        store.attrs["y_axis_name"] = saved_y_axis_name
+        # Oversampling settings
+        store.attrs["x_oversampling"] = self._x_oversampling
+        store.attrs["y_oversampling"] = self._y_oversampling
+        store.attrs["oversampling_mode"] = self._oversampling_mode
+        
+        # Layer data
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            store.create_array(f"layer_{layer_name}_min_y", data=layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
+            store.create_array(f"layer_{layer_name}_max_y", data=layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
+        if self.main_layer is not None:
+            store.create_array("layer_main_min_y", data=self.main_layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
+            store.create_array("layer_main_max_y", data=self.main_layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
+        store.attrs["layer_names"] = json.dumps(layer_names)
+        store.attrs["has_main_layer"] = self.main_layer is not None
+        
+        # Consolidate metadata for faster reads (single file instead of many)
+        zarr.consolidate_metadata(path)
+        
+        return path
+
+    @classmethod
+    def from_zarr(
+        cls,
+        path: str,
+        chunks: dict = None,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a Zarr store.
+        
+        The axis type settings (e.g., "Date time", "Depth (m)") are restored
+        from the saved metadata, but zoom levels are not preserved.
+        
+        Args:
+            path: Path to the Zarr store (directory).
+            chunks: Optional chunk sizes for Dask loading.
+            
+        Returns:
+            EchogramBuilder with ZarrDataBackend.
+        """
+        import zarr
+        import json as json_mod
+        from .backends import ZarrDataBackend
+        
+        backend = ZarrDataBackend.from_zarr(path, chunks=chunks)
+        builder = cls(backend)
+        
+        # Restore axis settings, oversampling, and layers from zarr attributes
+        try:
+            store = zarr.open_group(path, mode="r")
+            x_axis_name = store.attrs.get("x_axis_name")
+            y_axis_name = store.attrs.get("y_axis_name")
+            
+            if x_axis_name or y_axis_name:
+                builder._apply_axis_type(x_axis_name, y_axis_name)
+            
+            # Restore oversampling settings
+            builder._x_oversampling = int(store.attrs.get("x_oversampling", 1))
+            builder._y_oversampling = int(store.attrs.get("y_oversampling", 1))
+            builder._oversampling_mode = store.attrs.get("oversampling_mode", "linear_mean")
+            
+            # Restore layers
+            builder._restore_layers_from_store(
+                layer_names_json=store.attrs.get("layer_names", "[]"),
+                has_main_layer=store.attrs.get("has_main_layer", False),
+                get_array=lambda name: store[name][:] if name in store else None,
+            )
+        except Exception:
+            pass  # Ignore errors loading settings from older files
+        
+        return builder
+
+    # =========================================================================
+    # Mmap export (ultra-fast random access)
+    # =========================================================================
+
+    def to_mmap(
+        self,
+        path: str,
+        mode: str = "native",
+        progress: bool = True,
+        chunk_mb: float = 10.0,
+        resolution: float = None,
+        interpolation: str = "nearest",
+    ) -> str:
+        """Export echogram data to a memory-mapped store for ultra-fast access.
+        
+        Memory-mapped files provide near-instantaneous random access, making
+        them ideal for interactive visualization (zooming, panning). Trade-off:
+        files are uncompressed and larger than Zarr stores.
+        
+        Args:
+            path: Path for the mmap store (directory, will be created).
+            mode: Storage mode:
+                - "native": Store raw sample indices (fastest, smallest overhead)
+                - "view": Transform to match current axis settings (depth/range)
+            progress: Whether to show progress bar.
+            chunk_mb: Chunk size in megabytes for writing (default 10MB).
+            resolution: Y-axis resolution in meters (auto-detected if None).
+                        Only used when mode="view" with depth/range axis.
+            interpolation: Resampling method ("nearest" or "linear").
+            
+        Returns:
+            Path to the created mmap store.
+            
+        Examples:
+            >>> # Default: store in native sample indices (fastest)
+            >>> builder.to_mmap("output.mmap")
+            >>> 
+            >>> # First set view to depth mode, then save in those coordinates
+            >>> builder.set_y_axis_depth()
+            >>> builder.to_mmap("output.mmap", mode="view")
+            >>> 
+            >>> # Store with specific resolution
+            >>> builder.set_y_axis_depth()
+            >>> builder.to_mmap("output.mmap", mode="view", resolution=0.1)
+        """
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+        
+        from .backends.mmap_backend import MMAP_FORMAT_VERSION
+        from .backends.storage_mode import StorageAxisMode
+        
+        # Validate mode
+        if mode not in ("native", "view"):
+            raise ValueError(f"mode must be 'native' or 'view', got '{mode}'")
+        if interpolation not in ("nearest", "linear"):
+            raise ValueError(f"interpolation must be 'nearest' or 'linear', got '{interpolation}'")
+        
+        output_path = Path(path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Derive transformation settings from current axis settings
+        y_coords = None
+        if mode == "view":
+            y_axis_name = self._coord_system.y_axis_name
+            if y_axis_name == "Depth (m)":
+                y_coords = "depth"
+            elif y_axis_name == "Range (m)":
+                y_coords = "range"
+            # "Sample number" and "Y indice" stay as native
+        
+        # Determine if we need coordinate transformation
+        needs_transform = y_coords is not None
+        
+        if not needs_transform:
+            # Simple case: no transformation needed
+            return self._to_mmap_simple(output_path, progress, chunk_mb)
+        
+        # Complex case: coordinate transformation required
+        return self._to_mmap_transformed(
+            output_path, progress, chunk_mb,
+            y_coords=y_coords,
+            y_resolution=resolution,
+            x_strategy="primary",
+            x_resolution=None,
+            time_tolerance=0.5,
+            interpolation=interpolation,
+        )
+
+    def _to_mmap_simple(self, output_path: Path, progress: bool, chunk_mb: float) -> str:
+        """Export to mmap without coordinate transformation (original behavior)."""
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+        
+        from .backends.mmap_backend import MMAP_FORMAT_VERSION
+        
+        # Get dimensions
+        n_pings = self._backend.n_pings
+        max_samples = int(self._backend.max_sample_counts.max()) + 1
+        
+        # Calculate chunk size based on MB
+        bytes_per_ping = max_samples * 4  # float32 = 4 bytes
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)  # Don't exceed total pings
+        
+        # Create memory-mapped file for WCI data
+        wci_file = output_path / "wci_data.bin"
+        wci_mmap = np.memmap(
+            wci_file, dtype=np.float32, mode="w+", 
+            shape=(n_pings, max_samples)
+        )
+        
+        # Fill with NaN initially (in chunks)
+        nan_chunk = np.full((chunk_size, max_samples), np.nan, dtype=np.float32)
+        for chunk_start in range(0, n_pings, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            wci_mmap[chunk_start:chunk_end, :] = nan_chunk[:chunk_end - chunk_start, :]
+        del nan_chunk
+        
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+        
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter,
+                desc=f"Exporting ({chunk_mb:.0f}MB chunks)",
+                delay=0.5,
+                unit="chunk",
+                total=n_chunks,
+                postfix={"pings": 0},
+            )
+        
+        pings_written = 0
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            
+            # Use generic get_chunk - backends optimize this internally
+            chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
+            
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+            
+            # Truncate to mmap size if chunk is larger (can happen due to rounding in sample counts)
+            n_cols = min(chunk_data.shape[1], max_samples)
+            wci_mmap[chunk_start:chunk_end, :n_cols] = chunk_data[:, :n_cols]
+            del chunk_data
+            
+            pings_written += chunk_end - chunk_start
+            if progress and tqdm is not None:
+                elapsed = chunk_iter.format_dict.get('elapsed', 1) or 1
+                pings_per_sec = pings_written / elapsed
+                chunk_iter.set_postfix({"pings/s": f"{pings_per_sec:.0f}"})
+        
+        # Flush and close the mmap
+        wci_mmap.flush()
+        del wci_mmap
+        
+        # Save array metadata as binary .npy files (much faster than JSON)
+        sample_min, sample_max = self._backend.sample_nr_extents
+        np.save(output_path / "ping_times.npy", self._backend.ping_times.astype(np.float64))
+        np.save(output_path / "max_sample_counts.npy", self._backend.max_sample_counts.astype(np.int32))
+        np.save(output_path / "sample_nr_min.npy", sample_min.astype(np.int32))
+        np.save(output_path / "sample_nr_max.npy", sample_max.astype(np.int32))
+        
+        # Optional extents
+        range_ext = self._backend.range_extents
+        if range_ext is not None:
+            min_r, max_r = range_ext
+            np.save(output_path / "range_min.npy", min_r.astype(np.float32))
+            np.save(output_path / "range_max.npy", max_r.astype(np.float32))
+        
+        depth_ext = self._backend.depth_extents
+        if depth_ext is not None:
+            min_d, max_d = depth_ext
+            np.save(output_path / "depth_min.npy", min_d.astype(np.float32))
+            np.save(output_path / "depth_max.npy", max_d.astype(np.float32))
+        
+        # Lat/lon coordinates (optional)
+        if self._backend.has_latlon:
+            np.save(output_path / "latitudes.npy", self._backend.latitudes.astype(np.float64))
+            np.save(output_path / "longitudes.npy", self._backend.longitudes.astype(np.float64))
+        
+        # Ping parameters (binary .npy files)
+        ping_params = self._get_all_ping_params()
+        ping_params_meta = {}  # y_reference for each param (stored in JSON)
+        ping_param_names = []
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            np.save(output_path / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(output_path / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        
+        # Small scalar metadata as JSON (fast to load)
+        metadata = {
+            "format_version": MMAP_FORMAT_VERSION,
+            "n_pings": n_pings,
+            "n_samples": max_samples,
+            "wci_value": self._backend.wci_value,
+            "linear_mean": self._backend.linear_mean,
+            "has_navigation": self._backend.has_navigation,
+            "has_latlon": self._backend.has_latlon,
+            "ping_param_names": ping_param_names,
+            "ping_params_meta": ping_params_meta,
+            "storage_mode": self._backend.storage_mode.to_dict(),
+            # View axis settings (type only, not zoom level)
+            "x_axis_name": self._coord_system.x_axis_name,
+            "y_axis_name": self._coord_system.y_axis_name,
+            # Oversampling settings
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
+        }
+        
+        # Save layer data as .npy files
+        self._save_layers_to_dir(output_path, metadata)
+        
+        # Write small JSON metadata
+        metadata_file = output_path / "metadata.json"
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f)
+        
+        return str(output_path)
+
+    def _to_mmap_transformed(
+        self,
+        output_path: Path,
+        progress: bool,
+        chunk_mb: float,
+        y_coords: str,
+        y_resolution: float,
+        x_strategy: str,
+        x_resolution: float,
+        time_tolerance: float,
+        interpolation: str,
+    ) -> str:
+        """Export to mmap with coordinate transformation.
+        
+        This handles:
+        - Y-axis transformation from sample indices to depth/range
+        - X-axis strategies (primary, union, regular)
+        - Resampling with nearest-neighbor or linear interpolation
+        """
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+        
+        from .backends.mmap_backend import MMAP_FORMAT_VERSION
+        from .backends.storage_mode import StorageAxisMode
+        from .backends import CombineBackend
+        
+        # Check if backend has the required extents
+        if y_coords == "depth":
+            if self._backend.depth_extents is None:
+                raise ValueError("Backend does not have depth extents. Cannot transform to depth coordinates.")
+            y_extents = self._backend.depth_extents
+        elif y_coords == "range":
+            if self._backend.range_extents is None:
+                raise ValueError("Backend does not have range extents. Cannot transform to range coordinates.")
+            y_extents = self._backend.range_extents
+        else:
+            # y_coords is None, but we're here because x_strategy != "primary"
+            y_extents = None
+        
+        # Determine output dimensions and grid
+        ping_times, y_grid, storage_mode = self._compute_output_grid(
+            y_coords=y_coords,
+            y_resolution=y_resolution,
+            y_extents=y_extents,
+            x_strategy=x_strategy,
+            x_resolution=x_resolution,
+            time_tolerance=time_tolerance,
+        )
+        
+        n_pings = len(ping_times)
+        n_samples = len(y_grid) if y_grid is not None else int(self._backend.max_sample_counts.max()) + 1
+        
+        # Calculate chunk size based on MB
+        bytes_per_ping = n_samples * 4  # float32 = 4 bytes
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)
+        
+        # Create memory-mapped file for WCI data
+        wci_file = output_path / "wci_data.bin"
+        wci_mmap = np.memmap(
+            wci_file, dtype=np.float32, mode="w+",
+            shape=(n_pings, n_samples)
+        )
+        
+        # Fill with NaN initially
+        wci_mmap[:] = np.nan
+        
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+        
+        pbar = None
+        if progress and tqdm is not None:
+            pbar = tqdm(
+                total=n_pings,
+                desc=f"Transforming to {y_coords or 'native'} coords",
+                delay=0.5,
+                unit="pings",
+            )
+        
+        # Process each chunk
+        for chunk_idx in range(n_chunks):
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            actual_chunk = chunk_end - chunk_start
+            
+            chunk_data = self._transform_chunk(
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+                output_ping_times=ping_times,
+                y_grid=y_grid,
+                y_coords=y_coords,
+                x_strategy=x_strategy,
+                time_tolerance=time_tolerance,
+                interpolation=interpolation,
+            )
+            
+            # Apply data transforms if set
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+            
+            wci_mmap[chunk_start:chunk_end, :] = chunk_data
+            del chunk_data
+            
+            if pbar is not None:
+                pbar.update(actual_chunk)
+        
+        if pbar is not None:
+            pbar.close()
+        
+        # Flush and close
+        wci_mmap.flush()
+        del wci_mmap
+        
+        # Save metadata
+        np.save(output_path / "ping_times.npy", ping_times.astype(np.float64))
+        
+        # For transformed data, max_sample_counts is uniform
+        max_sample_counts = np.full(n_pings, n_samples - 1, dtype=np.int32)
+        np.save(output_path / "max_sample_counts.npy", max_sample_counts)
+        
+        # Sample number extents (for transformed data, this is the y_grid indices)
+        np.save(output_path / "sample_nr_min.npy", np.zeros(n_pings, dtype=np.int32))
+        np.save(output_path / "sample_nr_max.npy", np.full(n_pings, n_samples - 1, dtype=np.int32))
+        
+        # For depth/range transformed data, we store the grid as uniform extents
+        if y_coords == "depth":
+            depth_min = np.full(n_pings, y_grid[0], dtype=np.float32)
+            depth_max = np.full(n_pings, y_grid[-1], dtype=np.float32)
+            np.save(output_path / "depth_min.npy", depth_min)
+            np.save(output_path / "depth_max.npy", depth_max)
+        elif y_coords == "range":
+            range_min = np.full(n_pings, y_grid[0], dtype=np.float32)
+            range_max = np.full(n_pings, y_grid[-1], dtype=np.float32)
+            np.save(output_path / "range_min.npy", range_min)
+            np.save(output_path / "range_max.npy", range_max)
+        
+        # Lat/lon - interpolate to new ping times if needed
+        if self._backend.has_latlon:
+            new_lats, new_lons = self._interpolate_latlon_to_times(ping_times)
+            np.save(output_path / "latitudes.npy", new_lats.astype(np.float64))
+            np.save(output_path / "longitudes.npy", new_lons.astype(np.float64))
+        
+        # Ping parameters - interpolate to new ping times
+        ping_params = self._get_all_ping_params()
+        ping_params_meta = {}
+        ping_param_names = []
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            # Update y_ref to match the new coordinate system
+            if y_coords == "depth":
+                new_y_ref = "Depth (m)"
+            elif y_coords == "range":
+                new_y_ref = "Range (m)"
+            else:
+                new_y_ref = y_ref
+            ping_params_meta[name] = new_y_ref
+            np.save(output_path / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(output_path / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        
+        # Determine axis names for saved metadata
+        if y_coords == "depth":
+            y_axis_name = "Depth (m)"
+        elif y_coords == "range":
+            y_axis_name = "Range (m)"
+        else:
+            y_axis_name = self._coord_system.y_axis_name
+        
+        if x_strategy == "regular":
+            x_axis_name = "Ping time"  # Regular grid implies time-based
+        else:
+            x_axis_name = self._coord_system.x_axis_name or "Date time"
+        
+        metadata = {
+            "format_version": MMAP_FORMAT_VERSION,
+            "n_pings": n_pings,
+            "n_samples": n_samples,
+            "wci_value": self._backend.wci_value,
+            "linear_mean": self._backend.linear_mean,
+            "has_navigation": self._backend.has_navigation,
+            "has_latlon": self._backend.has_latlon,
+            "ping_param_names": ping_param_names,
+            "ping_params_meta": ping_params_meta,
+            "storage_mode": storage_mode.to_dict(),
+            "x_axis_name": x_axis_name,
+            "y_axis_name": y_axis_name,
+            # Oversampling settings
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
+        }
+        
+        # Save layer data as .npy files
+        self._save_layers_to_dir(output_path, metadata)
+        
+        metadata_file = output_path / "metadata.json"
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f)
+        
+        return str(output_path)
+
+    def _compute_output_grid(
+        self,
+        y_coords: str,
+        y_resolution: float,
+        y_extents: tuple,
+        x_strategy: str,
+        x_resolution: float,
+        time_tolerance: float,
+    ) -> tuple:
+        """Compute output grid dimensions and storage mode.
+        
+        Returns:
+            (ping_times, y_grid, storage_mode)
+        """
+        from .backends.storage_mode import StorageAxisMode
+        from .backends import CombineBackend
+        
+        # Compute Y grid
+        if y_coords is not None and y_extents is not None:
+            y_min_arr, y_max_arr = y_extents
+            y_min = float(np.nanmin(y_min_arr))
+            y_max = float(np.nanmax(y_max_arr))
+            
+            # Auto-detect resolution if not specified
+            if y_resolution is None:
+                # Estimate from per-ping extents and sample counts
+                max_samples = self._backend.max_sample_counts
+                y_ranges = y_max_arr - y_min_arr
+                sample_intervals = y_ranges / (max_samples + 1)
+                y_resolution = float(np.nanmedian(sample_intervals[sample_intervals > 0]))
+                # Round to nice value
+                y_resolution = self._round_to_nice_value(y_resolution)
+            
+            n_y_bins = int(np.ceil((y_max - y_min) / y_resolution)) + 1
+            y_grid = np.linspace(y_min, y_min + (n_y_bins - 1) * y_resolution, n_y_bins)
+        else:
+            y_grid = None
+            y_resolution = 1.0
+            y_min = 0.0
+        
+        # Compute X grid (ping times)
+        backend = self._backend
+        
+        if x_strategy == "primary":
+            # Use backend's native ping times
+            ping_times = backend.ping_times.copy()
+            x_origin = None
+            x_res = None
+        elif x_strategy == "union":
+            # For CombineBackend, collect all ping times from sub-backends
+            if isinstance(backend, CombineBackend):
+                all_times = []
+                for i in range(backend.num_backends):
+                    sub = backend.get_backend(i)
+                    all_times.append(sub.ping_times)
+                ping_times = np.unique(np.concatenate(all_times))
+                ping_times = ping_times[np.isfinite(ping_times)]
+                ping_times = np.sort(ping_times)
+            else:
+                ping_times = backend.ping_times.copy()
+            x_origin = None
+            x_res = None
+        elif x_strategy == "regular":
+            # Create regular time grid
+            t_min = float(np.nanmin(backend.ping_times))
+            t_max = float(np.nanmax(backend.ping_times))
+            n_time_bins = int(np.ceil((t_max - t_min) / x_resolution)) + 1
+            ping_times = np.linspace(t_min, t_min + (n_time_bins - 1) * x_resolution, n_time_bins)
+            x_origin = t_min
+            x_res = x_resolution
+        else:
+            raise ValueError(f"Unknown x_strategy: {x_strategy}")
+        
+        # Create storage mode
+        if y_coords == "depth":
+            storage_mode = StorageAxisMode(
+                x_axis="ping_time",
+                y_axis="depth",
+                x_resolution=x_res,
+                x_origin=x_origin,
+                y_resolution=y_resolution,
+                y_origin=y_min if y_grid is not None else 0.0,
+            )
+        elif y_coords == "range":
+            storage_mode = StorageAxisMode(
+                x_axis="ping_time",
+                y_axis="range",
+                x_resolution=x_res,
+                x_origin=x_origin,
+                y_resolution=y_resolution,
+                y_origin=y_min if y_grid is not None else 0.0,
+            )
+        else:
+            storage_mode = StorageAxisMode.default()
+        
+        return ping_times, y_grid, storage_mode
+
+    def _round_to_nice_value(self, value: float) -> float:
+        """Round a resolution value to a nice number (0.01, 0.02, 0.05, 0.1, etc.)."""
+        if value <= 0:
+            return 0.1
+        
+        # Find order of magnitude
+        exponent = np.floor(np.log10(value))
+        mantissa = value / (10 ** exponent)
+        
+        # Round mantissa to 1, 2, or 5
+        if mantissa < 1.5:
+            mantissa = 1
+        elif mantissa < 3.5:
+            mantissa = 2
+        elif mantissa < 7.5:
+            mantissa = 5
+        else:
+            mantissa = 10
+        
+        return float(mantissa * (10 ** exponent))
+
+    def _transform_chunk(
+        self,
+        chunk_start: int,
+        chunk_end: int,
+        output_ping_times: np.ndarray,
+        y_grid: np.ndarray,
+        y_coords: str,
+        x_strategy: str,
+        time_tolerance: float,
+        interpolation: str,
+    ) -> np.ndarray:
+        """Transform a chunk of data to the output coordinate system.
+        
+        Optimized for speed using vectorized operations where possible.
+        """
+        from .backends import CombineBackend
+        
+        chunk_size = chunk_end - chunk_start
+        n_y = len(y_grid) if y_grid is not None else int(self._backend.max_sample_counts.max()) + 1
+        
+        result = np.full((chunk_size, n_y), np.nan, dtype=np.float32)
+        
+        backend = self._backend
+        output_times_chunk = output_ping_times[chunk_start:chunk_end]
+        
+        # For primary strategy, pre-compute all nearest indices at once
+        if x_strategy == "primary" and not isinstance(backend, CombineBackend):
+            backend_times = backend.ping_times
+            # Vectorized: find nearest ping for all output times in chunk
+            # Using broadcasting to compute all pairwise differences
+            time_diffs = np.abs(backend_times[np.newaxis, :] - output_times_chunk[:, np.newaxis])
+            nearest_indices = np.argmin(time_diffs, axis=1)
+            min_diffs = time_diffs[np.arange(chunk_size), nearest_indices]
+            valid_mask = min_diffs <= time_tolerance
+            
+            for i in range(chunk_size):
+                if not valid_mask[i]:
+                    continue
+                    
+                ping_idx = nearest_indices[i]
+                column_data = backend.get_column(ping_idx)
+                
+                if column_data is None or len(column_data) == 0:
+                    continue
+                
+                if y_grid is not None and y_coords is not None:
+                    source_y = self._get_y_coordinates_for_ping(backend, ping_idx, y_coords)
+                    if source_y is not None:
+                        result[i, :] = self._resample_column(
+                            column_data, source_y, y_grid, interpolation
+                        )
+                else:
+                    n_copy = min(len(column_data), n_y)
+                    result[i, :n_copy] = column_data[:n_copy]
+        
+        elif isinstance(backend, CombineBackend):
+            # CombineBackend: need to get data with proper y-alignment
+            for i in range(chunk_size):
+                out_time = output_times_chunk[i]
+                
+                # Find best matching ping across all sub-backends
+                column_data, source_y = self._get_column_and_y_for_time(
+                    backend, out_time, y_coords, time_tolerance
+                )
+                
+                if column_data is None or len(column_data) == 0:
+                    continue
+                
+                if y_grid is not None and y_coords is not None and source_y is not None:
+                    result[i, :] = self._resample_column(
+                        column_data, source_y, y_grid, interpolation
+                    )
+                else:
+                    n_copy = min(len(column_data), n_y)
+                    result[i, :n_copy] = column_data[:n_copy]
+        else:
+            # Regular strategy or other cases
+            backend_times = backend.ping_times
+            for i in range(chunk_size):
+                out_time = output_times_chunk[i]
+                time_diffs = np.abs(backend_times - out_time)
+                nearest_idx = np.argmin(time_diffs)
+                
+                if time_diffs[nearest_idx] > time_tolerance:
+                    continue
+                
+                column_data = backend.get_column(nearest_idx)
+                
+                if column_data is None or len(column_data) == 0:
+                    continue
+                
+                if y_grid is not None and y_coords is not None:
+                    source_y = self._get_y_coordinates_for_ping(backend, nearest_idx, y_coords)
+                    if source_y is not None:
+                        result[i, :] = self._resample_column(
+                            column_data, source_y, y_grid, interpolation
+                        )
+                else:
+                    n_copy = min(len(column_data), n_y)
+                    result[i, :n_copy] = column_data[:n_copy]
+        
+        return result
+
+    def _get_column_and_y_for_time(
+        self,
+        backend,  # CombineBackend
+        target_time: float,
+        y_coords: str,
+        time_tolerance: float,
+    ) -> tuple:
+        """Get column and Y coordinates from CombineBackend for a specific time.
+        
+        Returns:
+            (column_data, source_y) tuple, or (None, None) if no match found.
+        """
+        from .backends import CombineBackend
+        
+        best_diff = float('inf')
+        best_column = None
+        best_source_y = None
+        
+        for i in range(backend.num_backends):
+            sub = backend.get_backend(i)
+            sub_times = sub.ping_times
+            time_diffs = np.abs(sub_times - target_time)
+            nearest_idx = np.argmin(time_diffs)
+            diff = time_diffs[nearest_idx]
+            
+            if diff <= time_tolerance and diff < best_diff:
+                best_diff = diff
+                best_column = sub.get_column(nearest_idx)
+                if y_coords is not None:
+                    best_source_y = self._get_y_coordinates_for_ping(sub, nearest_idx, y_coords)
+        
+        return best_column, best_source_y
+
+    def _get_y_coordinates_for_ping(
+        self,
+        backend,
+        ping_idx: int,
+        y_coords: str,
+    ) -> np.ndarray:
+        """Get Y coordinates (depth/range) for a specific ping."""
+        if y_coords == "depth":
+            extents = backend.depth_extents
+        elif y_coords == "range":
+            extents = backend.range_extents
+        else:
+            return None
+        
+        if extents is None:
+            return None
+        
+        y_min, y_max = extents
+        n_samples = int(backend.max_sample_counts[ping_idx]) + 1
+        
+        # Linear interpolation from min to max depth/range
+        return np.linspace(y_min[ping_idx], y_max[ping_idx], n_samples)
+
+    def _resample_column(
+        self,
+        source_data: np.ndarray,
+        source_y: np.ndarray,
+        target_y: np.ndarray,
+        interpolation: str,
+    ) -> np.ndarray:
+        """Resample a column from source Y coordinates to target Y coordinates.
+        
+        Optimized for speed using vectorized numpy operations.
+        """
+        if len(source_data) == 0 or len(source_y) == 0:
+            return np.full(len(target_y), np.nan, dtype=np.float32)
+        
+        # Ensure same length
+        n = min(len(source_data), len(source_y))
+        source_data = source_data[:n]
+        source_y = source_y[:n]
+        
+        if interpolation == "nearest":
+            # Vectorized nearest-neighbor interpolation
+            # Use searchsorted for all target values at once
+            indices = np.searchsorted(source_y, target_y)
+            
+            # Clip to valid range
+            indices = np.clip(indices, 0, len(source_y) - 1)
+            
+            # For values between bins, check which neighbor is closer
+            # (only needed for indices not at boundaries)
+            mask_check = (indices > 0) & (indices < len(source_y))
+            
+            # Compute distances to left and right neighbors
+            left_indices = np.clip(indices - 1, 0, len(source_y) - 1)
+            left_dist = np.abs(target_y - source_y[left_indices])
+            right_dist = np.abs(target_y - source_y[indices])
+            
+            # Use left neighbor where it's closer
+            use_left = left_dist < right_dist
+            final_indices = np.where(use_left, left_indices, indices)
+            
+            # Get values
+            result = source_data[final_indices]
+            
+            # Mark values outside source range as NaN
+            result = result.astype(np.float32)
+            result[target_y < source_y[0]] = np.nan
+            result[target_y > source_y[-1]] = np.nan
+            
+            return result
+        
+        elif interpolation == "linear":
+            # Linear interpolation (already vectorized)
+            result = np.interp(target_y, source_y, source_data, left=np.nan, right=np.nan)
+            return result.astype(np.float32)
+        
+        return np.full(len(target_y), np.nan, dtype=np.float32)
+
+    def _interpolate_latlon_to_times(self, target_times: np.ndarray) -> tuple:
+        """Interpolate lat/lon coordinates to new ping times."""
+        source_times = self._backend.ping_times
+        source_lats = self._backend.latitudes
+        source_lons = self._backend.longitudes
+        
+        # Simple linear interpolation
+        new_lats = np.interp(target_times, source_times, source_lats)
+        new_lons = np.interp(target_times, source_times, source_lons)
+        
+        return new_lats, new_lons
+    
+    @classmethod
+    def from_mmap(
+        cls,
+        path: str,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a mmap store.
+        
+        The WCI data is memory-mapped and lazy-loaded:
+        - No data loaded into memory until accessed
+        - OS page cache handles caching efficiently
+        - Supports files larger than available RAM
+        
+        The axis type settings (e.g., "Date time", "Depth (m)") are restored
+        from the saved metadata, but zoom levels are not preserved.
+        
+        Args:
+            path: Path to the mmap store (directory).
+            
+        Returns:
+            EchogramBuilder with MmapDataBackend.
+        """
+        import json
+        from pathlib import Path
+        from .backends import MmapDataBackend
+        
+        backend = MmapDataBackend.from_path(path)
+        builder = cls(backend)
+        
+        # Restore axis settings, oversampling, and layers from metadata
+        metadata_file = Path(path) / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, "r") as f:
+                metadata = json.load(f)
+            
+            x_axis_name = metadata.get("x_axis_name")
+            y_axis_name = metadata.get("y_axis_name")
+            
+            # Apply saved axis type (without specific zoom parameters)
+            builder._apply_axis_type(x_axis_name, y_axis_name)
+            
+            # Restore oversampling settings
+            builder._x_oversampling = int(metadata.get("x_oversampling", 1))
+            builder._y_oversampling = int(metadata.get("y_oversampling", 1))
+            builder._oversampling_mode = metadata.get("oversampling_mode", "linear_mean")
+            
+            # Restore layers
+            store_path = Path(path)
+            builder._restore_layers_from_store(
+                layer_names_json=json.dumps(metadata.get("layer_names", [])),
+                has_main_layer=metadata.get("has_main_layer", False),
+                get_array=lambda name: np.load(store_path / f"{name}.npy") if (store_path / f"{name}.npy").exists() else None,
+            )
+        
+        return builder
+
+    # =========================================================================
+    # Gridded mmap export / import
+    # =========================================================================
+
+    def to_gridded_mmap(
+        self,
+        path: str,
+        x_step: float,
+        y_step: float,
+        averaging: str = "db_mean",
+        progress: bool = True,
+        chunk_mb: float = 50.0,
+        downsample_ping_params: bool = True,
+    ) -> str:
+        """Export echogram data to a gridded memory-mapped store.
+
+        Data is averaged onto a regular (x, y) grid.  Empty x-bins are
+        omitted (sparse).  Grid cells are centred on multiples of the step
+        size (0 is always a cell centre), so grids from different time
+        ranges can be combined directly.
+
+        The x-axis unit is inferred from the current axis setting:
+        - "Date time" / "Ping time" → seconds
+        - "Ping index" → ping count
+
+        The y-axis unit is inferred from the current axis setting:
+        - "Depth (m)" → metres  (requires depth extents)
+        - "Range (m)" → metres  (requires range extents)
+        - "Sample number" / "Y indice" → sample indices
+
+        Args:
+            path: Output directory (will be created).
+            x_step: Grid cell width in current x-axis units.
+            y_step: Grid cell height in current y-axis units.
+            averaging: Averaging mode.  One of:
+                - ``"db_mean"``     – mean of dB values
+                - ``"linear_mean"`` – mean in linear domain, result in dB
+                - ``"min"``         – minimum value per cell
+                - ``"max"``         – maximum value per cell
+                - ``"median"``      – median per cell (more memory)
+            progress: Show progress bar.
+            chunk_mb: Approximate chunk size in MB for reading source data.
+            downsample_ping_params: If *True*, ping parameters (e.g. bottom
+                depth) are averaged onto the new x-grid.  If *False*, they
+                are stored at original (per-ping) resolution.
+
+        Returns:
+            Path to the created store directory.
+
+        Examples:
+            >>> builder.set_y_axis_depth()
+            >>> builder.set_x_axis_date_time()
+            >>> builder.to_gridded_mmap("gridded.mmap", x_step=10, y_step=0.5)
+        """
+        import json
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+
+        from .backends.gridded_mmap_backend import (
+            GRIDDED_MMAP_FORMAT_VERSION,
+            AVERAGING_MODES,
+        )
+        from .backends.storage_mode import StorageAxisMode
+
+        if averaging not in AVERAGING_MODES:
+            raise ValueError(
+                f"averaging must be one of {list(AVERAGING_MODES)}, got {averaging!r}"
+            )
+
+        # ----- resolve current axis types -----
+        x_axis_name = self._coord_system.x_axis_name
+        y_axis_name = self._coord_system.y_axis_name
+
+        # X coordinates per source ping
+        if x_axis_name in ("Ping time", "Date time"):
+            x_coords = self._backend.ping_times.astype(np.float64)
+            x_axis_type = "ping_time"
+        elif x_axis_name == "Ping index":
+            x_coords = np.arange(self._backend.n_pings, dtype=np.float64)
+            x_axis_type = "ping_index"
+        else:
+            # Custom x-axis: try to use ping times as proxy
+            x_coords = self._backend.ping_times.astype(np.float64)
+            x_axis_type = "ping_time"
+
+        # Y extents per ping  (vec_min_y, vec_max_y)
+        if y_axis_name == "Depth (m)":
+            if self._backend.depth_extents is None:
+                raise ValueError("Depth extents not available in backend")
+            y_min, y_max = self._backend.depth_extents
+            y_axis_type = "depth"
+        elif y_axis_name == "Range (m)":
+            if self._backend.range_extents is None:
+                raise ValueError("Range extents not available in backend")
+            y_min, y_max = self._backend.range_extents
+            y_axis_type = "range"
+        elif y_axis_name in ("Sample number", "Y indice"):
+            s_min, s_max = self._backend.sample_nr_extents
+            y_min = s_min.astype(np.float64)
+            y_max = s_max.astype(np.float64)
+            y_axis_type = "sample_index"
+        else:
+            raise ValueError(f"Unsupported y-axis for gridding: {y_axis_name}")
+
+        y_min = np.asarray(y_min, dtype=np.float64)
+        y_max = np.asarray(y_max, dtype=np.float64)
+        max_sample_counts = self._backend.max_sample_counts
+
+        n_pings = self._backend.n_pings
+
+        # ----- compute grid extents -----
+        # X-bins  (sparse: only occupied bins stored)
+        x_bins = np.round(x_coords / x_step).astype(np.int64)
+        unique_x_bins, first_idx, x_bin_counts = np.unique(
+            x_bins, return_index=True, return_counts=True
+        )
+        n_x_bins = len(unique_x_bins)
+        x_bin_to_row = np.empty(unique_x_bins.max() - unique_x_bins.min() + 1, dtype=np.int64)
+        x_bin_to_row[:] = -1
+        x_bin_to_row[unique_x_bins - unique_x_bins.min()] = np.arange(n_x_bins)
+        x_bin_offset = int(unique_x_bins.min())
+
+        # Y-bins  (regular grid, all rows same length)
+        global_y_min = float(np.nanmin(y_min))
+        global_y_max = float(np.nanmax(y_max))
+        y_bin_min = int(np.floor(global_y_min / y_step + 0.5))
+        y_bin_max = int(np.ceil(global_y_max / y_step - 0.5))
+        # Ensure at least 1 cell, and that global extremes are included
+        if y_bin_min * y_step - 0.5 * y_step > global_y_min:
+            y_bin_min -= 1
+        if y_bin_max * y_step + 0.5 * y_step < global_y_max:
+            y_bin_max += 1
+        n_y_cells = y_bin_max - y_bin_min + 1
+        y_origin = float(y_bin_min * y_step)
+
+        total_cells = n_x_bins * n_y_cells
+
+        # ----- allocate accumulators -----
+        if averaging in ("db_mean", "linear_mean"):
+            acc_sum = np.zeros(total_cells, dtype=np.float64)
+            acc_count = np.zeros(total_cells, dtype=np.int64)
+        elif averaging == "min":
+            acc_val = np.full(total_cells, np.inf, dtype=np.float64)
+        elif averaging == "max":
+            acc_val = np.full(total_cells, -np.inf, dtype=np.float64)
+        elif averaging == "median":
+            # Collect all values per cell (slower, more memory)
+            cell_values = [[] for _ in range(total_cells)]
+
+        # ----- process pings in chunks -----
+        max_s = int(max_sample_counts.max()) + 1
+        bytes_per_ping = max_s * 4
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+
+        sample_indices_row = np.arange(max_s, dtype=np.float64)
+
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter, desc="Gridding", delay=0.5, unit="chunk", total=n_chunks,
+            )
+
+        for chunk_idx in chunk_iter:
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_pings)
+            nc = chunk_end - chunk_start
+
+            chunk_data = self._backend.get_chunk(chunk_start, chunk_end)
+
+            # Apply data transforms (factor, offset, transform)
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+
+            chunk_data = chunk_data.astype(np.float64)
+
+            # Effective sample count: min of max_s and actual data width
+            eff_s = min(max_s, chunk_data.shape[1])
+            chunk_data = chunk_data[:, :eff_s]
+
+            # X row indices for this chunk
+            chunk_x_bins = x_bins[chunk_start:chunk_end]
+            chunk_row_idx = x_bin_to_row[chunk_x_bins - x_bin_offset]  # (nc,)
+
+            # Y bin indices for every (ping, sample) in the chunk
+            chunk_y_min = y_min[chunk_start:chunk_end]           # (nc,)
+            chunk_y_max = y_max[chunk_start:chunk_end]           # (nc,)
+            chunk_n_samples = max_sample_counts[chunk_start:chunk_end]  # (nc,)
+
+            # Affine: y_coord = y_min + (y_max - y_min) / n_samples * j
+            b_fwd = np.where(
+                chunk_n_samples > 0,
+                (chunk_y_max - chunk_y_min) / chunk_n_samples,
+                0.0,
+            )  # (nc,)
+            # y_coords shape (nc, eff_s)
+            y_coords = chunk_y_min[:, None] + b_fwd[:, None] * sample_indices_row[None, :eff_s]
+            y_bin_idx = np.round(y_coords / y_step).astype(np.int64) - y_bin_min  # (nc, eff_s)
+
+            # Row indices broadcast
+            row_idx_2d = np.broadcast_to(chunk_row_idx[:, None], (nc, eff_s))
+
+            # Valid mask
+            valid = (
+                np.isfinite(chunk_data)
+                & (y_bin_idx >= 0)
+                & (y_bin_idx < n_y_cells)
+            )
+            # Also mask samples beyond ping's own sample count
+            sample_mask = sample_indices_row[None, :eff_s] <= chunk_n_samples[:, None]
+            valid &= sample_mask
+
+            flat_idx = row_idx_2d[valid] * n_y_cells + y_bin_idx[valid]
+            flat_vals = chunk_data[valid]
+
+            if averaging == "db_mean":
+                acc_sum += np.bincount(flat_idx, weights=flat_vals, minlength=total_cells)
+                acc_count += np.bincount(flat_idx, minlength=total_cells)
+            elif averaging == "linear_mean":
+                lin_vals = np.power(10.0, flat_vals / 10.0)
+                acc_sum += np.bincount(flat_idx, weights=lin_vals, minlength=total_cells)
+                acc_count += np.bincount(flat_idx, minlength=total_cells)
+            elif averaging == "min":
+                np.minimum.at(acc_val, flat_idx, flat_vals)
+            elif averaging == "max":
+                np.maximum.at(acc_val, flat_idx, flat_vals)
+            elif averaging == "median":
+                for fi, fv in zip(flat_idx, flat_vals):
+                    cell_values[fi].append(fv)
+
+        # ----- compute result -----
+        result = np.full((n_x_bins, n_y_cells), np.nan, dtype=np.float32)
+        if averaging == "db_mean":
+            mask = acc_count > 0
+            vals = np.where(mask, acc_sum / np.maximum(acc_count, 1), np.nan)
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging == "linear_mean":
+            mask = acc_count > 0
+            vals = np.where(mask, 10.0 * np.log10(acc_sum / np.maximum(acc_count, 1)), np.nan)
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging in ("min", "max"):
+            vals = acc_val.copy()
+            vals[np.isinf(vals)] = np.nan
+            result = vals.reshape(n_x_bins, n_y_cells).astype(np.float32)
+        elif averaging == "median":
+            flat_result = np.full(total_cells, np.nan, dtype=np.float32)
+            for i, cv in enumerate(cell_values):
+                if cv:
+                    flat_result[i] = float(np.median(cv))
+            result = flat_result.reshape(n_x_bins, n_y_cells)
+
+        # ----- write store -----
+        output_path = Path(path)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # WCI data
+        wci_file = output_path / "wci_data.bin"
+        wci_mmap = np.memmap(
+            wci_file, dtype=np.float32, mode="w+", shape=(n_x_bins, n_y_cells)
+        )
+        wci_mmap[:] = result
+        wci_mmap.flush()
+        del wci_mmap
+
+        # Bin x coordinates (cell centres)
+        bin_x_coords = unique_x_bins.astype(np.float64) * x_step
+        np.save(output_path / "bin_x_coordinates.npy", bin_x_coords)
+        np.save(output_path / "ping_times.npy", bin_x_coords)
+        np.save(output_path / "ping_counts.npy", x_bin_counts.astype(np.int32))
+
+        # Lat/lon: average per bin (if available)
+        has_latlon = self._backend.has_latlon
+        if has_latlon:
+            src_lats = self._backend.latitudes
+            src_lons = self._backend.longitudes
+            bin_lats = np.zeros(n_x_bins, dtype=np.float64)
+            bin_lons = np.zeros(n_x_bins, dtype=np.float64)
+            for i in range(n_pings):
+                row = x_bin_to_row[x_bins[i] - x_bin_offset]
+                bin_lats[row] += src_lats[i]
+                bin_lons[row] += src_lons[i]
+            bin_lats /= x_bin_counts
+            bin_lons /= x_bin_counts
+            np.save(output_path / "latitudes.npy", bin_lats)
+            np.save(output_path / "longitudes.npy", bin_lons)
+
+        # Ping parameters
+        ping_params = self._get_all_ping_params()
+        ping_param_names = []
+        ping_params_meta = {}
+        for name, (y_ref, (timestamps, values)) in ping_params.items():
+            ping_param_names.append(name)
+            ping_params_meta[name] = y_ref
+            timestamps = np.asarray(timestamps, dtype=np.float64)
+            values = np.asarray(values, dtype=np.float64)
+            if downsample_ping_params:
+                # Average values onto new x grid using bin assignments
+                ds_times = bin_x_coords
+                ds_values = np.full(n_x_bins, np.nan, dtype=np.float64)
+                val_sum = np.zeros(n_x_bins, dtype=np.float64)
+                val_count = np.zeros(n_x_bins, dtype=np.int64)
+                # Map original timestamps to bins
+                param_bins = np.round(timestamps / x_step).astype(np.int64)
+                for j in range(len(timestamps)):
+                    b = param_bins[j]
+                    bi = b - x_bin_offset
+                    if 0 <= bi < len(x_bin_to_row) and x_bin_to_row[bi] >= 0:
+                        row = x_bin_to_row[bi]
+                        if np.isfinite(values[j]):
+                            val_sum[row] += values[j]
+                            val_count[row] += 1
+                mask = val_count > 0
+                ds_values[mask] = val_sum[mask] / val_count[mask]
+                np.save(output_path / f"ping_param_{name}_times.npy", ds_times)
+                np.save(output_path / f"ping_param_{name}_values.npy", ds_values)
+            else:
+                # Keep original resolution
+                np.save(output_path / f"ping_param_{name}_times.npy", timestamps)
+                np.save(output_path / f"ping_param_{name}_values.npy", values)
+
+        # Layers
+        layer_names = []
+        for layer_name, layer in self.layers.items():
+            layer_names.append(layer_name)
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y)
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y)
+        has_main_layer = self.main_layer is not None
+        if has_main_layer:
+            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y)
+            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y)
+
+        # Storage mode
+        storage_mode = StorageAxisMode(
+            x_axis=x_axis_type,
+            y_axis=y_axis_type,
+            x_resolution=x_step,
+            x_origin=float(unique_x_bins.min()) * x_step,
+            y_resolution=y_step,
+            y_origin=y_origin,
+        )
+
+        # Metadata
+        metadata = {
+            "format_type": "gridded_mmap",
+            "format_version": GRIDDED_MMAP_FORMAT_VERSION,
+            "n_x_bins": int(n_x_bins),
+            "n_y_cells": int(n_y_cells),
+            "x_step": float(x_step),
+            "y_step": float(y_step),
+            "y_origin": float(y_origin),
+            "x_axis_type": x_axis_type,
+            "y_axis_type": y_axis_type,
+            "averaging": averaging,
+            "wci_value": self._backend.wci_value,
+            "linear_mean": self._backend.linear_mean,
+            "has_navigation": self._backend.has_navigation,
+            "has_latlon": has_latlon,
+            "ping_param_names": ping_param_names,
+            "ping_params_meta": ping_params_meta,
+            "ping_params_gridded": downsample_ping_params,
+            "storage_mode": storage_mode.to_dict(),
+            "x_axis_name": x_axis_name,
+            "y_axis_name": y_axis_name,
+            "x_oversampling": self._x_oversampling,
+            "y_oversampling": self._y_oversampling,
+            "oversampling_mode": self._oversampling_mode,
+            "layer_names": layer_names,
+            "has_main_layer": has_main_layer,
+        }
+
+        with open(output_path / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        return str(output_path)
+
+    @classmethod
+    def from_gridded_mmap(
+        cls,
+        path: str,
+    ) -> "EchogramBuilder":
+        """Load an EchogramBuilder from a gridded mmap store.
+
+        The WCI data is memory-mapped and lazy-loaded.  Axis type settings
+        are restored from saved metadata.
+
+        Args:
+            path: Path to the gridded mmap store directory.
+
+        Returns:
+            EchogramBuilder backed by a GriddedMmapBackend.
+        """
+        import json
+        from pathlib import Path as _Path
+        from .backends.gridded_mmap_backend import GriddedMmapBackend
+
+        backend = GriddedMmapBackend.from_path(path)
+        builder = cls(backend)
+
+        metadata_file = _Path(path) / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, "r") as f:
+                metadata = json.load(f)
+
+            x_axis_name = metadata.get("x_axis_name")
+            y_axis_name = metadata.get("y_axis_name")
+            builder._apply_axis_type(x_axis_name, y_axis_name)
+
+            builder._x_oversampling = int(metadata.get("x_oversampling", 1))
+            builder._y_oversampling = int(metadata.get("y_oversampling", 1))
+            builder._oversampling_mode = metadata.get("oversampling_mode", "linear_mean")
+
+            store_path = _Path(path)
+            builder._restore_layers_from_store(
+                layer_names_json=json.dumps(metadata.get("layer_names", [])),
+                has_main_layer=metadata.get("has_main_layer", False),
+                get_array=lambda name: (
+                    np.load(store_path / f"{name}.npy")
+                    if (store_path / f"{name}.npy").exists()
+                    else None
+                ),
+            )
+
+        return builder
+
+    # =========================================================================
+    # Image export (in-memory or mmap)
+    # =========================================================================
+
+    def to_image(
+        self,
+        path: Optional[str] = None,
+        progress: bool = True,
+        chunk_mb: float = 50.0,
+    ) -> "EchogramBuilder":
+        """Export the current view to an ImageBackend (in-memory or mmap).
+
+        The current x/y axis settings determine the coordinate system of
+        the output.  Each source ping is stored as one column, the y-axis
+        is resampled onto a regular grid derived from the global y extents.
+
+        Args:
+            path: If *None* (default) the image is kept in memory as a
+                numpy array.  If a file path is given, the image is written
+                as a raw float32 binary and opened as a read-only memmap.
+            progress: Show progress bar.
+            chunk_mb: Approximate chunk size in MB for reading source data.
+
+        Returns:
+            A **new** EchogramBuilder backed by an ``ImageBackend``.
+            Layers from the current builder are **not** transferred
+            (create new layers on the returned builder if needed).
+
+        Examples:
+            >>> builder.set_y_axis_depth()
+            >>> fast = builder.to_image()            # in-memory
+            >>> fast = builder.to_image("cache.bin") # on-disk mmap
+        """
+        try:
+            from tqdm.auto import tqdm
+        except ImportError:
+            tqdm = None
+            progress = False
+
+        from .backends.image_backend import ImageBackend
+
+        # ----- resolve y-axis -----
+        y_axis_name = self._coord_system.y_axis_name
+
+        if y_axis_name == "Depth (m)":
+            if self._backend.depth_extents is None:
+                raise ValueError("Depth extents not available in backend")
+            y_min_arr, y_max_arr = self._backend.depth_extents
+            y_axis = "depth"
+        elif y_axis_name == "Range (m)":
+            if self._backend.range_extents is None:
+                raise ValueError("Range extents not available in backend")
+            y_min_arr, y_max_arr = self._backend.range_extents
+            y_axis = "range"
+        else:
+            s_min, s_max = self._backend.sample_nr_extents
+            y_min_arr = s_min.astype(np.float64)
+            y_max_arr = s_max.astype(np.float64)
+            y_axis = "sample_index"
+
+        y_min_arr = np.asarray(y_min_arr, dtype=np.float64)
+        y_max_arr = np.asarray(y_max_arr, dtype=np.float64)
+        n_pings = self._backend.n_pings
+        max_sample_counts = self._backend.max_sample_counts
+
+        # Global y extent → output grid
+        global_y_min = float(np.nanmin(y_min_arr))
+        global_y_max = float(np.nanmax(y_max_arr))
+
+        # Compute a common resolution from the median per-ping step
+        resolutions = np.where(
+            max_sample_counts > 1,
+            (y_max_arr - y_min_arr) / (max_sample_counts - 1),
+            1.0,
+        )
+        y_res = float(np.nanmedian(resolutions))
+        if y_res <= 0:
+            y_res = 1.0
+        n_samples = max(1, int(np.round((global_y_max - global_y_min) / y_res)) + 1)
+
+        # Output y grid (cell centres)
+        y_grid = global_y_min + np.arange(n_samples, dtype=np.float64) * y_res
+
+        # ----- allocate output -----
+        if path is not None:
+            out_path = Path(path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            image = np.memmap(
+                out_path, dtype=np.float32, mode="w+",
+                shape=(n_pings, n_samples),
+            )
+        else:
+            image = np.full((n_pings, n_samples), np.nan, dtype=np.float32)
+
+        # ----- fill image in chunks -----
+        max_s = int(max_sample_counts.max()) + 1
+        bytes_per_ping = max_s * 4
+        chunk_size = max(1, int(chunk_mb * 1024 * 1024 / bytes_per_ping))
+        chunk_size = min(chunk_size, n_pings)
+        n_chunks = (n_pings + chunk_size - 1) // chunk_size
+
+        chunk_iter = range(n_chunks)
+        if progress and tqdm is not None:
+            chunk_iter = tqdm(
+                chunk_iter, desc="to_image", delay=0.5,
+                unit="chunk", total=n_chunks,
+            )
+
+        for ci in chunk_iter:
+            cs = ci * chunk_size
+            ce = min(cs + chunk_size, n_pings)
+            nc = ce - cs
+
+            chunk_data = self._backend.get_chunk(cs, ce).astype(np.float64)
+            if self._has_data_transforms:
+                chunk_data = self._apply_data_transforms(chunk_data)
+
+            eff_s = min(max_s, chunk_data.shape[1])
+            chunk_data = chunk_data[:, :eff_s]
+            sample_j = np.arange(eff_s, dtype=np.float64)
+
+            c_y_min = y_min_arr[cs:ce]
+            c_y_max = y_max_arr[cs:ce]
+            c_ns = max_sample_counts[cs:ce]
+
+            # source y per sample: y = y_min + (y_max - y_min) / ns * j
+            b_fwd = np.where(c_ns > 1, (c_y_max - c_y_min) / (c_ns - 1), 0.0)
+            src_y = c_y_min[:, None] + b_fwd[:, None] * sample_j[None, :eff_s]
+
+            # Map source y → output column index (nearest)
+            out_idx = np.rint((src_y - global_y_min) / y_res).astype(np.int64)
+            valid = (
+                np.isfinite(chunk_data)
+                & (out_idx >= 0)
+                & (out_idx < n_samples)
+                & (sample_j[None, :eff_s] < c_ns[:, None])
+            )
+
+            for row in range(nc):
+                m = valid[row]
+                image[cs + row, out_idx[row, m]] = chunk_data[row, m].astype(np.float32)
+
+        # ----- flush mmap if on-disk -----
+        if isinstance(image, np.memmap):
+            image.flush()
+            del image
+            image = np.memmap(path, dtype=np.float32, mode="r",
+                              shape=(n_pings, n_samples))
+
+        # ----- build new ImageBackend -----
+        ping_times = self._backend.ping_times.copy()
+
+        # Propagate lat/lon
+        lats = self._backend.latitudes
+        lons = self._backend.longitudes
+
+        # Propagate ping params
+        ping_params = self._get_all_ping_params()
+
+        backend = ImageBackend(
+            image,
+            ping_times,
+            y_min=global_y_min,
+            y_max=global_y_min + (n_samples - 1) * y_res,
+            y_axis=y_axis,
+            wci_value=self._backend.wci_value,
+            linear_mean=self._backend.linear_mean,
+            latitudes=lats,
+            longitudes=lons,
+            ping_params=ping_params,
+        )
+
+        builder = type(self)(backend)
+        self._copy_view_settings(builder)
+        return builder
+

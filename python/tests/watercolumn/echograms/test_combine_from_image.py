@@ -15,7 +15,7 @@ import pytest
 from themachinethatgoesping.pingprocessing.watercolumn.echograms.backends.image_backend import (
     ImageBackend,
 )
-from themachinethatgoesping.pingprocessing.watercolumn.echograms.echogrambuilder_new import (
+from themachinethatgoesping.pingprocessing.watercolumn.echograms.echogrambuilder import (
     EchogramBuilder,
 )
 
