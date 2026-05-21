@@ -3,6 +3,7 @@ import numpy as np
 from typing import Tuple
 
 # themachinethatgoesping imports
+import themachinethatgoesping.navigation as navigation
 import themachinethatgoesping.echosounders as echosounders
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
 
@@ -143,10 +144,17 @@ class __WCI_scaling_infos:
                 else:
                     xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=selection)
 
+                # deal with unavailable geolocation by using default values.
+                # TODO: this could issue a warning in a log file
+                if ping.has_geolocation():
+                    geolocation = ping.get_geolocation()
+                else:
+                    geolocation = navigation.datastructures.Geolocation()
+
                 xyzs.append(xyz)
                 bottom_directions.append(bd)
                 bottom_direction_sample_numbers.append(bdsn)
-                geolocations.append(ping.get_geolocation())
+                geolocations.append(geolocation)
                 ping_sensor_configurations.append(ping.get_sensor_configuration())
                 ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
 
@@ -237,10 +245,17 @@ class __WCI_scaling_infos:
                 else:
                     xyz, bd, bdsn = wchelper.make_image_helper.get_bottom_directions_wci(ping, selection=selection)
 
+                # deal with unavailable geolocation by using default values.
+                # TODO: this could issue a warning in a log file
+                if ping.has_geolocation():
+                    geolocation = ping.get_geolocation()
+                else:
+                    geolocation = navigation.datastructures.Geolocation()
+
                 xyzs.append(xyz)
                 bottom_directions.append(bd)
                 bottom_direction_sample_numbers.append(bdsn)
-                geolocations.append(ping.get_geolocation())
+                geolocations.append(geolocation)
                 ping_sensor_configurations.append(ping.get_sensor_configuration())
                 ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
 

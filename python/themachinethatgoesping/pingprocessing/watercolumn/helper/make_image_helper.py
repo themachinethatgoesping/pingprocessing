@@ -36,7 +36,13 @@ def get_bottom_directions_wci(
         print("Warning: No transducer target found in sensor configuration. Using default values.")
         pingoff = navigation.datastructures.PositionalOffsets()
     posoff = sc.get_position_source()
-    geolocation = ping.get_geolocation()
+
+    # deal with unavailable geolocation by using default values.
+    # TODO: this could issue a warning in a log file
+    if ping.has_geolocation():
+        geolocation = ping.get_geolocation()
+    else:
+        geolocation = navigation.datastructures.Geolocation()
 
     bottom_direction_sample_numbers = np.array(selection.get_last_sample_number_per_beam())
     
@@ -84,7 +90,12 @@ def get_bottom_directions_bottom(
         pingoff = navigation.datastructures.PositionalOffsets()
 
     posoff = sc.get_position_source()
-    geolocation = ping.get_geolocation()
+    # deal with unavailable geolocation by using default values.
+    # TODO: this could issue a warning in a log file
+    if ping.has_geolocation():
+        geolocation = ping.get_geolocation()
+    else:
+        geolocation = navigation.datastructures.Geolocation()
     
     if selection is not None:
         xyz = ping.bottom.get_xyz(selection)
