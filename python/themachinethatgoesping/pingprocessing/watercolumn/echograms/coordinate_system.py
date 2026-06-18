@@ -19,6 +19,72 @@ from themachinethatgoesping.pingprocessing.core.asserts import assert_valid_argu
 from .indexers import EchogramImageRequest
 
 
+# Mean Earth radius in meters, used for haversine travel-distance estimates.
+_EARTH_RADIUS_M = 6371000.0
+
+
+def compress_axis_gaps(values: np.ndarray, max_gap: float) -> np.ndarray:
+    """Clamp gaps between consecutive (sorted) coordinates to ``max_gap``.
+
+    Returns a new array in which every consecutive difference larger than
+    ``max_gap`` is reduced to exactly ``max_gap`` while smaller gaps are kept
+    unchanged. The first value is preserved. Runs in O(n) using vectorized
+    numpy operations, so it scales to millions of pings.
+
+    This is a *display-only* transform: it compresses large gaps (e.g. the
+    idle time between two surveys) so the axis stays readable, while leaving
+    the densely sampled parts untouched.
+
+    Args:
+        values: 1-D array of monotonically non-decreasing coordinates.
+        max_gap: Maximum allowed gap between consecutive values (same unit as
+            ``values``). ``None`` returns a copy of the input unchanged.
+
+    Returns:
+        New float64 array of the same length as ``values``.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if max_gap is None or len(values) < 2:
+        return values.copy()
+    deltas = np.diff(values)
+    np.minimum(deltas, float(max_gap), out=deltas)
+    out = np.empty_like(values)
+    out[0] = values[0]
+    np.cumsum(deltas, out=out[1:])
+    out[1:] += values[0]
+    return out
+
+
+def cumulative_haversine_distance(latitudes, longitudes) -> np.ndarray:
+    """Cumulative great-circle travel distance (meters) along a track.
+
+    Vectorized haversine over consecutive latitude/longitude pairs (degrees).
+    Segments with non-finite endpoints contribute zero distance so a few
+    missing fixes do not break the cumulative sum. Runs in O(n).
+
+    Args:
+        latitudes: Per-ping latitudes in degrees.
+        longitudes: Per-ping longitudes in degrees.
+
+    Returns:
+        float64 array of the same length as the input, starting at 0.0.
+    """
+    lat = np.radians(np.asarray(latitudes, dtype=np.float64))
+    lon = np.radians(np.asarray(longitudes, dtype=np.float64))
+    n = len(lat)
+    out = np.zeros(n, dtype=np.float64)
+    if n < 2:
+        return out
+    dlat = np.diff(lat)
+    dlon = np.diff(lon)
+    a = np.sin(dlat * 0.5) ** 2 + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon * 0.5) ** 2
+    a = np.clip(a, 0.0, 1.0)
+    seg = 2.0 * _EARTH_RADIUS_M * np.arcsin(np.sqrt(a))
+    seg = np.nan_to_num(seg, nan=0.0, posinf=0.0, neginf=0.0)
+    np.cumsum(seg, out=out[1:])
+    return out
+
+
 class EchogramCoordinateSystem:
     """Manages coordinate systems and transformations for echogram display.
     
@@ -99,6 +165,12 @@ class EchogramCoordinateSystem:
         self._custom_x_axis_name = None  # display name for custom axis
         self._custom_x_format = None  # optional format hint (e.g. "timedelta")
 
+        # Time-gap compression state (for set_x_axis_ping_time(max_gap=...)).
+        # When active, the "Ping time"/"Date time" features hold a compressed
+        # timeline (large gaps clamped) used only for display/mapping.
+        self._time_gap = None  # active max_gap in seconds, or None
+        self._comp_time_cache = {}  # {max_gap: compressed_times} cache
+
     @property
     def n_pings(self) -> int:
         """Number of pings."""
@@ -171,6 +243,8 @@ class EchogramCoordinateSystem:
         self._initialized = False
 
     def set_ping_times(self, ping_times: np.ndarray, time_zone: Optional[dt.timezone] = None):
+        # Ping times changed -> any cached gap-compressed timeline is stale.
+        self._comp_time_cache = {}
         """Set ping times for x-axis time display."""
         assert len(ping_times) == self._n_pings, \
             f"ping_times length ({len(ping_times)}) must match n_pings ({self._n_pings})"
@@ -710,16 +784,23 @@ class EchogramCoordinateSystem:
         time_resolution: float = np.nan,
         time_interpolation_limit: float = np.nan,
         max_steps: int = 4096,
+        max_gap: Optional[float] = None,
         **kwargs,
     ):
         """Set X axis to ping time (Unix timestamp).
-        
+
         Args:
             min_timestamp: Minimum timestamp to display (nan = auto).
             max_timestamp: Maximum timestamp to display (nan = auto).
             time_resolution: Time resolution in seconds (nan = auto).
             time_interpolation_limit: Max time gap for interpolation (nan = auto).
             max_steps: Maximum number of X pixels.
+            max_gap: Optional maximum gap in seconds. When set, gaps between
+                consecutive pings longer than ``max_gap`` are compressed to
+                exactly ``max_gap`` on the displayed time axis (e.g. the idle
+                time between two surveys appears as a fixed-width gap). This is
+                a display-only transform; conversion of datetime parameters and
+                per-ping data is unaffected. ``None`` keeps the real timeline.
         """
         x_kwargs = {
             "min_timestamp": min_timestamp,
@@ -727,6 +808,7 @@ class EchogramCoordinateSystem:
             "time_resolution": time_resolution,
             "time_interpolation_limit": time_interpolation_limit,
             "max_steps": max_steps,
+            "max_gap": max_gap,
         }
 
         self._x_axis_function = self.set_x_axis_ping_time
@@ -735,28 +817,44 @@ class EchogramCoordinateSystem:
 
         self._x_kwargs = x_kwargs
 
-        if not np.isfinite(min_timestamp):
-            min_timestamp = np.min(self.ping_times)
-
-        if not np.isfinite(max_timestamp):
-            max_timestamp = np.max(self.ping_times)
-
         ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
         if len(ping_delta_t[ping_delta_t < 0]) > 0:
             raise RuntimeError("ERROR: ping times are not sorted in ascending order!")
 
-        # Handle zero time differences
+        # Handle zero time differences (keep real times strictly increasing)
         zero_time_diff = np.where(abs(ping_delta_t) < 0.000001)[0]
         while len(zero_time_diff) > 0:
             self.ping_times[zero_time_diff + 1] += 0.0001
+            self._comp_time_cache = {}  # real times changed -> drop cache
             ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
             zero_time_diff = np.where(abs(ping_delta_t) < 0.0001)[0]
 
+        # Resolve the timeline used for display + nearest-neighbour mapping.
+        # With max_gap set this is a compressed copy (large gaps clamped);
+        # otherwise it is the real ping times.
+        self._time_gap = max_gap
+        mapping_times = self._get_mapping_times(max_gap)
+
+        # Register the (possibly compressed) timeline as the time features so
+        # image building, params and the viewer all map against the same axis.
+        self.feature_mapper.set_feature("Ping time", mapping_times)
+        self.feature_mapper.set_feature("Date time", mapping_times)
+
+        if not np.isfinite(min_timestamp):
+            min_timestamp = np.min(mapping_times)
+
+        if not np.isfinite(max_timestamp):
+            max_timestamp = np.max(mapping_times)
+
+        # Resolution / interpolation-limit are derived in the *displayed*
+        # (possibly compressed) timeline so gap columns render correctly.
+        map_delta_t = np.array(mapping_times[1:] - mapping_times[:-1])
+
         if not np.isfinite(time_resolution):
-            time_resolution = np.nanquantile(ping_delta_t, 0.05)
+            time_resolution = np.nanquantile(map_delta_t, 0.05)
 
         if not np.isfinite(time_interpolation_limit):
-            time_interpolation_limit = np.nanquantile(ping_delta_t, 0.95)
+            time_interpolation_limit = np.nanquantile(map_delta_t, 0.95)
 
         try:
             arange = False
@@ -774,6 +872,21 @@ class EchogramCoordinateSystem:
         self._set_x_coordinates("Ping time", x_coordinates, time_interpolation_limit)
         self._initialized = True
 
+    def _get_mapping_times(self, max_gap: Optional[float]) -> np.ndarray:
+        """Return the per-ping timeline used for the time axis.
+
+        Without ``max_gap`` this is the real ping times. With ``max_gap`` it is
+        a gap-compressed copy (cached per ``max_gap`` value) so repeated zoom
+        updates stay cheap even for millions of pings.
+        """
+        if max_gap is None:
+            return self.ping_times
+        comp = self._comp_time_cache.get(max_gap)
+        if comp is None or len(comp) != self._n_pings:
+            comp = compress_axis_gaps(self.ping_times, max_gap)
+            self._comp_time_cache[max_gap] = comp
+        return comp
+
     def set_x_axis_date_time(
         self,
         min_ping_time: float = np.nan,
@@ -781,23 +894,32 @@ class EchogramCoordinateSystem:
         time_resolution: float = np.nan,
         time_interpolation_limit: float = np.nan,
         max_steps: int = 4096,
+        max_gap: Optional[float] = None,
         **kwargs,
     ):
         """Set X axis to datetime.
-        
+
         Args:
             min_ping_time: Minimum time (timestamp or datetime, nan = auto).
             max_ping_time: Maximum time (timestamp or datetime, nan = auto).
             time_resolution: Time resolution (seconds or timedelta, nan = auto).
             time_interpolation_limit: Max time gap (seconds or timedelta, nan = auto).
             max_steps: Maximum number of X pixels.
+            max_gap: Optional maximum gap in seconds (or timedelta). When set,
+                gaps between consecutive pings longer than ``max_gap`` are
+                compressed to exactly ``max_gap`` on the displayed axis. See
+                :meth:`set_x_axis_ping_time`.
         """
+        if isinstance(max_gap, dt.timedelta):
+            max_gap = max_gap.total_seconds()
+
         x_kwargs = {
             "min_ping_time": min_ping_time,
             "max_ping_time": max_ping_time,
             "time_resolution": time_resolution,
             "time_interpolation_limit": time_interpolation_limit,
             "max_steps": max_steps,
+            "max_gap": max_gap,
         }
 
         self._x_axis_function = self.set_x_axis_date_time
@@ -822,6 +944,7 @@ class EchogramCoordinateSystem:
             time_resolution=time_resolution,
             time_interpolation_limit=time_interpolation_limit,
             max_steps=max_steps,
+            max_gap=max_gap,
         )
 
         self.x_extent[0] = dt.datetime.fromtimestamp(self.x_extent[0], self.time_zone)
@@ -911,12 +1034,20 @@ class EchogramCoordinateSystem:
         if np.any(deltas < 0):
             raise ValueError("per_ping_coordinates must be monotonically increasing")
 
-        # Nudge exact duplicates so the feature mapper can distinguish them
-        zero_diff = np.where(np.abs(deltas) < 1e-12)[0]
-        while len(zero_diff) > 0:
-            per_ping_coordinates[zero_diff + 1] += 1e-9
+        # Break exact ties so the feature mapper can distinguish pings. A single
+        # vectorized monotonic ramp keeps this O(n); the previous iterative nudge
+        # could degrade to O(n^2) on long stationary stretches (e.g. millions of
+        # pings with no movement on a distance axis).
+        if np.any(deltas <= 0):
+            scale = max(
+                abs(float(per_ping_coordinates[-1] - per_ping_coordinates[0])),
+                abs(float(per_ping_coordinates[-1])),
+                1.0,
+            )
+            min_step = scale * 1e-12
+            ramp = np.arange(len(per_ping_coordinates), dtype=np.float64) * min_step
+            per_ping_coordinates = np.maximum.accumulate(per_ping_coordinates) + ramp
             deltas = np.diff(per_ping_coordinates)
-            zero_diff = np.where(np.abs(deltas) < 1e-12)[0]
 
         # Store for copy_xy_axis_to
         self._custom_x_per_ping = per_ping_coordinates
@@ -956,6 +1087,63 @@ class EchogramCoordinateSystem:
 
         self._set_x_coordinates(axis_name, x_coordinates, interpolation_limit)
         self._initialized = True
+
+    def set_x_axis_distance(
+        self,
+        latitudes: np.ndarray,
+        longitudes: np.ndarray,
+        max_gap: Optional[float] = None,
+        min_distance: float = np.nan,
+        max_distance: float = np.nan,
+        resolution: float = np.nan,
+        interpolation_limit: float = np.nan,
+        max_steps: int = 4096,
+        axis_name: str = "Distance",
+        **kwargs,
+    ):
+        """Set X axis to cumulative along-track travel distance (meters).
+
+        The per-ping distance is computed once from the navigation positions
+        using a vectorized haversine (O(n)); subsequent zooms simply re-grid
+        the cached coordinates. The axis is registered as a custom axis with
+        ``axis_format="distance"`` so the viewer can render adaptive m/km ticks.
+
+        Args:
+            latitudes: Per-ping latitudes in degrees (length n_pings).
+            longitudes: Per-ping longitudes in degrees (length n_pings).
+            max_gap: Optional maximum gap in meters. When set, jumps between
+                consecutive pings longer than ``max_gap`` (e.g. transits
+                between survey lines) are compressed to exactly ``max_gap`` on
+                the displayed axis. ``None`` keeps true travel distance.
+            min_distance: Minimum distance to display (nan = auto).
+            max_distance: Maximum distance to display (nan = auto).
+            resolution: Grid resolution in meters (nan = auto from data).
+            interpolation_limit: Max gap for interpolation (nan = auto).
+            max_steps: Maximum number of X pixels.
+            axis_name: Display name for the axis (default ``"Distance"``).
+        """
+        latitudes = np.asarray(latitudes, dtype=np.float64)
+        longitudes = np.asarray(longitudes, dtype=np.float64)
+        if len(latitudes) != self._n_pings or len(longitudes) != self._n_pings:
+            raise ValueError(
+                f"latitudes/longitudes length ({len(latitudes)}/{len(longitudes)}) "
+                f"must match n_pings ({self._n_pings})"
+            )
+
+        distances = cumulative_haversine_distance(latitudes, longitudes)
+        if max_gap is not None:
+            distances = compress_axis_gaps(distances, max_gap)
+
+        self.set_x_axis_custom(
+            axis_name=axis_name,
+            per_ping_coordinates=distances,
+            min_value=min_distance,
+            max_value=max_distance,
+            resolution=resolution,
+            interpolation_limit=interpolation_limit,
+            max_steps=max_steps,
+            axis_format="distance",
+        )
 
     # =========================================================================
     # Index mapping

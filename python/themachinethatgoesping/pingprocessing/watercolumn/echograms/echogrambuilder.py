@@ -833,27 +833,42 @@ class EchogramBuilder:
 
     def set_x_axis_ping_time(self, min_timestamp=np.nan, max_timestamp=np.nan,
                              time_resolution=np.nan, time_interpolation_limit=np.nan,
-                             max_steps=4096, **kwargs):
-        """Set X axis to ping time (Unix timestamp)."""
+                             max_steps=4096, max_gap=None, **kwargs):
+        """Set X axis to ping time (Unix timestamp).
+
+        Args:
+            max_gap: Optional maximum gap in seconds. Gaps between consecutive
+                pings longer than this are compressed to exactly ``max_gap`` on
+                the displayed axis (e.g. idle time between surveys). Display
+                only; ``None`` keeps the real timeline.
+        """
         self._coord_system.set_x_axis_ping_time(
             min_timestamp=min_timestamp,
             max_timestamp=max_timestamp,
             time_resolution=time_resolution,
             time_interpolation_limit=time_interpolation_limit,
             max_steps=max_steps,
+            max_gap=max_gap,
             **kwargs
         )
 
     def set_x_axis_date_time(self, min_ping_time=np.nan, max_ping_time=np.nan,
                              time_resolution=np.nan, time_interpolation_limit=np.nan,
-                             max_steps=4096, **kwargs):
-        """Set X axis to datetime."""
+                             max_steps=4096, max_gap=None, **kwargs):
+        """Set X axis to datetime.
+
+        Args:
+            max_gap: Optional maximum gap in seconds (or timedelta). Gaps
+                between consecutive pings longer than this are compressed to
+                exactly ``max_gap`` on the displayed axis. Display only.
+        """
         self._coord_system.set_x_axis_date_time(
             min_ping_time=min_ping_time,
             max_ping_time=max_ping_time,
             time_resolution=time_resolution,
             time_interpolation_limit=time_interpolation_limit,
             max_steps=max_steps,
+            max_gap=max_gap,
             **kwargs
         )
 
@@ -884,6 +899,43 @@ class EchogramBuilder:
             interpolation_limit=interpolation_limit,
             max_steps=max_steps,
             axis_format=axis_format,
+            **kwargs
+        )
+
+    def set_x_axis_distance(self, max_gap=None, min_distance=np.nan, max_distance=np.nan,
+                            resolution=np.nan, interpolation_limit=np.nan,
+                            max_steps=4096, **kwargs):
+        """Set X axis to cumulative along-track travel distance (meters).
+
+        Distance is derived from the per-ping navigation positions (latitude/
+        longitude) stored in the backend, using a vectorized haversine. The
+        backend must provide navigation data (``has_latlon``).
+
+        Args:
+            max_gap: Optional maximum gap in meters. Jumps between consecutive
+                pings longer than this (e.g. transits between survey lines) are
+                compressed to exactly ``max_gap`` on the displayed axis.
+                ``None`` keeps true travel distance.
+            min_distance: Minimum distance to display (nan = auto).
+            max_distance: Maximum distance to display (nan = auto).
+            resolution: Grid resolution in meters (nan = auto from data).
+            interpolation_limit: Max gap for interpolation (nan = auto).
+            max_steps: Maximum number of X pixels.
+        """
+        if not self._backend.has_latlon:
+            raise RuntimeError(
+                "ERROR[set_x_axis_distance]: backend has no navigation (lat/lon) "
+                "data; cannot compute travel distance."
+            )
+        self._coord_system.set_x_axis_distance(
+            latitudes=self._backend.latitudes,
+            longitudes=self._backend.longitudes,
+            max_gap=max_gap,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            resolution=resolution,
+            interpolation_limit=interpolation_limit,
+            max_steps=max_steps,
             **kwargs
         )
 
