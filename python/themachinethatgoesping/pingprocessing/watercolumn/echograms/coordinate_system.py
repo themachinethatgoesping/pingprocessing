@@ -170,6 +170,12 @@ class EchogramCoordinateSystem:
         # timeline (large gaps clamped) used only for display/mapping.
         self._time_gap = None  # active max_gap in seconds, or None
         self._comp_time_cache = {}  # {max_gap: compressed_times} cache
+        # Cache for auto-derived time-axis params so repeated zoom reloads do
+        # not re-sort millions of ping times: {max_gap: (resolution, interp)}.
+        self._auto_time_params_cache = {}
+        # Whether ping_times have been validated (sorted + zero-gaps nudged).
+        # Set on first set_x_axis_ping_time, reset when ping_times change.
+        self._ping_times_validated = False
 
     @property
     def n_pings(self) -> int:
@@ -243,11 +249,14 @@ class EchogramCoordinateSystem:
         self._initialized = False
 
     def set_ping_times(self, ping_times: np.ndarray, time_zone: Optional[dt.timezone] = None):
-        # Ping times changed -> any cached gap-compressed timeline is stale.
-        self._comp_time_cache = {}
         """Set ping times for x-axis time display."""
         assert len(ping_times) == self._n_pings, \
             f"ping_times length ({len(ping_times)}) must match n_pings ({self._n_pings})"
+        # Ping times changed -> cached gap-compressed timelines, auto params
+        # and the sorted/zero-gap validation are all stale.
+        self._comp_time_cache = {}
+        self._auto_time_params_cache = {}
+        self._ping_times_validated = False
         self.feature_mapper.set_feature("Ping time", ping_times)
         self.feature_mapper.set_feature("Date time", ping_times)
         self.ping_times = np.asarray(ping_times)
@@ -817,17 +826,24 @@ class EchogramCoordinateSystem:
 
         self._x_kwargs = x_kwargs
 
-        ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
-        if len(ping_delta_t[ping_delta_t < 0]) > 0:
-            raise RuntimeError("ERROR: ping times are not sorted in ascending order!")
+        # Validate (sorted) and de-duplicate zero gaps only once per timeline.
+        # This O(n) work must not run on every zoom reload (millions of pings).
+        if not self._ping_times_validated:
+            ping_delta_t = np.diff(self.ping_times)
+            if np.any(ping_delta_t < 0):
+                raise RuntimeError("ERROR: ping times are not sorted in ascending order!")
 
-        # Handle zero time differences (keep real times strictly increasing)
-        zero_time_diff = np.where(abs(ping_delta_t) < 0.000001)[0]
-        while len(zero_time_diff) > 0:
-            self.ping_times[zero_time_diff + 1] += 0.0001
-            self._comp_time_cache = {}  # real times changed -> drop cache
-            ping_delta_t = np.array(self.ping_times[1:] - self.ping_times[:-1])
-            zero_time_diff = np.where(abs(ping_delta_t) < 0.0001)[0]
+            # Handle zero time differences (keep real times strictly increasing)
+            zero_time_diff = np.where(np.abs(ping_delta_t) < 0.000001)[0]
+            while len(zero_time_diff) > 0:
+                self.ping_times[zero_time_diff + 1] += 0.0001
+                ping_delta_t = np.diff(self.ping_times)
+                zero_time_diff = np.where(np.abs(ping_delta_t) < 0.0001)[0]
+
+            # Real times may have changed -> drop derived caches.
+            self._comp_time_cache = {}
+            self._auto_time_params_cache = {}
+            self._ping_times_validated = True
 
         # Resolve the timeline used for display + nearest-neighbour mapping.
         # With max_gap set this is a compressed copy (large gaps clamped);
@@ -840,21 +856,29 @@ class EchogramCoordinateSystem:
         self.feature_mapper.set_feature("Ping time", mapping_times)
         self.feature_mapper.set_feature("Date time", mapping_times)
 
+        # mapping_times is monotonically non-decreasing, so endpoints give the
+        # min/max without an O(n) scan per reload.
         if not np.isfinite(min_timestamp):
-            min_timestamp = np.min(mapping_times)
+            min_timestamp = float(mapping_times[0])
 
         if not np.isfinite(max_timestamp):
-            max_timestamp = np.max(mapping_times)
+            max_timestamp = float(mapping_times[-1])
 
         # Resolution / interpolation-limit are derived in the *displayed*
-        # (possibly compressed) timeline so gap columns render correctly.
-        map_delta_t = np.array(mapping_times[1:] - mapping_times[:-1])
+        # (possibly compressed) timeline. The quantiles sort the full timeline,
+        # so cache them per max_gap to keep zoom reloads cheap.
+        auto_res, auto_interp = self._auto_time_params_cache.get(max_gap, (None, None))
+        if auto_res is None:
+            map_delta_t = np.diff(mapping_times)
+            auto_res = float(np.nanquantile(map_delta_t, 0.05))
+            auto_interp = float(np.nanquantile(map_delta_t, 0.95))
+            self._auto_time_params_cache[max_gap] = (auto_res, auto_interp)
 
         if not np.isfinite(time_resolution):
-            time_resolution = np.nanquantile(map_delta_t, 0.05)
+            time_resolution = auto_res
 
         if not np.isfinite(time_interpolation_limit):
-            time_interpolation_limit = np.nanquantile(map_delta_t, 0.95)
+            time_interpolation_limit = auto_interp
 
         try:
             arange = False
@@ -1088,7 +1112,7 @@ class EchogramCoordinateSystem:
         self._set_x_coordinates(axis_name, x_coordinates, interpolation_limit)
         self._initialized = True
 
-    def set_x_axis_distance(
+    def set_x_axis_ping_distance(
         self,
         latitudes: np.ndarray,
         longitudes: np.ndarray,
@@ -1375,7 +1399,9 @@ class EchogramCoordinateSystem:
         
         # --- Affine params (per-ping, unchanged) ---
         affine_a, affine_b = self._estimate_affine_y_to_sample()
-        max_sample_idx = self.max_number_of_samples.astype(np.int64) + 1
+        # Use 0 as safe fallback for NaN entries (e.g. from CombineBackend) before int cast.
+        _safe_max = np.where(np.isfinite(self.max_number_of_samples), self.max_number_of_samples, 0)
+        max_sample_idx = _safe_max.astype(np.int64) + 1
         
         return EchogramImageRequest(
             nx=nx_os,

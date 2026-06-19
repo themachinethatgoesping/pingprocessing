@@ -289,6 +289,34 @@ class ConcatBackend(EchogramDataBackend):
     def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         return self._ping_params
 
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Concatenate metainfo from all backends."""
+        all_names = set()
+        for backend in self._backends:
+            all_names.update(backend.get_ping_metainfo().keys())
+        
+        result = {}
+        for name in all_names:
+            all_times = []
+            all_values = []
+            unit = None
+            
+            for backend in self._backends:
+                metainfo = backend.get_ping_metainfo()
+                if name in metainfo:
+                    unit_b, (times, values) = metainfo[name]
+                    if unit is None:
+                        unit = unit_b
+                    all_times.append(times)
+                    all_values.append(values)
+            
+            if all_times and unit is not None:
+                combined_times = np.concatenate(all_times)
+                combined_values = np.concatenate(all_values)
+                result[name] = (unit, (combined_times, combined_values))
+        
+        return result
+
     # =========================================================================
     # Data access
     # =========================================================================

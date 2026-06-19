@@ -142,6 +142,20 @@ class MmapDataBackend(EchogramDataBackend):
                 "values": values,
             }
         metadata["ping_params"] = ping_params
+
+        # Ping metainfo
+        ping_metainfo = {}
+        ping_metainfo_meta = metadata.get("ping_metainfo_meta", {})
+        for name in metadata.get("ping_metainfo_names", []):
+            timestamps = np.load(path / f"ping_metainfo_{name}_times.npy")
+            values = np.load(path / f"ping_metainfo_{name}_values.npy")
+            unit = ping_metainfo_meta.get(name, "")
+            ping_metainfo[name] = {
+                "unit": unit,
+                "timestamps": timestamps,
+                "values": values,
+            }
+        metadata["ping_metainfo"] = ping_metainfo
         
         # Open memory-mapped data (lazy - no data loaded yet)
         wci_file = path / "wci_data.bin"
@@ -229,6 +243,17 @@ class MmapDataBackend(EchogramDataBackend):
         for name, data in self._metadata.get("ping_params", {}).items():
             params[name] = (data["y_reference"], (data["timestamps"], data["values"]))
         return params
+
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Return per-ping metadata.
+        
+        Returns:
+            Dict mapping metadata name to (unit, (timestamps, values)).
+        """
+        metainfo = {}
+        for name, data in self._metadata.get("ping_metainfo", {}).items():
+            metainfo[name] = (data["unit"], (data["timestamps"], data["values"]))
+        return metainfo
 
     # =========================================================================
     # Data access

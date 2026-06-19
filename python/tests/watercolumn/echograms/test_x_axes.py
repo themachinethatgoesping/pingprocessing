@@ -6,7 +6,7 @@
 Covers:
 - ``compress_axis_gaps`` / ``cumulative_haversine_distance`` helpers
 - ``set_x_axis_ping_time(max_gap=...)`` / ``set_x_axis_date_time(max_gap=...)``
-- ``EchogramBuilder.set_x_axis_distance`` (incl. ``max_gap``)
+- ``EchogramBuilder.set_x_axis_ping_distance`` (incl. ``max_gap``)
 - performance / monotonicity of the vectorized tie-breaking on stationary data
 """
 
@@ -168,6 +168,49 @@ class TestPingTimeMaxGap:
         assert (np.nanmax(x) - np.nanmin(x)) < 100.0
 
 
+class TestPingTimeAutoParamCache:
+    """Auto-derived time-axis params are cached so zoom reloads stay cheap."""
+
+    def _builder(self, n=200):
+        times = T0 + np.cumsum(np.random.RandomState(0).uniform(0.5, 1.5, n))
+        return _make_builder(times)
+
+    def test_cache_populated_and_reused(self):
+        eb = self._builder()
+        eb.set_y_axis_depth()
+        cs = eb.coord_system
+        assert cs._auto_time_params_cache == {}
+        eb.set_x_axis_ping_time()
+        assert None in cs._auto_time_params_cache
+        res0, interp0 = cs._auto_time_params_cache[None]
+        # Simulate zoom reloads -> values reused, not recomputed differently.
+        for _ in range(5):
+            eb.set_x_axis_ping_time(
+                min_timestamp=cs.ping_times[10], max_timestamp=cs.ping_times[-10])
+        res1, interp1 = cs._auto_time_params_cache[None]
+        assert res0 == res1 and interp0 == interp1
+        assert cs._ping_times_validated is True
+
+    def test_cache_cleared_on_set_ping_times(self):
+        eb = self._builder()
+        eb.set_y_axis_depth()
+        eb.set_x_axis_ping_time()
+        cs = eb.coord_system
+        assert None in cs._auto_time_params_cache
+        eb.set_ping_times(cs.ping_times + 10.0)
+        assert cs._auto_time_params_cache == {}
+        assert cs._ping_times_validated is False
+
+    def test_separate_cache_per_max_gap(self):
+        eb = self._builder()
+        eb.set_y_axis_depth()
+        eb.set_x_axis_ping_time()
+        eb.set_x_axis_ping_time(max_gap=2.0)
+        cs = eb.coord_system
+        assert None in cs._auto_time_params_cache
+        assert 2.0 in cs._auto_time_params_cache
+
+
 # =========================================================================
 # Distance axis
 # =========================================================================
@@ -182,7 +225,7 @@ class TestDistanceAxis:
     def test_basic(self):
         eb = self._line_builder(20)
         eb.set_y_axis_depth()
-        eb.set_x_axis_distance()
+        eb.set_x_axis_ping_distance()
         cs = eb.coord_system
         assert cs.x_axis_name == "Distance"
         assert cs._custom_x_format == "distance"
@@ -197,7 +240,7 @@ class TestDistanceAxis:
         eb = _make_builder(T0 + np.arange(5))  # no navigation
         eb.set_y_axis_depth()
         with pytest.raises(RuntimeError):
-            eb.set_x_axis_distance()
+            eb.set_x_axis_ping_distance()
 
     def test_max_gap_clamps_transit(self):
         n1 = n2 = 10
@@ -209,11 +252,11 @@ class TestDistanceAxis:
         eb = _make_builder(times, lats, lons)
         eb.set_y_axis_depth()
 
-        eb.set_x_axis_distance()
+        eb.set_x_axis_ping_distance()
         full = np.asarray(eb.coord_system._custom_x_per_ping)
         jump_full = full[n1] - full[n1 - 1]
 
-        eb.set_x_axis_distance(max_gap=50.0)
+        eb.set_x_axis_ping_distance(max_gap=50.0)
         comp = np.asarray(eb.coord_system._custom_x_per_ping)
         jump_comp = comp[n1] - comp[n1 - 1]
 
@@ -224,7 +267,7 @@ class TestDistanceAxis:
     def test_copy_xy_axis_preserves_distance(self):
         eb = self._line_builder(15)
         eb.set_y_axis_depth()
-        eb.set_x_axis_distance()
+        eb.set_x_axis_ping_distance()
         eb2 = self._line_builder(15)
         eb2.set_y_axis_depth()
         eb.copy_xy_axis(eb2)
@@ -240,7 +283,7 @@ class TestDistanceAxis:
         eb = _make_builder(times, lats, lons, n_samples=4)
         eb.set_y_axis_depth()
         t_start = _time.perf_counter()
-        eb.set_x_axis_distance()
+        eb.set_x_axis_ping_distance()
         elapsed = _time.perf_counter() - t_start
         ppc = np.asarray(eb.coord_system._custom_x_per_ping)
         # strictly increasing despite zero movement (ties broken vectorized)

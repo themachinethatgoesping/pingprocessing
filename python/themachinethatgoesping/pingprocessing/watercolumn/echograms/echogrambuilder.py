@@ -9,7 +9,7 @@ This module provides the EchogramBuilder class which handles:
 import warnings
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from copy import deepcopy
 from pathlib import Path
 import datetime as dt
@@ -69,6 +69,10 @@ class EchogramBuilder:
         # a param has registered values, the echogram viewer auto-colors the
         # param-display overlay by those values.
         self._param_values: dict = {}
+        
+        # Store per-ping metadata (frequency, pulse duration, etc.)
+        # Format: {name: (unit_string, (times, values))}
+        self._ping_metainfo: Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]] = {}
 
         # Set extents from backend
         min_s, max_s = backend.sample_nr_extents
@@ -103,10 +107,18 @@ class EchogramBuilder:
         self._oversampling_mode = "linear_mean"  # "linear_mean" or "db_mean"
 
     def _init_ping_params_from_backend(self):
-        """Initialize ping parameters from backend's pre-computed values."""
+        """Initialize ping parameters and metadata from backend.
+        
+        Curves (bottom, echosounder, etc.) are passed to coordinate_system.
+        Metadata (frequency, pulse duration, etc.) are stored separately.
+        """
+        # Get curves from backend (only Y-drawable overlays)
         ping_params = self._backend.get_ping_params()
         for name, (y_reference, (times, values)) in ping_params.items():
             self._coord_system.add_ping_param(name, "Ping time", y_reference, times, values)
+        
+        # Get metadata from backend (scalar per-ping series)
+        self._ping_metainfo = self._backend.get_ping_metainfo()
 
     def _get_all_ping_params(self):
         """Collect all ping parameters from backend and coordinate system.
@@ -134,6 +146,14 @@ class EchogramBuilder:
                     result[name] = (y_reference, (self._backend.ping_times, np.asarray(dense_values, dtype=np.float64)))
         
         return result
+    
+    def _get_all_ping_metainfo(self):
+        """Collect all per-ping metadata from backend and internal storage.
+        
+        Returns:
+            {name: (unit_string, (timestamps, values))}
+        """
+        return dict(self._ping_metainfo)
 
     def _update_layers(self):
         """Update all layers after coordinate system change."""
@@ -324,6 +344,7 @@ class EchogramBuilder:
         cls,
         builders_or_backends: list,
         gap_handling: str = "preserve",
+        sort_by_time: bool = False,
     ) -> "EchogramBuilder":
         """Concatenate multiple echograms along the time/ping axis.
         
@@ -332,10 +353,12 @@ class EchogramBuilder:
         
         Args:
             builders_or_backends: List of EchogramBuilder or EchogramDataBackend instances.
-                Must be in temporal order.
+                Should be in temporal order unless ``sort_by_time=True``.
             gap_handling: How to handle gaps between echograms:
                 - "preserve": Keep real time gaps (x-axis shows true times)
                 - "continuous": Virtual continuous (ignore gaps between files)
+            sort_by_time: If True, automatically sort inputs by each backend's
+                start time before concatenation.
         
         Returns:
             EchogramBuilder with ConcatBackend.
@@ -361,6 +384,16 @@ class EchogramBuilder:
                 raise TypeError(
                     f"Expected EchogramBuilder or EchogramDataBackend, got {type(item)}"
                 )
+
+        if sort_by_time:
+            def _start_time(backend: "EchogramDataBackend"):
+                times = np.asarray(backend.ping_times, dtype=np.float64)
+                finite = times[np.isfinite(times)]
+                if len(finite) == 0:
+                    return np.inf
+                return float(finite[0])
+
+            backends.sort(key=_start_time)
         
         concat_backend = ConcatBackend(backends, gap_handling=gap_handling)
         return cls(concat_backend)
@@ -902,7 +935,7 @@ class EchogramBuilder:
             **kwargs
         )
 
-    def set_x_axis_distance(self, max_gap=None, min_distance=np.nan, max_distance=np.nan,
+    def set_x_axis_ping_distance(self, max_gap=None, min_distance=np.nan, max_distance=np.nan,
                             resolution=np.nan, interpolation_limit=np.nan,
                             max_steps=4096, **kwargs):
         """Set X axis to cumulative along-track travel distance (meters).
@@ -924,10 +957,10 @@ class EchogramBuilder:
         """
         if not self._backend.has_latlon:
             raise RuntimeError(
-                "ERROR[set_x_axis_distance]: backend has no navigation (lat/lon) "
+                "ERROR[set_x_axis_ping_distance]: backend has no navigation (lat/lon) "
                 "data; cannot compute travel distance."
             )
-        self._coord_system.set_x_axis_distance(
+        self._coord_system.set_x_axis_ping_distance(
             latitudes=self._backend.latitudes,
             longitudes=self._backend.longitudes,
             max_gap=max_gap,
@@ -1080,12 +1113,30 @@ class EchogramBuilder:
         return name in self._param_values
 
     def get_ping_param(self, name, use_x_coordinates=False):
-        """Get a ping parameter's values in current coordinate system."""
+        """Get a ping parameter's values in current coordinate system.
+        
+        Parameters are Y-drawable overlay curves (bottom, echosounder, etc.)
+        """
         return self._coord_system.get_ping_param(name, use_x_coordinates)
 
     def get_param_names(self):
-        """Return list of currently registered ping parameter names."""
+        """Return list of currently registered ping parameter names (overlay curves only)."""
         return list(self._coord_system.param.keys())
+    
+    def get_metainfo_names(self):
+        """Return list of per-ping metadata names (scalar series)."""
+        return list(self._ping_metainfo.keys())
+    
+    def get_metainfo(self, name: str) -> Optional[Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Get per-ping metadata by name.
+        
+        Args:
+            name: Metadata name (e.g., 'main_frequency', 'main_pulse_duration').
+            
+        Returns:
+            (unit_string, (times, values)) or None if not found.
+        """
+        return self._ping_metainfo.get(name)
 
     def get_param_for_image(
         self,
@@ -1783,10 +1834,13 @@ class EchogramBuilder:
         from .backends.zarr_backend import ZarrDataBackend
         
         ping_params = self._get_all_ping_params()
+        ping_metainfo = self._get_all_ping_metainfo()
         
         if isinstance(self._backend, MmapDataBackend):
-            # MmapDataBackend stores params in
+            # MmapDataBackend stores curves in:
             #   _metadata["ping_params"][name] = {y_reference, timestamps, values}
+            # and metadata in:
+            #   _metadata["ping_metainfo"][name] = {unit, timestamps, values}
             mmap_params = {}
             param_names = []
             params_meta = {}
@@ -1801,14 +1855,34 @@ class EchogramBuilder:
             self._backend._metadata["ping_params"] = mmap_params
             self._backend._metadata["ping_param_names"] = param_names
             self._backend._metadata["ping_params_meta"] = params_meta
+            
+            # Save metainfo
+            mmap_metainfo = {}
+            metainfo_names = []
+            metainfo_meta = {}
+            for name, (unit, (times, values)) in ping_metainfo.items():
+                metainfo_names.append(name)
+                metainfo_meta[name] = unit
+                mmap_metainfo[name] = {
+                    "unit": unit,
+                    "timestamps": np.asarray(times, dtype=np.float64),
+                    "values": np.asarray(values, dtype=np.float32),
+                }
+            self._backend._metadata["ping_metainfo"] = mmap_metainfo
+            self._backend._metadata["ping_metainfo_names"] = metainfo_names
+            self._backend._metadata["ping_metainfo_meta"] = metainfo_meta
         
         elif isinstance(self._backend, ZarrDataBackend):
-            # ZarrDataBackend caches params in
-            #   _ping_params[name] = (y_ref, (times, values))
+            # ZarrDataBackend caches curves in _ping_params and metadata separately
             self._backend._ping_params = {
                 name: (y_ref, (np.asarray(times, dtype=np.float64),
                                np.asarray(values, dtype=np.float32)))
                 for name, (y_ref, (times, values)) in ping_params.items()
+            }
+            self._backend._ping_metainfo = {
+                name: (unit, (np.asarray(times, dtype=np.float64),
+                              np.asarray(values, dtype=np.float32)))
+                for name, (unit, (times, values)) in ping_metainfo.items()
             }
 
     def _save_settings_zarr(self, target):
@@ -1854,6 +1928,34 @@ class EchogramBuilder:
                 overwrite=True,
             )
         store.attrs["ping_params_meta"] = json.dumps(params_meta)
+
+        # Ping metainfo – remove old ones, write all current ones
+        old_metainfo_meta = store.attrs.get("ping_metainfo_meta", "{}")
+        if isinstance(old_metainfo_meta, str):
+            old_metainfo_meta = json.loads(old_metainfo_meta)
+        for old_name in old_metainfo_meta:
+            for suffix in ("_times", "_values"):
+                arr_name = f"ping_metainfo_{old_name}{suffix}"
+                if arr_name in store:
+                    del store[arr_name]
+
+        ping_metainfo = self._get_all_ping_metainfo()
+        metainfo_meta = {}
+        for name, (unit, (times, values)) in ping_metainfo.items():
+            metainfo_meta[name] = unit
+            store.create_array(
+                f"ping_metainfo_{name}_times",
+                data=np.asarray(times, dtype=np.float64),
+                dimension_names=[f"metainfo_{name}"],
+                overwrite=True,
+            )
+            store.create_array(
+                f"ping_metainfo_{name}_values",
+                data=np.asarray(values, dtype=np.float32),
+                dimension_names=[f"metainfo_{name}"],
+                overwrite=True,
+            )
+        store.attrs["ping_metainfo_meta"] = json.dumps(metainfo_meta)
         
         # Layers – remove old ones, write all current ones
         old_layer_names = store.attrs.get("layer_names", "[]")
@@ -1938,6 +2040,24 @@ class EchogramBuilder:
             np.save(target / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
         metadata["ping_param_names"] = ping_param_names
         metadata["ping_params_meta"] = ping_params_meta
+
+        # Ping metainfo – remove old .npy files, write all current ones
+        for old_name in metadata.get("ping_metainfo_names", []):
+            for suffix in ("_times", "_values"):
+                f = target / f"ping_metainfo_{old_name}{suffix}.npy"
+                if f.exists():
+                    f.unlink()
+
+        ping_metainfo = self._get_all_ping_metainfo()
+        ping_metainfo_names = []
+        ping_metainfo_meta = {}
+        for name, (unit, (timestamps, values)) in ping_metainfo.items():
+            ping_metainfo_names.append(name)
+            ping_metainfo_meta[name] = unit
+            np.save(target / f"ping_metainfo_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(target / f"ping_metainfo_{name}_values.npy", np.asarray(values, dtype=np.float32))
+        metadata["ping_metainfo_names"] = ping_metainfo_names
+        metadata["ping_metainfo_meta"] = ping_metainfo_meta
         
         # Layers – remove old .npy files, write all current ones
         for old_name in metadata.get("layer_names", []):
@@ -2213,6 +2333,22 @@ class EchogramBuilder:
             params_meta[name] = y_ref
             store.create_array(f"ping_param_{name}_times", data=np.asarray(times, dtype=np.float64), dimension_names=[f"param_{name}"])
             store.create_array(f"ping_param_{name}_values", data=np.asarray(values, dtype=np.float32), dimension_names=[f"param_{name}"])
+
+        # Ping metainfo (scalar metadata series)
+        ping_metainfo = self._get_all_ping_metainfo()
+        metainfo_meta = {}
+        for name, (unit, (times, values)) in ping_metainfo.items():
+            metainfo_meta[name] = unit
+            store.create_array(
+                f"ping_metainfo_{name}_times",
+                data=np.asarray(times, dtype=np.float64),
+                dimension_names=[f"metainfo_{name}"],
+            )
+            store.create_array(
+                f"ping_metainfo_{name}_values",
+                data=np.asarray(values, dtype=np.float32),
+                dimension_names=[f"metainfo_{name}"],
+            )
         
         # Determine axis names for saved metadata
         if needs_transform:
@@ -2238,6 +2374,7 @@ class EchogramBuilder:
         store.attrs["has_navigation"] = self._backend.has_navigation
         store.attrs["has_latlon"] = self._backend.has_latlon
         store.attrs["ping_params_meta"] = json.dumps(params_meta)
+        store.attrs["ping_metainfo_meta"] = json.dumps(metainfo_meta)
         store.attrs["n_pings"] = n_pings
         store.attrs["max_samples"] = max_samples
         store.attrs["storage_mode"] = json.dumps(storage_mode.to_dict())
@@ -2516,6 +2653,16 @@ class EchogramBuilder:
             ping_params_meta[name] = y_ref
             np.save(output_path / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
             np.save(output_path / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+
+        # Ping metainfo (binary .npy files)
+        ping_metainfo = self._get_all_ping_metainfo()
+        ping_metainfo_meta = {}  # unit string for each metainfo item
+        ping_metainfo_names = []
+        for name, (unit, (timestamps, values)) in ping_metainfo.items():
+            ping_metainfo_names.append(name)
+            ping_metainfo_meta[name] = unit
+            np.save(output_path / f"ping_metainfo_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(output_path / f"ping_metainfo_{name}_values.npy", np.asarray(values, dtype=np.float32))
         
         # Small scalar metadata as JSON (fast to load)
         metadata = {
@@ -2528,6 +2675,8 @@ class EchogramBuilder:
             "has_latlon": self._backend.has_latlon,
             "ping_param_names": ping_param_names,
             "ping_params_meta": ping_params_meta,
+            "ping_metainfo_names": ping_metainfo_names,
+            "ping_metainfo_meta": ping_metainfo_meta,
             "storage_mode": self._backend.storage_mode.to_dict(),
             # View axis settings (type only, not zoom level)
             "x_axis_name": self._coord_system.x_axis_name,
@@ -2709,6 +2858,16 @@ class EchogramBuilder:
             ping_params_meta[name] = new_y_ref
             np.save(output_path / f"ping_param_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
             np.save(output_path / f"ping_param_{name}_values.npy", np.asarray(values, dtype=np.float32))
+
+        # Ping metainfo - keep native metadata series
+        ping_metainfo = self._get_all_ping_metainfo()
+        ping_metainfo_meta = {}
+        ping_metainfo_names = []
+        for name, (unit, (timestamps, values)) in ping_metainfo.items():
+            ping_metainfo_names.append(name)
+            ping_metainfo_meta[name] = unit
+            np.save(output_path / f"ping_metainfo_{name}_times.npy", np.asarray(timestamps, dtype=np.float64))
+            np.save(output_path / f"ping_metainfo_{name}_values.npy", np.asarray(values, dtype=np.float32))
         
         # Determine axis names for saved metadata
         if y_coords == "depth":
@@ -2733,6 +2892,8 @@ class EchogramBuilder:
             "has_latlon": self._backend.has_latlon,
             "ping_param_names": ping_param_names,
             "ping_params_meta": ping_params_meta,
+            "ping_metainfo_names": ping_metainfo_names,
+            "ping_metainfo_meta": ping_metainfo_meta,
             "storage_mode": storage_mode.to_dict(),
             "x_axis_name": x_axis_name,
             "y_axis_name": y_axis_name,
@@ -3476,6 +3637,39 @@ class EchogramBuilder:
                 np.save(output_path / f"ping_param_{name}_times.npy", timestamps)
                 np.save(output_path / f"ping_param_{name}_values.npy", values)
 
+        # Ping metainfo
+        ping_metainfo = self._get_all_ping_metainfo()
+        ping_metainfo_names = []
+        ping_metainfo_meta = {}
+        for name, (unit, (timestamps, values)) in ping_metainfo.items():
+            ping_metainfo_names.append(name)
+            ping_metainfo_meta[name] = unit
+            timestamps = np.asarray(timestamps, dtype=np.float64)
+            values = np.asarray(values, dtype=np.float64)
+            if downsample_ping_params:
+                # Average metadata values onto new x grid using bin assignments
+                ds_times = bin_x_coords
+                ds_values = np.full(n_x_bins, np.nan, dtype=np.float64)
+                val_sum = np.zeros(n_x_bins, dtype=np.float64)
+                val_count = np.zeros(n_x_bins, dtype=np.int64)
+                meta_bins = np.round(timestamps / x_step).astype(np.int64)
+                for j in range(len(timestamps)):
+                    b = meta_bins[j]
+                    bi = b - x_bin_offset
+                    if 0 <= bi < len(x_bin_to_row) and x_bin_to_row[bi] >= 0:
+                        row = x_bin_to_row[bi]
+                        if np.isfinite(values[j]):
+                            val_sum[row] += values[j]
+                            val_count[row] += 1
+                mask = val_count > 0
+                ds_values[mask] = val_sum[mask] / val_count[mask]
+                np.save(output_path / f"ping_metainfo_{name}_times.npy", ds_times)
+                np.save(output_path / f"ping_metainfo_{name}_values.npy", ds_values)
+            else:
+                # Keep original resolution
+                np.save(output_path / f"ping_metainfo_{name}_times.npy", timestamps)
+                np.save(output_path / f"ping_metainfo_{name}_values.npy", values)
+
         # Layers
         layer_names = []
         for layer_name, layer in self.layers.items():
@@ -3515,6 +3709,8 @@ class EchogramBuilder:
             "has_latlon": has_latlon,
             "ping_param_names": ping_param_names,
             "ping_params_meta": ping_params_meta,
+            "ping_metainfo_names": ping_metainfo_names,
+            "ping_metainfo_meta": ping_metainfo_meta,
             "ping_params_gridded": downsample_ping_params,
             "storage_mode": storage_mode.to_dict(),
             "x_axis_name": x_axis_name,

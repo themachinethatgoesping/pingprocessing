@@ -293,6 +293,10 @@ class ImageBackend(EchogramDataBackend):
     def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         return dict(self._ping_params)
 
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Per-ping metadata. ImageBackend does not provide metainfo."""
+        return {}
+
     # ------------------------------------------------------------------
     # Data access
     # ------------------------------------------------------------------

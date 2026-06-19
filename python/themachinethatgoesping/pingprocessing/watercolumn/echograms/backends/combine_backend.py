@@ -290,8 +290,10 @@ class CombineBackend(EchogramDataBackend):
                 aligned_max_r.append(self._align_backend_array_to_combined(max_r, i))
             all_min_r = np.stack(aligned_min_r, axis=0)
             all_max_r = np.stack(aligned_max_r, axis=0)
-            self._range_min = np.nanmin(all_min_r, axis=0)
-            self._range_max = np.nanmax(all_max_r, axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                self._range_min = np.nanmin(all_min_r, axis=0)
+                self._range_max = np.nanmax(all_max_r, axis=0)
         else:
             self._range_min = None
             self._range_max = None
@@ -307,8 +309,10 @@ class CombineBackend(EchogramDataBackend):
                 aligned_max_d.append(self._align_backend_array_to_combined(max_d, i))
             all_min_d = np.stack(aligned_min_d, axis=0)
             all_max_d = np.stack(aligned_max_d, axis=0)
-            self._depth_min = np.nanmin(all_min_d, axis=0)
-            self._depth_max = np.nanmax(all_max_d, axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                self._depth_min = np.nanmin(all_min_d, axis=0)
+                self._depth_max = np.nanmax(all_max_d, axis=0)
         else:
             self._depth_min = None
             self._depth_max = None
@@ -319,14 +323,25 @@ class CombineBackend(EchogramDataBackend):
         # preserves the finest backend resolution.
         self._max_sample_counts = self._compute_combined_max_sample_counts()
         
-        # Lat/lon from first backend that has it, time-aligned to combined grid
+        # Lat/lon: merge from ALL backends that have it so that disjoint
+        # surveys (each backend covers a different time range) all contribute
+        # their navigation to the combined grid.  Later backends only fill
+        # positions that are still NaN after earlier backends.
         self._latitudes = None
         self._longitudes = None
         for i, backend in enumerate(self._backends):
-            if backend.has_latlon:
-                self._latitudes = self._align_backend_array_to_combined(backend.latitudes, i)
-                self._longitudes = self._align_backend_array_to_combined(backend.longitudes, i)
-                break
+            if not backend.has_latlon:
+                continue
+            lats_i = self._align_backend_array_to_combined(backend.latitudes, i)
+            lons_i = self._align_backend_array_to_combined(backend.longitudes, i)
+            if self._latitudes is None:
+                self._latitudes = lats_i
+                self._longitudes = lons_i
+            else:
+                # Fill positions where the earlier merge left NaN
+                fill_mask = np.isnan(self._latitudes) & np.isfinite(lats_i)
+                self._latitudes[fill_mask] = lats_i[fill_mask]
+                self._longitudes[fill_mask] = lons_i[fill_mask]
         
         # Scalar metadata from first backend
         self._wci_value = first.wci_value
@@ -433,7 +448,9 @@ class CombineBackend(EchogramDataBackend):
             return self._pad_to_length(fallback, self._n_pings).astype(np.float32)
 
         all_res = np.stack(resolutions, axis=0)
-        finest_res = np.nanmin(all_res, axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            finest_res = np.nanmin(all_res, axis=0)
 
         combined_range = self._depth_max - self._depth_min
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -450,7 +467,8 @@ class CombineBackend(EchogramDataBackend):
         """Combine ping parameters from all backends.
         
         Strategy:
-        1. Keep individual params as "name_0", "name_1", etc. for transparency
+        1. Keep individual params as "name_0", "name_1", etc. only when the
+           parameter time ranges overlap between backends.
         2. Create combined param "name" by interpolating all to common times and combining
         """
         # Collect all param names across backends
@@ -461,27 +479,52 @@ class CombineBackend(EchogramDataBackend):
         result = {}
         
         for name in all_names:
-            # First, keep individual backend params with suffix
+            # Collect all (times, values) pairs for this param
+            all_data = []
+            indexed_data = []
+            y_ref = None
             for i, backend in enumerate(self._backends):
                 params = backend.get_ping_params()
                 if name in params:
-                    y_ref, (times, values) = params[name]
-                    result[f"{name}_{i}"] = (y_ref, (times.copy(), values.copy()))
-            
-            # Now create combined param
-            # Collect all (times, values) pairs for this param
-            all_data = []
-            y_ref = None
-            for backend in self._backends:
-                params = backend.get_ping_params()
-                if name in params:
                     y_ref_b, (times, values) = params[name]
+                    times = np.asarray(times, dtype=np.float64)
+                    values = np.asarray(values, dtype=np.float64)
                     if y_ref is None:
                         y_ref = y_ref_b
                     all_data.append((times, values))
+                    indexed_data.append((i, y_ref_b, times, values))
             
             if not all_data or y_ref is None:
                 continue
+
+            # Emit per-backend suffixed params only if there is temporal overlap
+            # between at least two source parameter time ranges.
+            ranges = []
+            for _, _, times, _ in indexed_data:
+                finite_t = times[np.isfinite(times)]
+                if len(finite_t) == 0:
+                    ranges.append((np.inf, -np.inf))
+                else:
+                    ranges.append((float(np.min(finite_t)), float(np.max(finite_t))))
+
+            has_overlap = False
+            for i in range(len(ranges)):
+                t0_min, t0_max = ranges[i]
+                if not np.isfinite(t0_min) or not np.isfinite(t0_max):
+                    continue
+                for j in range(i + 1, len(ranges)):
+                    t1_min, t1_max = ranges[j]
+                    if not np.isfinite(t1_min) or not np.isfinite(t1_max):
+                        continue
+                    if max(t0_min, t1_min) <= min(t0_max, t1_max):
+                        has_overlap = True
+                        break
+                if has_overlap:
+                    break
+
+            if has_overlap:
+                for i, y_ref_i, times, values in indexed_data:
+                    result[f"{name}_{i}"] = (y_ref_i, (times.copy(), values.copy()))
             
             # Create combined time grid (union of all times)
             all_times = np.concatenate([d[0] for d in all_data])
@@ -600,6 +643,12 @@ class CombineBackend(EchogramDataBackend):
 
     def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         return self._ping_params
+
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Return metainfo from first backend (all backends should have same metainfo)."""
+        if self._backends:
+            return self._backends[0].get_ping_metainfo()
+        return {}
 
     # =========================================================================
     # Data access (per-column)

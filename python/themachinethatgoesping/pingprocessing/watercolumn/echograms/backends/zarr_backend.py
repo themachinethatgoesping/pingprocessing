@@ -110,6 +110,7 @@ class ZarrDataBackend(EchogramDataBackend):
         
         # Load ping params structure
         self._ping_params = self._load_ping_params()
+        self._ping_metainfo = self._load_ping_metainfo()
 
     def _load_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         """Load ping parameters from dataset."""
@@ -130,6 +131,26 @@ class ZarrDataBackend(EchogramDataBackend):
                 params[name] = (y_ref, (times, values))
         
         return params
+
+    def _load_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Load per-ping metadata from dataset."""
+        metainfo = {}
+
+        # Check for ping_metainfo_meta attribute
+        metainfo_meta = self._ds.attrs.get("ping_metainfo_meta", "{}")
+        if isinstance(metainfo_meta, str):
+            metainfo_meta = json.loads(metainfo_meta)
+
+        for name, unit in metainfo_meta.items():
+            times_var = f"ping_metainfo_{name}_times"
+            values_var = f"ping_metainfo_{name}_values"
+            if times_var in self._ds and values_var in self._ds:
+                # Load eagerly - these are small 1D arrays
+                times = self._ds[times_var].values
+                values = self._ds[values_var].values
+                metainfo[name] = (unit, (times, values))
+
+        return metainfo
 
     # =========================================================================
     # Factory methods
@@ -255,6 +276,10 @@ class ZarrDataBackend(EchogramDataBackend):
 
     def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
         return self._ping_params
+
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Return per-ping metadata (scalar series)."""
+        return self._ping_metainfo
 
     # =========================================================================
     # Data access methods

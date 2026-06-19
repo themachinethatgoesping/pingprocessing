@@ -34,7 +34,8 @@ class PingDataBackend(EchogramDataBackend):
         sample_nr_extents: Tuple[np.ndarray, np.ndarray],
         range_extents: Optional[Tuple[np.ndarray, np.ndarray]],
         depth_extents: Optional[Tuple[np.ndarray, np.ndarray]],
-        ping_params: Dict[str, Tuple[str, np.ndarray]],
+        ping_params: Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]],
+        ping_metainfo: Optional[Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]] = None,
         latitudes: Optional[np.ndarray] = None,
         longitudes: Optional[np.ndarray] = None,
         depth_stack: bool = False,
@@ -54,7 +55,8 @@ class PingDataBackend(EchogramDataBackend):
             sample_nr_extents: Tuple of (min_sample_nrs, max_sample_nrs) arrays.
             range_extents: Tuple of (min_ranges, max_ranges) arrays, or None.
             depth_extents: Tuple of (min_depths, max_depths) arrays, or None.
-            ping_params: Dictionary of pre-computed ping parameters.
+            ping_params: Dictionary of pre-computed overlay curves (bottom, minslant, echosounder).
+            ping_metainfo: Dictionary of per-ping metadata (frequency, pulse duration, etc.).
             latitudes: Array of latitudes (degrees) per ping, or None.
             longitudes: Array of longitudes (degrees) per ping, or None.
             depth_stack: If True, use depth stacking mode (requires navigation).
@@ -70,6 +72,7 @@ class PingDataBackend(EchogramDataBackend):
         self._range_extents = range_extents
         self._depth_extents = depth_extents
         self._ping_params = ping_params
+        self._ping_metainfo = ping_metainfo or {}
         self._latitudes = latitudes
         self._longitudes = longitudes
         self._depth_stack = depth_stack
@@ -135,6 +138,10 @@ class PingDataBackend(EchogramDataBackend):
         echosounder_d_times = []
         echosounder_d = []
 
+        main_frequency_per_ping   = []
+        main_pulse_duration_s     = []
+        main_sample_interval_s    = []
+
         for arr in [min_s, max_s, min_r, max_r, min_d, max_d, times, latitudes, longitudes]:
             arr.fill(np.nan)
 
@@ -144,12 +151,14 @@ class PingDataBackend(EchogramDataBackend):
             sel = apply_pss(ping, pss, apply_pss_to_bottom)
             beam_sample_selections.append(sel)
 
+            sample_interval = ping.watercolumn.get_sample_interval()
+
             times[nr] = ping.get_timestamp()
             if len(sel.get_beam_numbers()) == 0:
                 continue
 
             c = ping.watercolumn.get_sound_speed_at_transducer()
-            range_res = ping.watercolumn.get_sample_interval() * c * 0.5
+            range_res = sample_interval * c * 0.5
 
             if force_angle is None:
                 angle_factor = np.cos(
@@ -211,18 +220,36 @@ class PingDataBackend(EchogramDataBackend):
                     except Exception:
                         pass  # TODO: this should create a warning in the log
 
+            # Extract range resolution as parameter
+            main_sample_interval_s.append(sample_interval)
+            
+            # Extract main frequency and pulse duration for this ping
+            tx = ping.watercolumn.get_tx_signal_parameters()
+            ntx = np.unique(ping.watercolumn.get_tx_sector_per_beam(sel))
+
+            main_frequency_per_ping.append(np.nanmean([tx[n].get_center_frequency() for n in ntx]))
+            main_pulse_duration_s.append(np.nanmean([tx[n].get_effective_pulse_duration() for n in ntx]))
+
         # Compute max sample counts
         max_sample_counts = np.array(
             [sel.get_number_of_samples_ensemble() - 1 for sel in beam_sample_selections]
         )
 
-        # Build ping params dictionary
+        # Build ping params dictionary (curves only: geometry overlays)
         ping_params = {}
         if len(bottom_d) > 0:
             ping_params["bottom"] = ("Depth (m)", (bottom_d_times, bottom_d))
             ping_params["minslant"] = ("Depth (m)", (bottom_d_times, minslant_d))
         if len(echosounder_d) > 0:
             ping_params["echosounder"] = ("Depth (m)", (echosounder_d_times, echosounder_d))
+        
+        # Build ping metainfo dictionary (scalar metadata)
+        ping_metainfo = {}
+        if len(times) > 0:
+            ping_metainfo["main_frequency"] = ("Frequency (Hz)", (times, main_frequency_per_ping))
+            ping_metainfo["main_pulse_duration"] = ("Pulse Duration (s)", (times, main_pulse_duration_s))
+            ping_metainfo["main_sample_interval"] = ("Sample Interval (s)", (times, main_sample_interval_s))
+            ping_metainfo["main_pulse_duration_n_samples"] = ("Pulse Duration (samples)", (times, np.array(main_pulse_duration_s) / np.array(main_sample_interval_s)))
 
         # Build extents
         sample_nr_extents = (min_s, max_s)
@@ -244,6 +271,7 @@ class PingDataBackend(EchogramDataBackend):
             range_extents=range_extents,
             depth_extents=depth_extents,
             ping_params=ping_params,
+            ping_metainfo=ping_metainfo,
             latitudes=lats,
             longitudes=lons,
             depth_stack=depth_stack,
@@ -304,13 +332,21 @@ class PingDataBackend(EchogramDataBackend):
     # Ping parameters
     # =========================================================================
 
-    def get_ping_params(self) -> Dict[str, Tuple[str, Tuple]]:
-        """Return pre-computed ping parameters.
+    def get_ping_params(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Return pre-computed overlay curves (bottom, minslant, echosounder).
         
         Returns:
             Dictionary mapping parameter names to (y_reference, (times, values)) tuples.
         """
         return self._ping_params
+
+    def get_ping_metainfo(self) -> Dict[str, Tuple[str, Tuple[np.ndarray, np.ndarray]]]:
+        """Return per-ping acquisition metadata (frequency, pulse duration, etc.).
+        
+        Returns:
+            Dictionary mapping metadata names to (unit_string, (times, values)) tuples.
+        """
+        return self._ping_metainfo
 
     # =========================================================================
     # Data access methods
