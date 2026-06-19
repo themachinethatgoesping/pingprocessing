@@ -13,9 +13,11 @@ from typing import Optional, Tuple, Dict
 from copy import deepcopy
 from pathlib import Path
 import datetime as dt
+from tqdm.auto import tqdm
 
 # external Ping packages
 from themachinethatgoesping import echosounders
+from themachinethatgoesping import algorithms
 
 # internal Ping.pingprocessing packages
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
@@ -2124,7 +2126,6 @@ class EchogramBuilder:
         try:
             import zarr
             import json
-            from tqdm.auto import tqdm
         except ImportError:
             raise ImportError(
                 "zarr is required for to_zarr(). Install with: pip install zarr"
@@ -2499,11 +2500,6 @@ class EchogramBuilder:
             >>> builder.to_mmap("output.mmap", mode="view", resolution=0.1)
         """
         import json
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            tqdm = None
-            progress = False
         
         from .backends.mmap_backend import MMAP_FORMAT_VERSION
         from .backends.storage_mode import StorageAxisMode
@@ -2548,11 +2544,6 @@ class EchogramBuilder:
     def _to_mmap_simple(self, output_path: Path, progress: bool, chunk_mb: float) -> str:
         """Export to mmap without coordinate transformation (original behavior)."""
         import json
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            tqdm = None
-            progress = False
         
         from .backends.mmap_backend import MMAP_FORMAT_VERSION
         
@@ -2717,11 +2708,6 @@ class EchogramBuilder:
         - Resampling with nearest-neighbor or linear interpolation
         """
         import json
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            tqdm = None
-            progress = False
         
         from .backends.mmap_backend import MMAP_FORMAT_VERSION
         from .backends.storage_mode import StorageAxisMode
@@ -3368,11 +3354,6 @@ class EchogramBuilder:
             >>> builder.to_gridded_mmap("gridded.mmap", x_step=10, y_step=0.5)
         """
         import json
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            tqdm = None
-            progress = False
 
         from .backends.gridded_mmap_backend import (
             GRIDDED_MMAP_FORMAT_VERSION,
@@ -3809,11 +3790,6 @@ class EchogramBuilder:
             >>> fast = builder.to_image()            # in-memory
             >>> fast = builder.to_image("cache.bin") # on-disk mmap
         """
-        try:
-            from tqdm.auto import tqdm
-        except ImportError:
-            tqdm = None
-            progress = False
 
         from .backends.image_backend import ImageBackend
 
@@ -3951,4 +3927,45 @@ class EchogramBuilder:
         builder = type(self)(backend)
         self._copy_view_settings(builder)
         return builder
+
+    #============================================================================
+    # Feature detection
+    #============================================================================
+    def detect_bottom(
+        self,
+        bottom_name: str = "Bottom",
+        thr_bottom: float = -35.,
+        thr_echo: float = -70.,
+        remove_outliers: bool = True,
+        mp_cores=None
+        ) -> None:
+        
+        if mp_cores is None:
+            mp_cores = self.mp_cores
+        detector = algorithms.echogramprocessing.BottomDetector(mp_cores=mp_cores)
+        detector.remove_outliers = remove_outliers
+        detector.thr_bottom = thr_bottom
+        detector.thr_echo = thr_echo
+        detector.incidence_angle_deg = 0.
+        
+        range_res = self.coord_system.res_ranges
+        pulse_len = self.get_metainfo('main_pulse_duration_n_samples')[1][1]
+        range_off = range_res*(0.5+ self.coord_system.min_sample_nrs)
+        
+        for ping in tqdm(self.iterate_ping_data(keep_to_xlimits=False), desc="Detecting bottom"):
+            wci = ping.get_wci()
+            beamwidth = 7
+            detector.add_ping(
+                wci,
+                range_offset=range_off[ping.nr],
+                range_resolution=range_res[ping.nr],
+                pulse_nsamples=pulse_len[ping.nr],
+                beamwidth_deg=beamwidth)
+            
+        bottom = detector.get_bottom()
+        pn = np.array(range(len(bottom)))
+        arg = np.where(np.isfinite(bottom))
+        bottom = bottom[arg]
+        pn = pn[arg]
+        self.add_ping_param(bottom_name, 'Ping index', 'Sample number', pn, bottom + pulse_len[arg])
 
