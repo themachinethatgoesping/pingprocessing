@@ -1320,8 +1320,11 @@ class EchogramBuilder:
     # =========================================================================
 
     def get_column(self, nr):
-        """Get column data for a ping from backend."""
-        return self._backend.get_column(nr)
+        """Get column data for a ping from backend, with data transforms applied."""
+        col = self._backend.get_column(nr)
+        if self._has_data_transforms:
+            col = self._apply_data_transforms(col.astype(np.float64)).astype(np.float32)
+        return col
 
     # =========================================================================
     # Oversampling configuration
