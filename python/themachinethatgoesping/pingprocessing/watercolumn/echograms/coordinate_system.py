@@ -140,6 +140,14 @@ class EchogramCoordinateSystem:
         self.has_ranges = False
         self.has_depths = False
         self.has_sample_nrs = False
+
+        # Per-ping resolution arrays (value units per sample). These stay None
+        # until the matching extent is provided via set_*_extent(). Keeping them
+        # defined avoids AttributeError for echograms that lack a given axis
+        # (e.g. a combined echogram built from inputs without range extents).
+        self.res_ranges = None
+        self.res_depths = None
+        self.res_sample_nrs = None
         
         # Precomputed affine coefficients: value = a + b * sample_index
         # These are computed once when extents are set

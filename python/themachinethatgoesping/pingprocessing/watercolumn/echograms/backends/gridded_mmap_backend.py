@@ -109,6 +109,14 @@ class GriddedMmapBackend(EchogramDataBackend):
         if (path / "ping_counts.npy").exists():
             metadata["ping_counts"] = np.load(path / "ping_counts.npy")
 
+        # Optional per-bin axis extents (preserved from source geometry)
+        if (path / "range_min.npy").exists() and (path / "range_max.npy").exists():
+            metadata["range_min"] = np.load(path / "range_min.npy")
+            metadata["range_max"] = np.load(path / "range_max.npy")
+        if (path / "depth_min.npy").exists() and (path / "depth_max.npy").exists():
+            metadata["depth_min"] = np.load(path / "depth_min.npy")
+            metadata["depth_max"] = np.load(path / "depth_max.npy")
+
         # Optional lat/lon
         if (path / "latitudes.npy").exists():
             metadata["latitudes"] = np.load(path / "latitudes.npy")
@@ -187,12 +195,22 @@ class GriddedMmapBackend(EchogramDataBackend):
 
     @property
     def sample_nr_extents(self) -> Tuple[np.ndarray, np.ndarray]:
-        zeros = np.zeros(self._n_x_bins, dtype=np.int32)
-        maxes = np.full(self._n_x_bins, self._n_y_cells - 1, dtype=np.int32)
+        # For sample-index grids, preserve the stored sample-axis geometry.
+        if self._metadata.get("y_axis_type", "") == "sample_index":
+            y_origin = float(self._metadata.get("y_origin", 0.0))
+            y_step = float(self._metadata.get("y_step", 1.0))
+            y_max = y_origin + (self._n_y_cells - 1) * y_step
+            mins = np.full(self._n_x_bins, y_origin, dtype=np.float32)
+            maxs = np.full(self._n_x_bins, y_max, dtype=np.float32)
+            return mins, maxs
+        zeros = np.zeros(self._n_x_bins, dtype=np.float32)
+        maxes = np.full(self._n_x_bins, self._n_y_cells - 1, dtype=np.float32)
         return zeros, maxes
 
     @property
     def range_extents(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if "range_min" in self._metadata and "range_max" in self._metadata:
+            return self._metadata["range_min"], self._metadata["range_max"]
         y_axis = self._metadata.get("y_axis_type", "")
         if y_axis != "range":
             return None
@@ -205,6 +223,8 @@ class GriddedMmapBackend(EchogramDataBackend):
 
     @property
     def depth_extents(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if "depth_min" in self._metadata and "depth_max" in self._metadata:
+            return self._metadata["depth_min"], self._metadata["depth_max"]
         y_axis = self._metadata.get("y_axis_type", "")
         if y_axis != "depth":
             return None

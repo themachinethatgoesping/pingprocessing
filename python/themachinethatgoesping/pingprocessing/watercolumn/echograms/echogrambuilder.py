@@ -157,6 +157,62 @@ class EchogramBuilder:
         """
         return dict(self._ping_metainfo)
 
+    @staticmethod
+    def _collect_coordinate_params(items):
+        """Collect coordinate-system ping params from source builders.
+
+        Params that originate from a backend (``backend.get_ping_params()``)
+        already propagate through the concat/combine backends. Params added
+        later via :meth:`add_ping_param` (e.g. by :meth:`detect_bottom`) live
+        only in a builder's coordinate system and would otherwise be lost on
+        concat/combine - especially when they use a non-time x-reference such as
+        ``"Ping index"``.
+
+        ``_get_all_ping_params`` already returns every param time-referenced as
+        ``{name: (y_reference, (ping_times, values))}``, so the collected data
+        can be concatenated and re-injected regardless of the original
+        x-reference.
+
+        Args:
+            items: The list passed to concat/combine (builders and/or backends).
+
+        Returns:
+            ``{name: (y_reference, [times_arrays], [values_arrays])}`` for every
+            coordinate-system-only param found across the source builders.
+        """
+        collected = {}
+        for item in items:
+            if not isinstance(item, EchogramBuilder):
+                continue
+            backend_param_names = set(item._backend.get_ping_params().keys())
+            for name, (y_ref, (times, values)) in item._get_all_ping_params().items():
+                if name in backend_param_names:
+                    continue  # already carried by the concat/combine backend
+                entry = collected.get(name)
+                if entry is None:
+                    entry = (y_ref, [], [])
+                    collected[name] = entry
+                entry[1].append(np.asarray(times, dtype=np.float64))
+                entry[2].append(np.asarray(values, dtype=np.float64))
+        return collected
+
+    def _inject_coordinate_params(self, collected):
+        """Inject params collected by :meth:`_collect_coordinate_params`.
+
+        Each param is added (time-referenced) onto this builder's ping axis
+        unless a param of the same name is already present (e.g. one carried by
+        the backend).
+        """
+        existing = set(self._coord_system.param.keys())
+        for name, (y_ref, times_list, values_list) in collected.items():
+            if name in existing or not times_list:
+                continue
+            times = np.concatenate(times_list)
+            values = np.concatenate(values_list)
+            if times.size == 0:
+                continue
+            self.add_ping_param(name, "Ping time", y_ref, times, values)
+
     def _update_layers(self):
         """Update all layers after coordinate system change."""
         if self.main_layer is not None:
@@ -398,7 +454,12 @@ class EchogramBuilder:
             backends.sort(key=_start_time)
         
         concat_backend = ConcatBackend(backends, gap_handling=gap_handling)
-        return cls(concat_backend)
+        result = cls(concat_backend)
+        # Coordinate-system params added after construction (e.g. detect_bottom
+        # results referenced by 'Ping index') are not part of the backend and
+        # would otherwise be lost; re-inject them so they survive concatenation.
+        result._inject_coordinate_params(cls._collect_coordinate_params(builders_or_backends))
+        return result
 
     @classmethod
     def combine(
@@ -512,6 +573,10 @@ class EchogramBuilder:
         # Copy view settings from first builder if available
         if first_builder is not None:
             first_builder._copy_view_settings(result)
+        
+        # Re-inject coordinate-system params (e.g. detect_bottom results that use
+        # a non-time x-reference) so they survive combination like backend params.
+        result._inject_coordinate_params(cls._collect_coordinate_params(builders_or_backends))
         
         return result
 
@@ -3405,6 +3470,25 @@ class EchogramBuilder:
         y_max = np.asarray(y_max, dtype=np.float64)
         max_sample_counts = self._backend.max_sample_counts
 
+        # Source per-ping axis extents used for parameter and extent conversion.
+        src_sample_min, src_sample_max = self._backend.sample_nr_extents
+        src_sample_min = np.asarray(src_sample_min, dtype=np.float64)
+        src_sample_max = np.asarray(src_sample_max, dtype=np.float64)
+
+        src_range_min = src_range_max = None
+        if self._backend.range_extents is not None:
+            src_range_min, src_range_max = self._backend.range_extents
+            src_range_min = np.asarray(src_range_min, dtype=np.float64)
+            src_range_max = np.asarray(src_range_max, dtype=np.float64)
+
+        src_depth_min = src_depth_max = None
+        if self._backend.depth_extents is not None:
+            src_depth_min, src_depth_max = self._backend.depth_extents
+            src_depth_min = np.asarray(src_depth_min, dtype=np.float64)
+            src_depth_max = np.asarray(src_depth_max, dtype=np.float64)
+
+        backend_times = np.asarray(self._backend.ping_times, dtype=np.float64)
+
         n_pings = self._backend.n_pings
 
         # ----- compute grid extents -----
@@ -3433,6 +3517,143 @@ class EchogramBuilder:
         y_origin = float(y_bin_min * y_step)
 
         total_cells = n_x_bins * n_y_cells
+
+        # Helpers for converting parameter units and preserving axis extents.
+        axis_to_param_ref = {
+            "depth": "Depth (m)",
+            "range": "Range (m)",
+            "sample_index": "Sample number",
+        }
+        target_param_ref = axis_to_param_ref[y_axis_type]
+
+        def _nearest_ping_indices(times: np.ndarray) -> np.ndarray:
+            times = np.asarray(times, dtype=np.float64)
+            if len(times) == 0:
+                return np.array([], dtype=np.int64)
+            ins = np.searchsorted(backend_times, times)
+            left = np.clip(ins - 1, 0, len(backend_times) - 1)
+            right = np.clip(ins, 0, len(backend_times) - 1)
+            use_right = np.abs(backend_times[right] - times) <= np.abs(backend_times[left] - times)
+            return np.where(use_right, right, left).astype(np.int64)
+
+        def _axis_to_sample_nr(values: np.ndarray, axis_ref: str, pidx: np.ndarray) -> np.ndarray:
+            values = np.asarray(values, dtype=np.float64)
+            if axis_ref == "Sample number":
+                return values
+            smin = src_sample_min[pidx]
+            smax = src_sample_max[pidx]
+            sden = smax - smin
+            if axis_ref == "Y indice":
+                n_samples = np.asarray(max_sample_counts, dtype=np.float64)[pidx]
+                return smin + np.where(n_samples != 0, values * sden / n_samples, np.nan)
+            if axis_ref == "Range (m)":
+                if src_range_min is None or src_range_max is None:
+                    return np.full(len(values), np.nan)
+                rmin = src_range_min[pidx]
+                rmax = src_range_max[pidx]
+                return smin + np.where((rmax - rmin) != 0, (values - rmin) * sden / (rmax - rmin), np.nan)
+            if axis_ref == "Depth (m)":
+                if src_depth_min is None or src_depth_max is None:
+                    return np.full(len(values), np.nan)
+                dmin = src_depth_min[pidx]
+                dmax = src_depth_max[pidx]
+                return smin + np.where((dmax - dmin) != 0, (values - dmin) * sden / (dmax - dmin), np.nan)
+            return np.full(len(values), np.nan)
+
+        def _sample_nr_to_axis(sample_nr: np.ndarray, axis_ref: str, pidx: np.ndarray) -> np.ndarray:
+            sample_nr = np.asarray(sample_nr, dtype=np.float64)
+            if axis_ref == "Sample number":
+                return sample_nr
+            smin = src_sample_min[pidx]
+            smax = src_sample_max[pidx]
+            sden = smax - smin
+            if axis_ref == "Y indice":
+                n_samples = np.asarray(max_sample_counts, dtype=np.float64)[pidx]
+                return np.where(sden != 0, (sample_nr - smin) * n_samples / sden, np.nan)
+            if axis_ref == "Range (m)":
+                if src_range_min is None or src_range_max is None:
+                    return np.full(len(sample_nr), np.nan)
+                rmin = src_range_min[pidx]
+                rmax = src_range_max[pidx]
+                return rmin + np.where(sden != 0, (sample_nr - smin) * (rmax - rmin) / sden, np.nan)
+            if axis_ref == "Depth (m)":
+                if src_depth_min is None or src_depth_max is None:
+                    return np.full(len(sample_nr), np.nan)
+                dmin = src_depth_min[pidx]
+                dmax = src_depth_max[pidx]
+                return dmin + np.where(sden != 0, (sample_nr - smin) * (dmax - dmin) / sden, np.nan)
+            return np.full(len(sample_nr), np.nan)
+
+        def _convert_param_values(times: np.ndarray, values: np.ndarray, src_ref: str, dst_ref: str) -> np.ndarray:
+            if src_ref == dst_ref:
+                return np.asarray(values, dtype=np.float64)
+            pidx = _nearest_ping_indices(times)
+            sample_nr = _axis_to_sample_nr(values, src_ref, pidx)
+            return _sample_nr_to_axis(sample_nr, dst_ref, pidx)
+
+        def _map_times_to_grid_x(times: np.ndarray) -> np.ndarray:
+            """Map source timestamps to the x-domain used by the gridded store."""
+            times = np.asarray(times, dtype=np.float64)
+            if x_axis_type == "ping_index":
+                # Params are stored as (time, value) pairs in builder APIs;
+                # for ping-index gridding convert those times back to nearest
+                # source ping indices before x-binning.
+                return _nearest_ping_indices(times).astype(np.float64)
+            return times
+
+        def _grid_value_to_target_axis(v: float, target_axis: str, ping_idx: int) -> float:
+            if y_axis_type == target_axis:
+                return float(v)
+            # Convert current grid axis value to sample-number domain first.
+            if y_axis_type == "sample_index":
+                sample_nr = float(v)
+            elif y_axis_type == "range":
+                if src_range_min is None or src_range_max is None:
+                    return np.nan
+                sample_nr = _axis_to_sample_nr(np.array([v]), "Range (m)", np.array([ping_idx]))[0]
+            elif y_axis_type == "depth":
+                if src_depth_min is None or src_depth_max is None:
+                    return np.nan
+                sample_nr = _axis_to_sample_nr(np.array([v]), "Depth (m)", np.array([ping_idx]))[0]
+            else:
+                return np.nan
+
+            if target_axis == "range":
+                return _sample_nr_to_axis(np.array([sample_nr]), "Range (m)", np.array([ping_idx]))[0]
+            if target_axis == "depth":
+                return _sample_nr_to_axis(np.array([sample_nr]), "Depth (m)", np.array([ping_idx]))[0]
+            return np.nan
+
+        def _compute_bin_extents(target_axis: str):
+            if target_axis == "range" and (src_range_min is None or src_range_max is None):
+                return None
+            if target_axis == "depth" and (src_depth_min is None or src_depth_max is None):
+                return None
+
+            sums_min = np.zeros(n_x_bins, dtype=np.float64)
+            sums_max = np.zeros(n_x_bins, dtype=np.float64)
+            cnt = np.zeros(n_x_bins, dtype=np.int64)
+            y0 = y_origin
+            y1 = y_origin + (n_y_cells - 1) * y_step
+
+            for i in range(n_pings):
+                row = x_bin_to_row[x_bins[i] - x_bin_offset]
+                t0 = _grid_value_to_target_axis(y0, target_axis, i)
+                t1 = _grid_value_to_target_axis(y1, target_axis, i)
+                if not np.isfinite(t0) or not np.isfinite(t1):
+                    continue
+                lo = min(t0, t1)
+                hi = max(t0, t1)
+                sums_min[row] += lo
+                sums_max[row] += hi
+                cnt[row] += 1
+
+            out_min = np.full(n_x_bins, np.nan, dtype=np.float32)
+            out_max = np.full(n_x_bins, np.nan, dtype=np.float32)
+            mask = cnt > 0
+            out_min[mask] = (sums_min[mask] / cnt[mask]).astype(np.float32)
+            out_max[mask] = (sums_max[mask] / cnt[mask]).astype(np.float32)
+            return out_min, out_max
 
         # ----- allocate accumulators -----
         if averaging in ("db_mean", "linear_mean"):
@@ -3590,9 +3811,13 @@ class EchogramBuilder:
         ping_params_meta = {}
         for name, (y_ref, (timestamps, values)) in ping_params.items():
             ping_param_names.append(name)
-            ping_params_meta[name] = y_ref
             timestamps = np.asarray(timestamps, dtype=np.float64)
             values = np.asarray(values, dtype=np.float64)
+            x_coords_param = _map_times_to_grid_x(timestamps)
+            # Store params in the gridded y-axis domain to keep conversions
+            # stable across save/load, especially for sample-number params.
+            values = _convert_param_values(timestamps, values, y_ref, target_param_ref)
+            ping_params_meta[name] = target_param_ref
             if downsample_ping_params:
                 # Average values onto new x grid using bin assignments
                 ds_times = bin_x_coords
@@ -3600,7 +3825,7 @@ class EchogramBuilder:
                 val_sum = np.zeros(n_x_bins, dtype=np.float64)
                 val_count = np.zeros(n_x_bins, dtype=np.int64)
                 # Map original timestamps to bins
-                param_bins = np.round(timestamps / x_step).astype(np.int64)
+                param_bins = np.round(x_coords_param / x_step).astype(np.int64)
                 for j in range(len(timestamps)):
                     b = param_bins[j]
                     bi = b - x_bin_offset
@@ -3615,7 +3840,7 @@ class EchogramBuilder:
                 np.save(output_path / f"ping_param_{name}_values.npy", ds_values)
             else:
                 # Keep original resolution
-                np.save(output_path / f"ping_param_{name}_times.npy", timestamps)
+                np.save(output_path / f"ping_param_{name}_times.npy", x_coords_param)
                 np.save(output_path / f"ping_param_{name}_values.npy", values)
 
         # Ping metainfo
@@ -3627,13 +3852,14 @@ class EchogramBuilder:
             ping_metainfo_meta[name] = unit
             timestamps = np.asarray(timestamps, dtype=np.float64)
             values = np.asarray(values, dtype=np.float64)
+            x_coords_meta = _map_times_to_grid_x(timestamps)
             if downsample_ping_params:
                 # Average metadata values onto new x grid using bin assignments
                 ds_times = bin_x_coords
                 ds_values = np.full(n_x_bins, np.nan, dtype=np.float64)
                 val_sum = np.zeros(n_x_bins, dtype=np.float64)
                 val_count = np.zeros(n_x_bins, dtype=np.int64)
-                meta_bins = np.round(timestamps / x_step).astype(np.int64)
+                meta_bins = np.round(x_coords_meta / x_step).astype(np.int64)
                 for j in range(len(timestamps)):
                     b = meta_bins[j]
                     bi = b - x_bin_offset
@@ -3648,7 +3874,7 @@ class EchogramBuilder:
                 np.save(output_path / f"ping_metainfo_{name}_values.npy", ds_values)
             else:
                 # Keep original resolution
-                np.save(output_path / f"ping_metainfo_{name}_times.npy", timestamps)
+                np.save(output_path / f"ping_metainfo_{name}_times.npy", x_coords_meta)
                 np.save(output_path / f"ping_metainfo_{name}_values.npy", values)
 
         # Layers
@@ -3661,6 +3887,16 @@ class EchogramBuilder:
         if has_main_layer:
             np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y)
             np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y)
+
+        # Preserve source axis information per x-bin where possible.
+        bin_range_extents = _compute_bin_extents("range")
+        if bin_range_extents is not None:
+            np.save(output_path / "range_min.npy", bin_range_extents[0])
+            np.save(output_path / "range_max.npy", bin_range_extents[1])
+        bin_depth_extents = _compute_bin_extents("depth")
+        if bin_depth_extents is not None:
+            np.save(output_path / "depth_min.npy", bin_depth_extents[0])
+            np.save(output_path / "depth_max.npy", bin_depth_extents[1])
 
         # Storage mode
         storage_mode = StorageAxisMode(
@@ -3701,6 +3937,8 @@ class EchogramBuilder:
             "oversampling_mode": self._oversampling_mode,
             "layer_names": layer_names,
             "has_main_layer": has_main_layer,
+            "has_saved_range_extents": bool(bin_range_extents is not None),
+            "has_saved_depth_extents": bool(bin_depth_extents is not None),
         }
 
         with open(output_path / "metadata.json", "w") as f:
@@ -3949,6 +4187,14 @@ class EchogramBuilder:
         detector.incidence_angle_deg = 0.
         
         range_res = self.coord_system.res_ranges
+        if range_res is None:
+            raise RuntimeError(
+                "ERROR[detect_bottom]: this echogram has no range information "
+                "(coord_system.res_ranges is None). Bottom detection requires a "
+                "range axis; this is missing for echograms built without range "
+                "extents (e.g. some combined echograms). Use an echogram that "
+                "carries range extents before detecting the bottom."
+            )
         pulse_len = self.get_metainfo('main_pulse_duration_n_samples')[1][1]
         range_off = range_res*(0.5+ self.coord_system.min_sample_nrs)
         
