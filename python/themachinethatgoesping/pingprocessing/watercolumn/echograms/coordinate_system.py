@@ -544,6 +544,13 @@ class EchogramCoordinateSystem:
             
         self.y_axis_name = name
         self.y_coordinates = np.asarray(y_coordinates, dtype=np.float32)
+        if self.y_coordinates.size < 2:
+            raise RuntimeError(
+                f"ERROR: '{name}' axis resampling produced {self.y_coordinates.size} "
+                "coordinate(s); at least two are required. This usually means the "
+                "per-ping extents collapsed (e.g. all min == max). Check the input "
+                "depth/range/sample extents."
+            )
         self.y_resolution = float(y_coordinates[1] - y_coordinates[0])
         self.y_extent = [
             float(self.y_coordinates[-1]) + self.y_resolution / 2,

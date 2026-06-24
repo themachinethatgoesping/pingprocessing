@@ -3548,19 +3548,27 @@ class EchogramBuilder:
             sden = smax - smin
             if axis_ref == "Y indice":
                 n_samples = np.asarray(max_sample_counts, dtype=np.float64)[pidx]
-                return smin + np.where(n_samples != 0, values * sden / n_samples, np.nan)
+                ratio = np.full(values.shape, np.nan, dtype=np.float64)
+                np.divide(values * sden, n_samples, out=ratio, where=(n_samples != 0))
+                return smin + ratio
             if axis_ref == "Range (m)":
                 if src_range_min is None or src_range_max is None:
                     return np.full(len(values), np.nan)
                 rmin = src_range_min[pidx]
                 rmax = src_range_max[pidx]
-                return smin + np.where((rmax - rmin) != 0, (values - rmin) * sden / (rmax - rmin), np.nan)
+                den = rmax - rmin
+                ratio = np.full(values.shape, np.nan, dtype=np.float64)
+                np.divide((values - rmin) * sden, den, out=ratio, where=(den != 0))
+                return smin + ratio
             if axis_ref == "Depth (m)":
                 if src_depth_min is None or src_depth_max is None:
                     return np.full(len(values), np.nan)
                 dmin = src_depth_min[pidx]
                 dmax = src_depth_max[pidx]
-                return smin + np.where((dmax - dmin) != 0, (values - dmin) * sden / (dmax - dmin), np.nan)
+                den = dmax - dmin
+                ratio = np.full(values.shape, np.nan, dtype=np.float64)
+                np.divide((values - dmin) * sden, den, out=ratio, where=(den != 0))
+                return smin + ratio
             return np.full(len(values), np.nan)
 
         def _sample_nr_to_axis(sample_nr: np.ndarray, axis_ref: str, pidx: np.ndarray) -> np.ndarray:
@@ -3572,19 +3580,25 @@ class EchogramBuilder:
             sden = smax - smin
             if axis_ref == "Y indice":
                 n_samples = np.asarray(max_sample_counts, dtype=np.float64)[pidx]
-                return np.where(sden != 0, (sample_nr - smin) * n_samples / sden, np.nan)
+                ratio = np.full(sample_nr.shape, np.nan, dtype=np.float64)
+                np.divide((sample_nr - smin) * n_samples, sden, out=ratio, where=(sden != 0))
+                return ratio
             if axis_ref == "Range (m)":
                 if src_range_min is None or src_range_max is None:
                     return np.full(len(sample_nr), np.nan)
                 rmin = src_range_min[pidx]
                 rmax = src_range_max[pidx]
-                return rmin + np.where(sden != 0, (sample_nr - smin) * (rmax - rmin) / sden, np.nan)
+                ratio = np.full(sample_nr.shape, np.nan, dtype=np.float64)
+                np.divide((sample_nr - smin) * (rmax - rmin), sden, out=ratio, where=(sden != 0))
+                return rmin + ratio
             if axis_ref == "Depth (m)":
                 if src_depth_min is None or src_depth_max is None:
                     return np.full(len(sample_nr), np.nan)
                 dmin = src_depth_min[pidx]
                 dmax = src_depth_max[pidx]
-                return dmin + np.where(sden != 0, (sample_nr - smin) * (dmax - dmin) / sden, np.nan)
+                ratio = np.full(sample_nr.shape, np.nan, dtype=np.float64)
+                np.divide((sample_nr - smin) * (dmax - dmin), sden, out=ratio, where=(sden != 0))
+                return dmin + ratio
             return np.full(len(sample_nr), np.nan)
 
         def _convert_param_values(times: np.ndarray, values: np.ndarray, src_ref: str, dst_ref: str) -> np.ndarray:
@@ -3712,10 +3726,12 @@ class EchogramBuilder:
             chunk_n_samples = max_sample_counts[chunk_start:chunk_end]  # (nc,)
 
             # Affine: y_coord = y_min + (y_max - y_min) / n_samples * j
-            b_fwd = np.where(
-                chunk_n_samples > 0,
-                (chunk_y_max - chunk_y_min) / chunk_n_samples,
-                0.0,
+            b_fwd = np.zeros(chunk_n_samples.shape, dtype=np.float64)
+            np.divide(
+                (chunk_y_max - chunk_y_min),
+                chunk_n_samples,
+                out=b_fwd,
+                where=(chunk_n_samples > 0),
             )  # (nc,)
             # y_coords shape (nc, eff_s)
             y_coords = chunk_y_min[:, None] + b_fwd[:, None] * sample_indices_row[None, :eff_s]
