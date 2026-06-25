@@ -1,12 +1,14 @@
 from copy import copy
 
 import numpy as np
+from copy import deepcopy
 
 # internal pingprocessing.watercolumn imports
 from themachinethatgoesping.pingprocessing.core.asserts import assert_length
 
 # submodules
 from .echolayer import EchoLayer
+
 
 class LayerGenerator:
     """Generate processing layers on a base echogram and copy them to a second echogram.
@@ -16,25 +18,29 @@ class LayerGenerator:
     converted to depth coordinates on ``echogram_second``.
     """
 
-    def __init__(self, echogram_base, echogram_second, cut_in_range=True,
-                 minslant_relative=0.95, minslant_absolute=-0.5):
-        echogram_base.clear_layers()
-        echogram_second.clear_layers()
-
-        if echogram_base.get_y_axis_name() != 'Range (m)':
-            echogram_base.set_y_axis_range()
-        
-        self.valid = EchoLayer.from_ping_param_offsets_relative(echogram_base, 'minslant', None, minslant_relative)
-        self.valid.combine(EchoLayer.from_ping_param_offsets_absolute(echogram_base, 'minslant', None, minslant_absolute))
-        self.valid.combine(EchoLayer.from_ping_param_offsets_relative(echogram_base, 'bubbles', 1, None))
-
+    def __init__(self, echogram_base, echogram_second, valid_layer_name='valid', cut_in_range=True):
         self.cut_in_range = cut_in_range
         self.echogram_base = echogram_base
         self.echogram_second = echogram_second
+        
+        if self.cut_in_range:
+            if self.echogram_base.get_y_axis_name() != 'Range (m)':
+                self.echogram_base.set_y_axis_range()
+        else:
+            if self.echogram_base.get_y_axis_name() != 'Depth (m)':
+                self.echogram_base.set_y_axis_depth()
+        self.echogram_second.set_y_axis_depth()
+
+        self.valid = copy(echogram_base.layers[valid_layer_name])
+        self.valid2 = copy(echogram_second.layers[valid_layer_name])
+
+        echogram_base.clear_layers()
+        echogram_second.clear_layers()
+
 
     def add_layer(self, layer_range, layer_size=1):
         layer_name = self.__make_layer__(layer_range, layer_size)
-        self.__copy_layer__(self.echogram_second, layer_name)
+        self.__copy_layer__(self.echogram_second, self.valid2, layer_name)
 
     def __make_layer__(self, layer_range, layer_size=1):
         if self.cut_in_range:
@@ -50,7 +56,7 @@ class LayerGenerator:
             layer_name, layer_range - layer_size * 0.5, layer_range + layer_size * 0.5)
         return layer_name
 
-    def __copy_layer__(self, echogram2, layer_name):
+    def __copy_layer__(self, echogram2, valid_layer, layer_name):
         """Copy a layer from echogram_base to echogram2, converting to depth coordinates.
         
         Uses the base echogram's affine transforms to convert sample indices
@@ -80,4 +86,5 @@ class LayerGenerator:
         # Use ping times as x-values (works regardless of current x-axis setting)
         vec_x = self.echogram_base._backend.ping_times
         
+        echogram2.layers[layer_name] = copy(valid_layer)
         echogram2.add_layer(layer_name, vec_x, vec_y0, vec_y1)
