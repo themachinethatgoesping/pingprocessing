@@ -124,6 +124,17 @@ class EchogramCoordinateSystem:
         self.time_zone = time_zone
         self.mp_cores = 1
 
+        # Version counters used by the layer system to cache resolved bounds.
+        # ``_geometry_version`` changes whenever the per-ping geometry that maps
+        # a physical value (depth/range/sample-number) to a sample index
+        # changes (extents, ping times/numbers). Layer sample-index resolution
+        # depends only on this, NOT on the current display y-axis.
+        # ``_display_version`` changes whenever the display grid (current y-axis)
+        # changes, which only affects how a resolved band is drawn.
+        # They are initialised before the set_ping_* calls below, which bump them.
+        self._geometry_version = 0
+        self._display_version = 0
+
         # Feature mapper for coordinate lookups
         self.feature_mapper = NearestFeatureMapper()
 
@@ -184,6 +195,22 @@ class EchogramCoordinateSystem:
         # Whether ping_times have been validated (sorted + zero-gaps nudged).
         # Set on first set_x_axis_ping_time, reset when ping_times change.
         self._ping_times_validated = False
+
+    def _bump_geometry_version(self):
+        self._geometry_version += 1
+
+    def _bump_display_version(self):
+        self._display_version += 1
+
+    @property
+    def geometry_version(self) -> int:
+        """Counter that increments when per-ping value<->sample geometry changes."""
+        return self._geometry_version
+
+    @property
+    def display_version(self) -> int:
+        """Counter that increments when the display y-axis grid changes."""
+        return self._display_version
 
     @property
     def n_pings(self) -> int:
@@ -255,6 +282,7 @@ class EchogramCoordinateSystem:
         self.feature_mapper.set_feature("Ping index", ping_numbers)
         self.ping_numbers = np.asarray(ping_numbers)
         self._initialized = False
+        self._bump_geometry_version()
 
     def set_ping_times(self, ping_times: np.ndarray, time_zone: Optional[dt.timezone] = None):
         """Set ping times for x-axis time display."""
@@ -271,6 +299,7 @@ class EchogramCoordinateSystem:
         if time_zone is not None:
             self.time_zone = time_zone
         self._initialized = False
+        self._bump_geometry_version()
 
     # =========================================================================
     # Extent setters
@@ -288,6 +317,7 @@ class EchogramCoordinateSystem:
         self._initialized = False
         # Precompute affine: range = a + b * sample_index
         self._affine_sample_to_range = self._compute_affine_coefficients(self.min_ranges, self.max_ranges)
+        self._bump_geometry_version()
 
     def set_depth_extent(self, min_depths: np.ndarray, max_depths: np.ndarray):
         """Set depth extents (per-ping min/max depth in meters)."""
@@ -301,6 +331,7 @@ class EchogramCoordinateSystem:
         self._initialized = False
         # Precompute affine: depth = a + b * sample_index
         self._affine_sample_to_depth = self._compute_affine_coefficients(self.min_depths, self.max_depths)
+        self._bump_geometry_version()
 
     def set_sample_nr_extent(self, min_sample_nrs: np.ndarray, max_sample_nrs: np.ndarray):
         """Set sample number extents (per-ping min/max sample numbers)."""
@@ -314,6 +345,7 @@ class EchogramCoordinateSystem:
         self._initialized = False
         # Precompute affine: sample_nr = a + b * sample_index
         self._affine_sample_to_sample_nr = self._compute_affine_coefficients(self.min_sample_nrs, self.max_sample_nrs)
+        self._bump_geometry_version()
 
     # =========================================================================
     # Ping parameters
@@ -576,7 +608,10 @@ class EchogramCoordinateSystem:
             b_inv = np.where(b != 0, 1.0 / b, np.nan).astype(np.float32)
             a_inv = np.where(b != 0, -a / b, np.nan).astype(np.float32)
         self._affine_y_to_sample = (a_inv, b_inv)
-        
+
+        # The display grid changed -> drawn layer bands must be re-projected.
+        self._bump_display_version()
+
         # Call layer update callback if provided
         if layer_update_callback is not None:
             layer_update_callback()
@@ -1235,6 +1270,141 @@ class EchogramCoordinateSystem:
         delta_x = np.abs(vec_x_val[wci_index] - x_coordinates)
         valid = np.where(delta_x < self.x_interpolation_limit)[0]
         return image_index[valid], wci_index[valid]
+
+    # =========================================================================
+    # Reference <-> sample-index helpers (used by the layer system)
+    # =========================================================================
+
+    def _forward_affine_for_reference(self, reference: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Return per-ping (a, b) with ``value = a + b * sample_index`` for a reference.
+
+        ``reference`` is one of 'Y indice', 'Sample number', 'Depth (m)', 'Range (m)'.
+        For 'Y indice' the mapping is the identity (a=0, b=1).
+        """
+        n = self._n_pings
+        match reference:
+            case "Y indice":
+                return np.zeros(n, dtype=np.float32), np.ones(n, dtype=np.float32)
+            case "Sample number":
+                assert self.has_sample_nrs, "ERROR: Sample nr values not initialized"
+                return self._affine_sample_to_sample_nr
+            case "Depth (m)":
+                assert self.has_depths, "ERROR: Depth values not initialized"
+                return self._affine_sample_to_depth
+            case "Range (m)":
+                assert self.has_ranges, "ERROR: Range values not initialized"
+                return self._affine_sample_to_range
+            case _:
+                raise RuntimeError(f"Invalid reference '{reference}'")
+
+    def affine_sample_to_value(self, reference: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Per-ping (a, b) such that ``value = a + b * sample_index`` for ``reference``."""
+        return self._forward_affine_for_reference(reference)
+
+    def affine_value_to_sample(self, reference: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Per-ping (a_inv, b_inv) such that ``sample_index = a_inv + b_inv * value``.
+
+        Inverse of :meth:`affine_sample_to_value`. NaN where the mapping is
+        undefined (degenerate pings).
+        """
+        a, b = self._forward_affine_for_reference(reference)
+        a = np.asarray(a, dtype=np.float32)
+        b = np.asarray(b, dtype=np.float32)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            b_inv = np.where(b != 0, 1.0 / b, np.nan).astype(np.float32)
+            a_inv = np.where(b != 0, -a / b, np.nan).astype(np.float32)
+        return a_inv, b_inv
+
+    def value_to_sample_index(self, reference: str, values: np.ndarray) -> np.ndarray:
+        """Convert per-ping ``values`` (in ``reference`` units) to sample indices."""
+        a_inv, b_inv = self.affine_value_to_sample(reference)
+        values = np.asarray(values, dtype=np.float64)
+        return a_inv + b_inv * values
+
+    def sample_index_to_value(self, reference: str, sample_indices: np.ndarray) -> np.ndarray:
+        """Convert per-ping ``sample_indices`` to values in ``reference`` units."""
+        a, b = self._forward_affine_for_reference(reference)
+        sample_indices = np.asarray(sample_indices, dtype=np.float64)
+        return a + b * sample_indices
+
+    def get_param_values(self, name: str, reference: str) -> np.ndarray:
+        """Return a ping parameter as a per-ping array in ``reference`` units.
+
+        Resolves the (possibly sparse, time-referenced) parameter onto every
+        ping, then converts native-reference -> sample index -> ``reference``.
+        This is axis-display independent and used to build param-relative layers.
+        """
+        assert name in self.param, f"ERROR[get_param_values]: param '{name}' not registered"
+        native_reference, param_data = self.param[name]
+
+        # Resolve to one native value per ping (dense array or interpolated sparse).
+        is_sparse = isinstance(param_data, tuple) and len(param_data) == 2
+        if is_sparse:
+            sparse_x, sparse_y = param_data
+            sparse_x = np.asarray(sparse_x, dtype=np.float64)
+            sparse_y = np.asarray(sparse_y, dtype=np.float64)
+            order = np.argsort(sparse_x)
+            sparse_x = sparse_x[order]
+            sparse_y = sparse_y[order]
+            unique_x, inv = np.unique(sparse_x, return_inverse=True)
+            if len(unique_x) < len(sparse_x):
+                sums = np.bincount(inv, weights=sparse_y)
+                counts = np.bincount(inv)
+                sparse_x = unique_x
+                sparse_y = sums / counts
+            if len(sparse_x) == 0:
+                native = np.full(self._n_pings, np.nan, dtype=np.float64)
+            else:
+                native = tools.vectorinterpolators.LinearInterpolator(
+                    sparse_x, sparse_y, extrapolation_mode="nearest"
+                )(np.asarray(self.ping_times, dtype=np.float64))
+        else:
+            native = np.asarray(param_data, dtype=np.float64)
+
+        if native_reference == reference:
+            return native
+
+        # native value -> sample index -> target reference value
+        sample_indices = self.value_to_sample_index(native_reference, native)
+        return self.sample_index_to_value(reference, sample_indices)
+
+    def samples_to_grid(self, i0: np.ndarray, i1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Project per-ping sample-index bands to current display grid indices.
+
+        Given per-ping sample-index bounds ``i0`` (inclusive) / ``i1`` (exclusive),
+        returns ``(y0, y1)`` grid-index bounds in the current y-axis, clamped to
+        ``[0, n_grid]`` with ``y1 >= y0``. Empty/degenerate pings yield ``y0==y1``.
+        """
+        self.reinit()
+        n = self._n_pings
+        if self._affine_sample_to_y is None:
+            zeros = np.zeros(n, dtype=np.int64)
+            return zeros, zeros.copy()
+        a_y, b_y = self._affine_sample_to_y
+        i0 = np.asarray(i0, dtype=np.float64)
+        i1 = np.asarray(i1, dtype=np.float64)
+        # Map the two sample-index edges to display-y values, then to grid index.
+        y_edge0 = a_y + b_y * i0
+        y_edge1 = a_y + b_y * (i1 - 1)
+        g0 = self.y_gridder.get_x_index(y_edge0)
+        g1 = self.y_gridder.get_x_index(y_edge1)
+        g0 = np.asarray(g0, dtype=np.float64)
+        g1 = np.asarray(g1, dtype=np.float64)
+        lo = np.minimum(g0, g1)
+        hi = np.maximum(g0, g1) + 1.0
+        n_grid = self.y_gridder.get_nx()
+        finite = np.isfinite(lo) & np.isfinite(hi)
+        y0 = np.where(finite, lo, 0.0)
+        y1 = np.where(finite, hi, 0.0)
+        y0 = np.clip(y0, 0, n_grid).astype(np.int64)
+        y1 = np.clip(y1, 0, n_grid).astype(np.int64)
+        y1 = np.maximum(y1, y0)
+        # Bands with i0 >= i1 are empty (zero samples). Force y0 == y1 so
+        # image rendering produces exactly 0 display pixels, not 1 pixel from
+        # the i0 vs i1-1 edge projection.
+        empty = np.asarray(i0, dtype=np.int64) >= np.asarray(i1, dtype=np.int64)
+        y1 = np.where(empty, y0, y1)
+        return y0, y1
 
     # =========================================================================
     # Axis copying

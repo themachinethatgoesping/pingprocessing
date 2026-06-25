@@ -1,9 +1,31 @@
-# folders
+"""Echogram layer system: portable region-of-interest specs and aggregation.
 
-# modules
+Public API
+----------
+* :class:`Layer` / :class:`Boundary` -- portable, echogram-independent layer specs.
+* :class:`LayerStore` / :class:`ResolvedBand` -- per-echogram resolution + caching.
+* :class:`PingData` -- lightweight per-ping accessor.
+* :func:`transfer_layer` / :func:`transfer_layers` -- move layers between echograms
+  through a shared physical reference (depth by default).
+* :class:`LayerProcessor` -- pool layer samples into time blocks for comparison /
+  calibration across echograms.
+"""
 
-# functions
-from .echolayer import EchoLayer
-from .layergenerator import LayerGenerator
-from .layerprocessor import LayerProcessor
+from .layer import Boundary, Layer, REFERENCES
+from .store import LayerStore, ResolvedBand
+from .pingdata import PingData
+from .transfer import transfer_layer, transfer_layers
+from .processor import LayerProcessor
+
+__all__ = [
+    "Boundary",
+    "Layer",
+    "REFERENCES",
+    "LayerStore",
+    "ResolvedBand",
+    "PingData",
+    "transfer_layer",
+    "transfer_layers",
+    "LayerProcessor",
+]
 

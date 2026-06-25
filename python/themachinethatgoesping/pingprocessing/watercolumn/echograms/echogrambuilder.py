@@ -25,7 +25,9 @@ from themachinethatgoesping.pingprocessing.core.progress import get_progress_ite
 # Local imports
 from .coordinate_system import EchogramCoordinateSystem
 from .backends import EchogramDataBackend, PingDataBackend
-from .layers.echolayer import EchoLayer, PingData
+from .layers.layer import Layer
+from .layers.store import LayerStore
+from .layers.pingdata import PingData
 
 
 class EchogramBuilder:
@@ -63,9 +65,11 @@ class EchogramBuilder:
             ping_numbers=ping_numbers,
         )
 
-        # Layer management
-        self.layers = {}
-        self.main_layer = None
+        # Layer management. Layers are portable specs resolved on demand by the
+        # store; switching display axis never invalidates them. The reserved
+        # name "main" is the display mask applied to the main echogram image.
+        self._layer_store = LayerStore(self._coord_system)
+        self._main_store = LayerStore(self._coord_system)
 
         # Optional per-ping value arrays associated with a ping param. When
         # a param has registered values, the echogram viewer auto-colors the
@@ -92,7 +96,7 @@ class EchogramBuilder:
         self._init_ping_params_from_backend()
 
         # Set default axes
-        self._coord_system.set_y_axis_y_indice(layer_update_callback=self._update_layers)
+        self._coord_system.set_y_axis_y_indice()
         self._coord_system.set_x_axis_ping_index()
         
         self.mp_cores = 1
@@ -213,12 +217,20 @@ class EchogramBuilder:
                 continue
             self.add_ping_param(name, "Ping time", y_ref, times, values)
 
-    def _update_layers(self):
-        """Update all layers after coordinate system change."""
-        if self.main_layer is not None:
-            self.main_layer.update_y_gridder()
-        for layer in self.layers.values():
-            layer.update_y_gridder()
+    @property
+    def layers(self) -> LayerStore:
+        """Named layer store (excludes the reserved display-mask 'main')."""
+        return self._layer_store
+
+    @property
+    def main_layer(self):
+        """Resolved display-mask layer ('main') or ``None`` if not set."""
+        return self._main_store.get("main")
+
+    @property
+    def ping_times(self) -> np.ndarray:
+        """Per-ping timestamps (Unix seconds)."""
+        return self._backend.ping_times
 
     # =========================================================================
     # Factory methods
@@ -799,33 +811,35 @@ class EchogramBuilder:
             self.set_x_axis_ping_index()
 
     def _save_layers_to_dir(self, output_path: Path, metadata: dict):
-        """Save layer boundary arrays to a directory and update metadata dict.
-        
-        Stores per-ping vec_min_y/vec_max_y for each named layer and the
-        main layer (if set) as .npy files. Adds layer_names and has_main_layer
-        to the metadata dict.
-        
+        """Save layer sample-index bands to a directory and update metadata.
+
+        Stores per-ping ``i0``/``i1`` sample-index bounds for each named layer
+        and the main layer (if set) as .npy files. These reconstruct the exact
+        same bands regardless of the display axis active at load time.
+
         Args:
             output_path: Directory to write .npy files into.
             metadata: Metadata dict to update with layer info.
         """
         layer_names = []
-        for layer_name, layer in self.layers.items():
+        for layer_name in self._layer_store.names():
+            band = self._layer_store.resolve(layer_name)
             layer_names.append(layer_name)
-            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y.astype(np.float32))
-            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y.astype(np.float32))
-        if self.main_layer is not None:
-            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y.astype(np.float32))
-            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y.astype(np.float32))
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", band.i0.astype(np.int64))
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", band.i1.astype(np.int64))
+        main = self._main_store.get("main")
+        if main is not None:
+            np.save(output_path / "layer_main_min_y.npy", main.i0.astype(np.int64))
+            np.save(output_path / "layer_main_max_y.npy", main.i1.astype(np.int64))
         metadata["layer_names"] = layer_names
-        metadata["has_main_layer"] = self.main_layer is not None
+        metadata["has_main_layer"] = main is not None
 
     def _restore_layers_from_store(self, layer_names_json, has_main_layer, get_array):
-        """Restore layers from stored boundary arrays.
-        
-        Reconstructs EchoLayer objects from saved vec_min_y/vec_max_y arrays
-        using ping times as x-coordinates.
-        
+        """Restore layers from stored sample-index bands.
+
+        Reconstructs layers from saved ``i0``/``i1`` arrays using exact
+        sample-index bounds.
+
         Args:
             layer_names_json: JSON string of layer name list, or a list.
             has_main_layer: Whether a main layer was stored.
@@ -833,30 +847,27 @@ class EchogramBuilder:
                        array by name (e.g. "layer_bottom_min_y").
         """
         import json as json_mod
-        
+
         if isinstance(layer_names_json, str):
             layer_names = json_mod.loads(layer_names_json)
         else:
             layer_names = list(layer_names_json)
-        
-        ping_times = self._backend.ping_times
-        
+
         for name in layer_names:
-            min_y = get_array(f"layer_{name}_min_y")
-            max_y = get_array(f"layer_{name}_max_y")
-            if min_y is not None and max_y is not None:
+            i0 = get_array(f"layer_{name}_min_y")
+            i1 = get_array(f"layer_{name}_max_y")
+            if i0 is not None and i1 is not None:
                 try:
-                    self.add_layer(name, ping_times, min_y, max_y)
+                    self.add_layer(name, Layer.from_sample_indices(i0, i1, name=name))
                 except Exception:
                     pass  # Skip layers that fail to reconstruct
-        
+
         if has_main_layer:
-            min_y = get_array("layer_main_min_y")
-            max_y = get_array("layer_main_max_y")
-            if min_y is not None and max_y is not None:
+            i0 = get_array("layer_main_min_y")
+            i1 = get_array("layer_main_max_y")
+            if i0 is not None and i1 is not None:
                 try:
-                    layer = EchoLayer(self, ping_times, min_y, max_y)
-                    self._set_layer("main", layer)
+                    self.set_main_layer(Layer.from_sample_indices(i0, i1, name="main"))
                 except Exception:
                     pass  # Skip main layer if it fails to reconstruct
 
@@ -887,7 +898,6 @@ class EchogramBuilder:
             min_sample_nr=min_sample_nr,
             max_sample_nr=max_sample_nr,
             max_steps=max_steps,
-            layer_update_callback=self._update_layers,
             **kwargs
         )
 
@@ -897,7 +907,6 @@ class EchogramBuilder:
             min_depth=min_depth,
             max_depth=max_depth,
             max_steps=max_steps,
-            layer_update_callback=self._update_layers,
             **kwargs
         )
 
@@ -907,7 +916,6 @@ class EchogramBuilder:
             min_range=min_range,
             max_range=max_range,
             max_steps=max_steps,
-            layer_update_callback=self._update_layers,
             **kwargs
         )
 
@@ -917,7 +925,6 @@ class EchogramBuilder:
             min_sample_nr=min_sample_nr,
             max_sample_nr=max_sample_nr,
             max_steps=max_steps,
-            layer_update_callback=self._update_layers,
             **kwargs
         )
 
@@ -1469,23 +1476,29 @@ class EchogramBuilder:
     def _apply_layer_mask_to_image(
         self,
         source_image: np.ndarray,
-        layer: EchoLayer,
+        layer,
         image_indices: np.ndarray,
         wci_indices: np.ndarray,
     ) -> np.ndarray:
         """Project one layer onto an already rendered image grid.
 
-        This avoids calling backend.get_column() for every visible x position.
+        Vectorized over the visible columns: builds a per-column band mask from
+        the layer's grid indices and copies only the in-band pixels. This avoids
+        calling backend.get_column() for every visible x position.
         """
         masked = np.full_like(source_image, np.nan, dtype=np.float32)
         ny = source_image.shape[1]
+        image_indices = np.asarray(image_indices, dtype=np.int64)
+        wci_indices = np.asarray(wci_indices, dtype=np.int64)
+        if image_indices.size == 0:
+            return masked
 
-        for image_index, wci_index in zip(image_indices, wci_indices):
-            start_y = max(0, int(layer.y0[wci_index]))
-            end_y = min(ny, int(layer.y1[wci_index]))
-            if start_y < end_y:
-                masked[image_index, start_y:end_y] = source_image[image_index, start_y:end_y]
-
+        y0 = np.clip(np.asarray(layer.y0)[wci_indices], 0, ny)
+        y1 = np.clip(np.asarray(layer.y1)[wci_indices], 0, ny)
+        y_idx = np.arange(ny)
+        band = (y_idx[None, :] >= y0[:, None]) & (y_idx[None, :] < y1[:, None])
+        rows = source_image[image_indices]
+        masked[image_indices] = np.where(band, rows, np.nan)
         return masked
 
     def build_image(self, progress=None):
@@ -1545,15 +1558,20 @@ class EchogramBuilder:
 
         # Build layer image by masking the base image, avoiding per-column backend calls.
         layer_image = np.full((nx, ny), np.nan, dtype=np.float32)
-        if len(self.layers) > 0:
-            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer image")
-            
-            for image_index, wci_index in zip(image_indices, wci_indices):
-                for layer in self.layers.values():
-                    start_y = max(0, int(layer.y0[wci_index]))
-                    end_y = min(ny, int(layer.y1[wci_index]))
-                    if start_y < end_y:
-                        layer_image[image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
+        if len(self.layers) > 0 and len(image_indices) > 0:
+            img_idx = np.asarray(image_indices, dtype=np.int64)
+            wci_idx = np.asarray(wci_indices, dtype=np.int64)
+            y_idx = np.arange(ny)
+            rows = base_image[img_idx]
+            names = get_progress_iterator(
+                list(self.layers.keys()), progress, desc="Building layer image")
+            for name in names:
+                band = self.layers.resolve(name)
+                y0 = np.clip(np.asarray(band.y0)[wci_idx], 0, ny)
+                y1 = np.clip(np.asarray(band.y1)[wci_idx], 0, ny)
+                in_band = (y_idx[None, :] >= y0[:, None]) & (y_idx[None, :] < y1[:, None])
+                # Combine layers: keep any pixel that belongs to at least one layer.
+                layer_image[img_idx] = np.where(in_band, rows, layer_image[img_idx])
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1587,20 +1605,24 @@ class EchogramBuilder:
                 base_image, self.main_layer, image_indices, wci_indices
             )
 
-        # Build layer images (requires per-column iteration, no oversampling)
+        # Build layer images (vectorized per layer over the visible columns)
         layer_images = {}
         for key in self.layers.keys():
             layer_images[key] = np.full((nx, ny), np.nan, dtype=np.float32)
 
-        if len(self.layers) > 0:
-            image_indices = get_progress_iterator(image_indices, progress, desc="Building layer images")
-
-            for image_index, wci_index in zip(image_indices, wci_indices):
-                for key, layer in self.layers.items():
-                    start_y = max(0, int(layer.y0[wci_index]))
-                    end_y = min(ny, int(layer.y1[wci_index]))
-                    if start_y < end_y:
-                        layer_images[key][image_index, start_y:end_y] = base_image[image_index, start_y:end_y]
+        if len(self.layers) > 0 and len(image_indices) > 0:
+            img_idx = np.asarray(image_indices, dtype=np.int64)
+            wci_idx = np.asarray(wci_indices, dtype=np.int64)
+            y_idx = np.arange(ny)
+            rows = base_image[img_idx]
+            names = get_progress_iterator(
+                list(self.layers.keys()), progress, desc="Building layer images")
+            for key in names:
+                band = self.layers.resolve(key)
+                y0 = np.clip(np.asarray(band.y0)[wci_idx], 0, ny)
+                y1 = np.clip(np.asarray(band.y1)[wci_idx], 0, ny)
+                in_band = (y_idx[None, :] >= y0[:, None]) & (y_idx[None, :] < y1[:, None])
+                layer_images[key][img_idx] = np.where(in_band, rows, np.nan)
 
         extent = deepcopy(cs.x_extent)
         extent.extend(cs.y_extent)
@@ -1679,61 +1701,111 @@ class EchogramBuilder:
 
         return extents
 
-    def _set_layer(self, name, layer):
-        """Internal method to set or combine layers."""
-        if name == "main":
-            if self.main_layer is not None:
-                self.main_layer.combine(layer)
-            else:
-                self.main_layer = layer
-        else:
-            if name in self.layers.keys():
-                self.layers[name].combine(layer)
-            else:
-                self.layers[name] = layer
+    def _layer_store_for(self, name):
+        """Return the store that owns ``name`` ('main' is the display mask)."""
+        return self._main_store if name == "main" else self._layer_store
 
-    # Backward compatibility alias
-    __set_layer__ = _set_layer
+    def add_layer(self, name, layer, *, combine=True):
+        """Add a :class:`Layer` spec under ``name``.
 
-    def add_layer(self, name, vec_x_val, vec_min_y, vec_max_y):
-        """Add a layer with explicit boundaries."""
-        layer = EchoLayer(self, vec_x_val, vec_min_y, vec_max_y)
-        self._set_layer(name, layer)
+        Args:
+            name: Layer name. The reserved name ``'main'`` designates the
+                display mask applied to the main echogram image.
+            layer: A :class:`Layer` (or list of layers, intersected).
+            combine: If ``True`` and ``name`` already exists, intersect the new
+                spec with the existing one(s); otherwise replace.
+        """
+        self._layer_store_for(name).add(name, layer, combine=combine)
 
-    def add_layer_from_static_layer(self, name, min_y, max_y):
-        """Add a layer with static boundaries."""
-        layer = EchoLayer.from_static_layer(self, min_y, max_y)
-        self._set_layer(name, layer)
+    def set_layer(self, name, layer):
+        """Replace any existing layer(s) under ``name`` with ``layer``."""
+        self.add_layer(name, layer, combine=False)
 
-    def add_layer_from_ping_param_offsets_absolute(self, name, ping_param_name, offset_0, offset_1):
-        """Add a layer based on absolute offsets from a ping parameter."""
-        layer = EchoLayer.from_ping_param_offsets_absolute(self, ping_param_name, offset_0, offset_1)
-        self._set_layer(name, layer)
+    def set_main_layer(self, layer):
+        """Set the display-mask layer applied to the main echogram image."""
+        self.add_layer("main", layer, combine=False)
 
-    def add_layer_from_ping_param_offsets_relative(self, name, ping_param_name, offset_0, offset_1):
-        """Add a layer based on relative offsets from a ping parameter."""
-        layer = EchoLayer.from_ping_param_offsets_relative(self, ping_param_name, offset_0, offset_1)
-        self._set_layer(name, layer)
+    # -- convenience constructors (delegate to the Layer engine) ----------
+    def add_layer_from_static_layer(self, name, min_y, max_y, *, combine=True):
+        """Add a band spanning ``[min_y, max_y]`` in the current y-axis units.
+
+        The band's reference frame is fixed to the y-axis active *now*, so it
+        stays correct even if the display axis later changes.
+        """
+        self.add_layer(
+            name, Layer(self.get_y_axis_name(), min_y, max_y, name=name),
+            combine=combine)
+
+    def add_layer_from_ping_param_offsets_absolute(
+            self, name, ping_param_name, offset_0, offset_1, *, combine=True):
+        """Add a band at ``param + offset_0 .. param + offset_1``.
+
+        The band is expressed in the current y-axis reference. ``None`` offsets
+        make that edge open (data extent).
+        """
+        self.add_layer(
+            name,
+            Layer.from_param_absolute(
+                ping_param_name, offset_0, offset_1,
+                reference=self.get_y_axis_name(), name=name),
+            combine=combine)
+
+    def add_layer_from_ping_param_offsets_relative(
+            self, name, ping_param_name, offset_0, offset_1, *, combine=True):
+        """Add a band at ``param * offset_0 .. param * offset_1``.
+
+        The band is expressed in the current y-axis reference. ``None`` scales
+        make that edge open (data extent).
+        """
+        self.add_layer(
+            name,
+            Layer.from_param_relative(
+                ping_param_name, offset_0, offset_1,
+                reference=self.get_y_axis_name(), name=name),
+            combine=combine)
 
     def remove_layer(self, name):
-        """Remove a layer by name."""
-        if name == "main":
-            self.main_layer = None
-        elif name in self.layers.keys():
-            self.layers.pop(name)
+        """Remove a layer by name (use ``'main'`` for the display mask)."""
+        self._layer_store_for(name).remove(name)
 
     def clear_layers(self):
-        """Remove all layers except main."""
-        self.layers = {}
+        """Remove all named layers (keeps the 'main' display mask)."""
+        self._layer_store.clear()
 
     def clear_main_layer(self):
-        """Remove the main layer."""
-        self.main_layer = None
+        """Remove the display-mask 'main' layer."""
+        self._main_store.remove("main")
+
+    def has_layers(self) -> bool:
+        """Whether any named layer or the 'main' mask is set."""
+        return len(self._layer_store) > 0 or "main" in self._main_store
+
+    def layer_names(self):
+        """Names of all named layers (excludes 'main')."""
+        return self._layer_store.names()
+
+    def get_layer_sample_indices(self, name):
+        """Per-ping ``(i0, i1)`` sample-index bounds for ``name``."""
+        return self._layer_store_for(name).sample_indices(name)
+
+    def get_layer_grid_indices(self, name):
+        """Per-ping ``(y0, y1)`` display-grid bounds for ``name``."""
+        return self._layer_store_for(name).grid_indices(name)
+
+    def get_layer_bounds(self, name, reference="Depth (m)"):
+        """Per-ping ``(lower, upper)`` values for ``name`` in ``reference`` units.
+
+        Useful for transferring a layer to another echogram via a shared
+        physical reference (e.g. depth).
+        """
+        return self._layer_store_for(name).bounds(name, reference)
 
     def iterate_ping_data(self, keep_to_xlimits=True):
-        """Iterate over ping data objects."""
+        """Iterate over lightweight per-ping accessors (:class:`PingData`)."""
         if keep_to_xlimits:
             xcoord = self.get_x_indices()[1]
+            if len(xcoord) == 0:
+                return []
             nrs = np.arange(xcoord[0], xcoord[-1] + 1)
         else:
             nrs = range(self._backend.n_pings)
@@ -1840,7 +1912,7 @@ class EchogramBuilder:
             builder.set_y_axis_depth()
             builder.set_oversampling(x_oversampling=2, y_oversampling=2)
             builder.add_ping_param("my_line", "Ping time", "Depth (m)", ts, vals)
-            builder.add_layer_from_static_layer("roi", 10, 50)
+            builder.add_layer("roi", Layer.depth(10, 50))
             builder.update_store()          # writes back to the same store
             
             # …or save to a *different* store's metadata
@@ -2042,35 +2114,37 @@ class EchogramBuilder:
                 del store[arr_name]
         
         layer_names = []
-        for layer_name, layer in self.layers.items():
+        for layer_name in self._layer_store.names():
+            band = self._layer_store.resolve(layer_name)
             layer_names.append(layer_name)
             store.create_array(
                 f"layer_{layer_name}_min_y",
-                data=layer.vec_min_y.astype(np.float32),
+                data=band.i0.astype(np.int64),
                 dimension_names=["ping"],
                 overwrite=True,
             )
             store.create_array(
                 f"layer_{layer_name}_max_y",
-                data=layer.vec_max_y.astype(np.float32),
+                data=band.i1.astype(np.int64),
                 dimension_names=["ping"],
                 overwrite=True,
             )
-        if self.main_layer is not None:
+        main = self._main_store.get("main")
+        if main is not None:
             store.create_array(
                 "layer_main_min_y",
-                data=self.main_layer.vec_min_y.astype(np.float32),
+                data=main.i0.astype(np.int64),
                 dimension_names=["ping"],
                 overwrite=True,
             )
             store.create_array(
                 "layer_main_max_y",
-                data=self.main_layer.vec_max_y.astype(np.float32),
+                data=main.i1.astype(np.int64),
                 dimension_names=["ping"],
                 overwrite=True,
             )
         store.attrs["layer_names"] = json.dumps(layer_names)
-        store.attrs["has_main_layer"] = self.main_layer is not None
+        store.attrs["has_main_layer"] = main is not None
         
         # Re-consolidate metadata
         zarr.consolidate_metadata(str(target))
@@ -2457,15 +2531,17 @@ class EchogramBuilder:
         
         # Layer data
         layer_names = []
-        for layer_name, layer in self.layers.items():
+        for layer_name in self._layer_store.names():
+            band = self._layer_store.resolve(layer_name)
             layer_names.append(layer_name)
-            store.create_array(f"layer_{layer_name}_min_y", data=layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
-            store.create_array(f"layer_{layer_name}_max_y", data=layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
-        if self.main_layer is not None:
-            store.create_array("layer_main_min_y", data=self.main_layer.vec_min_y.astype(np.float32), dimension_names=["ping"])
-            store.create_array("layer_main_max_y", data=self.main_layer.vec_max_y.astype(np.float32), dimension_names=["ping"])
+            store.create_array(f"layer_{layer_name}_min_y", data=band.i0.astype(np.int64), dimension_names=["ping"])
+            store.create_array(f"layer_{layer_name}_max_y", data=band.i1.astype(np.int64), dimension_names=["ping"])
+        main = self._main_store.get("main")
+        if main is not None:
+            store.create_array("layer_main_min_y", data=main.i0.astype(np.int64), dimension_names=["ping"])
+            store.create_array("layer_main_max_y", data=main.i1.astype(np.int64), dimension_names=["ping"])
         store.attrs["layer_names"] = json.dumps(layer_names)
-        store.attrs["has_main_layer"] = self.main_layer is not None
+        store.attrs["has_main_layer"] = main is not None
         
         # Consolidate metadata for faster reads (single file instead of many)
         zarr.consolidate_metadata(path)
@@ -3898,14 +3974,16 @@ class EchogramBuilder:
 
         # Layers
         layer_names = []
-        for layer_name, layer in self.layers.items():
+        for layer_name in self._layer_store.names():
+            band = self._layer_store.resolve(layer_name)
             layer_names.append(layer_name)
-            np.save(output_path / f"layer_{layer_name}_min_y.npy", layer.vec_min_y)
-            np.save(output_path / f"layer_{layer_name}_max_y.npy", layer.vec_max_y)
-        has_main_layer = self.main_layer is not None
+            np.save(output_path / f"layer_{layer_name}_min_y.npy", band.i0.astype(np.int64))
+            np.save(output_path / f"layer_{layer_name}_max_y.npy", band.i1.astype(np.int64))
+        main = self._main_store.get("main")
+        has_main_layer = main is not None
         if has_main_layer:
-            np.save(output_path / "layer_main_min_y.npy", self.main_layer.vec_min_y)
-            np.save(output_path / "layer_main_max_y.npy", self.main_layer.vec_max_y)
+            np.save(output_path / "layer_main_min_y.npy", main.i0.astype(np.int64))
+            np.save(output_path / "layer_main_max_y.npy", main.i1.astype(np.int64))
 
         # Preserve source axis information per x-bin where possible.
         bin_range_extents = _compute_bin_extents("range")
