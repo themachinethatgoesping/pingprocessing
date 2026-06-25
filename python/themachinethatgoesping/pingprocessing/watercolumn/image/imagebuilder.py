@@ -169,23 +169,28 @@ class ImageBuilder:
                 else:
                     self._cache[i] = wci_db
 
-        # Aggregate cached sub-images
-        WCI = None
+        # Aggregate cached sub-images.
+        #
+        # Use in-place masked accumulation to avoid per-ping temporary array
+        # allocations (np.stack + nansum), which are expensive during playback.
+        # This keeps the fixed-view cache path fast when sliding the stack window.
+        WCI_sum = None
         NUM = None
         for i in needed:
             img = self._cache[i]
             use = np.isfinite(img)
-            if WCI is None:
-                WCI = np.full(img.shape, np.nan, dtype=np.float64)
+            if WCI_sum is None:
+                WCI_sum = np.zeros(img.shape, dtype=np.float64)
                 NUM = np.zeros(img.shape, dtype=np.float64)
-            WCI[use] = np.nansum(np.stack([WCI[use], img[use].astype(np.float64)]), axis=0)
-            NUM[use] += 1
+            WCI_sum[use] += img[use]
+            NUM[use] += 1.0
 
-        if WCI is None:
+        if WCI_sum is None:
             WCI = np.empty((len(y_coords), len(z_coords)), dtype=np.float32)
             WCI.fill(np.nan)
         else:
-            WCI = WCI / NUM
+            WCI = np.full(WCI_sum.shape, np.nan, dtype=np.float64)
+            np.divide(WCI_sum, NUM, out=WCI, where=(NUM > 0))
             if linear_mean:
                 WCI = 10 * np.log10(WCI)
 
