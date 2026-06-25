@@ -206,17 +206,19 @@ class PingDataBackend(EchogramDataBackend):
                         bottom_samples = ping.watercolumn.get_bottom_range_samples(sel)
                         valid = bottom_samples[bottom_samples > 0]
                         if len(valid) > 0:
-                            br = float(np.median(valid)) * range_res * angle_factor
+                            br = float(np.median(valid)) #* range_res * angle_factor
                         else:
-                            br = float(np.median(bottom_samples)) * range_res * angle_factor
-                        mr = ping.watercolumn.get_minslant_sample_nr(sel) * range_res * angle_factor
+                            br = float(np.median(bottom_samples))# * range_res * angle_factor
+                        mr = ping.watercolumn.get_minslant_sample_nr()# * range_res * angle_factor
                         bottom_d_times.append(times[nr])
 
                         if not no_navigation:
-                            bd = br + z
-                            md = mr + z
-                            bottom_d.append(bd)
-                            minslant_d.append(md)
+                            #bd = br + z
+                            #md = mr + z
+                            #bottom_d.append(bd)
+                            #minslant_d.append(md)
+                            bottom_d.append(br)
+                            minslant_d.append(mr)
                     except Exception:
                         pass  # TODO: this should create a warning in the log
 
@@ -238,8 +240,8 @@ class PingDataBackend(EchogramDataBackend):
         # Build ping params dictionary (curves only: geometry overlays)
         ping_params = {}
         if len(bottom_d) > 0:
-            ping_params["bottom"] = ("Depth (m)", (bottom_d_times, bottom_d))
-            ping_params["minslant"] = ("Depth (m)", (bottom_d_times, minslant_d))
+            ping_params["bottom"] = ("Sample number", (bottom_d_times, bottom_d))
+            ping_params["minslant"] = ("Sample number", (bottom_d_times, minslant_d))
         if len(echosounder_d) > 0:
             ping_params["echosounder"] = ("Depth (m)", (echosounder_d_times, echosounder_d))
         
