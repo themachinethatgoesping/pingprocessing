@@ -7,15 +7,15 @@ Public API
 * :class:`PingData` -- lightweight per-ping accessor.
 * :func:`transfer_layer` / :func:`transfer_layers` -- move layers between echograms
   through a shared physical reference (depth by default).
-* :class:`LayerProcessor` -- pool layer samples into time blocks for comparison /
-  calibration across echograms.
+
+For pooling layer samples into time blocks and cross-calibrating echograms, see
+the sibling :mod:`..calibration` subpackage.
 """
 
 from .layer import Boundary, Layer, REFERENCES
 from .store import LayerStore, ResolvedBand
 from .pingdata import PingData
 from .transfer import transfer_layer, transfer_layers
-from .processor import LayerProcessor
 
 __all__ = [
     "Boundary",
@@ -26,6 +26,4 @@ __all__ = [
     "PingData",
     "transfer_layer",
     "transfer_layers",
-    "LayerProcessor",
 ]
-

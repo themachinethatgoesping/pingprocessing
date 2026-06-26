@@ -2,6 +2,7 @@
 
 # modules
 from . import layers
+from . import calibration
 from . import backends
 
 # functions

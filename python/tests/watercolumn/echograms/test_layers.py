@@ -17,7 +17,6 @@ from themachinethatgoesping.pingprocessing.watercolumn.echograms.echogrambuilder
 from themachinethatgoesping.pingprocessing.watercolumn.echograms.layers import (
     Boundary,
     Layer,
-    LayerProcessor,
     transfer_layer,
     transfer_layers,
 )
@@ -162,38 +161,6 @@ class TestTimeSeriesLayer:
         ext0 = echo_a.get_extent_layers(0, axis_name="Depth (m)")["sensor"]
         assert ext0[0] == pytest.approx(10.0, abs=0.3)
         assert ext0[1] == pytest.approx(14.0, abs=0.3)
-
-
-# ---------------------------------------------------------------------------
-# LayerProcessor
-# ---------------------------------------------------------------------------
-
-
-class TestLayerProcessor:
-    def test_values_and_calibration(self, echo_a, echo_b):
-        for e in (echo_a, echo_b):
-            e.add_layer("10.0m", Layer.depth(9.0, 11.0))
-            e.add_layer("15.0m", Layer.depth(14.0, 16.0))
-        proc = LayerProcessor(
-            {"A": echo_a, "B": echo_b}, layers=["10.0m", "15.0m"],
-            deltaT="2min", show_progress=False,
-        )
-        v_a = proc.value("10.0m", "A").dropna()
-        v_b = proc.value("10.0m", "B").dropna()
-        assert np.allclose(v_a.values, -50.0, atol=0.7)
-        assert np.allclose(v_b.values, -40.0, atol=0.7)
-
-        cal = proc.calibration_per_range("A", "B", bootstrap_resamples=0,
-                                         show_progress=False)
-        assert set(cal["range"]) == {10.0, 15.0}
-        assert np.allclose(cal["median_diff"].values, -10.0, atol=0.7)
-
-    def test_difference_series(self, echo_a):
-        echo_a.add_layer("10.0m", Layer.depth(9.0, 11.0))
-        proc = LayerProcessor({"A": echo_a}, layers=["10.0m"],
-                              deltaT="2min", show_progress=False)
-        diff = proc.difference("10.0m", "A", "A").dropna()
-        assert np.allclose(diff.values, 0.0)
 
 
 # ---------------------------------------------------------------------------
