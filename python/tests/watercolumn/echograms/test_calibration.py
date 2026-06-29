@@ -70,6 +70,17 @@ class TestPooling:
         with pytest.raises(ValueError):
             _pooling.pool_values([T0], [1.0, 2.0], edges)
 
+    def test_pool_values_interpolates_missing_blocks(self):
+        edges, centers = _pooling.make_time_blocks(T0, T0 + 180, 60.0)
+        times = [centers[1], centers[3]]
+        values = [10.0, 20.0]
+        pooled = _pooling.pool_values(times, values, edges, centers=centers, interpolate=True)
+        assert len(pooled) == len(edges) - 1
+        assert np.isfinite(pooled).all()
+        assert pooled[1] == pytest.approx(10.0)
+        assert pooled[2] == pytest.approx(15.0)
+        assert pooled[3] == pytest.approx(20.0)
+
 
 # ---------------------------------------------------------------------------
 # builder + data end to end
@@ -153,6 +164,23 @@ class TestResumable:
         b2.add_beam("CH", 10.0, _echo(-55.0), show_progress=False)
         data = CalibrationData.open(tmp_path / "c")
         assert sorted(data.angles("CH").tolist()) == [0.0, 10.0]
+
+    def test_reopen_keeps_param_grid_for_add_param(self, tmp_path):
+        short = _echo(-50.0, t1=T0 + 120.0)
+        b1 = CalibrationBuilder(tmp_path / "c", short, ranges=[10], layer_size=2.0,
+                                layer_reference="Depth (m)", show_progress=False)
+        b1.add_beam("CH", 0.0, _echo(-60.0, t1=T0 + 120.0), show_progress=False)
+
+        # Reopen with a much larger extent; persisted params grid must win.
+        long = _echo(-50.0, t1=T0 + 3600.0 * 4.0)
+        b2 = CalibrationBuilder(tmp_path / "c", long, ranges=[10], layer_size=2.0,
+                                layer_reference="Depth (m)", show_progress=False)
+        times = np.linspace(T0, T0 + 3600.0 * 4.0, 40)
+        values = np.linspace(1.0, 5.0, 40)
+        b2.add_param("focus_range", times, values)
+
+        data = b2.result()
+        assert len(data.params["focus_range"]) == len(data.params)
 
 
 # ---------------------------------------------------------------------------

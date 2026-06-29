@@ -116,12 +116,24 @@ class CalibrationBuilder:
         self._store.init(self._meta())
 
         # Per-block params table (full grid); seeded with the time columns.
-        self._params = pd.DataFrame({"unixtime": self._block_centers})
         existing = self._store.read_params()
         if existing is not None:
-            self._params = existing
+            params = existing.reset_index(drop=True).copy()
+            if "unixtime" not in params.columns:
+                raise ValueError("Existing params.parquet is missing required column 'unixtime'")
+
+            # Resume against the persisted time grid (one row per block).
+            persisted_centers = np.asarray(params["unixtime"], dtype=np.float64)
+            self._block_centers = persisted_centers
+            self._block_edges = _pooling.block_edges_from_centers(
+                persisted_centers, self._delta_seconds)
+            self._params = params
         else:
+            self._params = pd.DataFrame({"unixtime": self._block_centers})
             self._store.write_params(self._params)
+
+        # Keep metadata aligned with the effective (possibly resumed) block grid.
+        self._store.write_meta(self._meta())
 
     # -- metadata --------------------------------------------------------
     def _meta(self) -> dict:
@@ -193,10 +205,22 @@ class CalibrationBuilder:
             self.add_beam(channel, angle, echo, overwrite=overwrite, show_progress=False)
 
     # -- params ----------------------------------------------------------
-    def add_param(self, name: str, times, values, *, reduce=None) -> None:
-        """Pool an external ``(times, values)`` series into the block grid."""
+    def add_param(self, name: str, times, values, *, reduce=None, interpolate: bool = True) -> None:
+        """Pool an external ``(times, values)`` series into the block grid.
+
+        Parameters are first binned by time block (using ``reduce`` for blocks
+        with multiple samples) and then linearly interpolated across block
+        centers by default.
+        """
         reducer = reduce if reduce is not None else self._reduce
-        pooled = _pooling.pool_values(times, values, self._block_edges, reduce=reducer)
+        pooled = _pooling.pool_values(
+            times,
+            values,
+            self._block_edges,
+            reduce=reducer,
+            centers=self._block_centers,
+            interpolate=interpolate,
+        )
         self._params[name] = pooled
         self._store.write_params(self._params)
 
