@@ -1493,8 +1493,10 @@ class EchogramCoordinateSystem:
         y_coords = np.asarray(self.y_coordinates, dtype=np.float32)
         ny = len(y_coords)
         
-        # Max sample indices for bounds checking
-        max_sample_idx = self.max_number_of_samples.astype(np.int64) + 1
+        # Max sample indices for bounds checking.
+        # Keep non-finite entries safe for downstream bounds checks.
+        _safe_max = np.where(np.isfinite(self.max_number_of_samples), self.max_number_of_samples, 0)
+        max_sample_idx = _safe_max.astype(np.int64) + 1
         
         return EchogramImageRequest(
             nx=nx,
