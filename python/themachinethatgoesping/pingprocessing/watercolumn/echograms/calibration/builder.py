@@ -168,16 +168,11 @@ class CalibrationBuilder:
         beam_specs = list(beam.layers.specs(self._beam_mask)) if self._beam_mask else []
 
         # 1+2. Define range bands on the beam, transfer the same depths to base.
-        for r, name in zip(self._ranges, self._layer_names):
-            band = Layer(self._layer_reference, r - self._layer_size * 0.5,
-                         r + self._layer_size * 0.5, name=name)
-            beam.add_layer(name, [band] + beam_specs, combine=False)
-            transfer_layer(beam, base, name, reference=self._reference)
-            for spec in base_specs:
-                base.add_layer(name, spec, combine=True)
+        self._build_bands(beam, base, base_specs, beam_specs)
 
-        # 3. Geometry per layer (median band centres over valid pings).
-        geom = {name: self._layer_geometry(base, beam, name) for name in self._layer_names}
+        # 3. Geometry per layer (analytic, through each echogram's geometry).
+        geom = {name: self._layer_geometry(base, beam, name, r)
+                for r, name in zip(self._ranges, self._layer_names)}
 
         # 4. Pool both echograms into the shared time blocks.
         progress = self._make_progress(show_progress, channel, angle)
@@ -240,12 +235,68 @@ class CalibrationBuilder:
         """Open the (current) on-disk dataset as a :class:`CalibrationData`."""
         return CalibrationData.open(self._store.root)
 
+    # -- verification ----------------------------------------------------
+    def preview_layers(self, beam_echogram, *, base_echogram=None,
+                       ranges: Optional[Sequence[float]] = None,
+                       apply_masks: bool = True) -> Dict[str, Tuple[str, float, float]]:
+        """Add the calibration bands to *beam* and *base* for visual inspection.
+
+        Creates exactly the layers ``add_beam`` would pool, so anything you see
+        in the echogram viewer is the data that gets compared. Returns a dict
+        ``{layer_name: (reference, range_beam, depth, range_base)}`` of the
+        analytic geometry so you can confirm a band sits where expected.
+
+        Example::
+
+            builder.preview_layers(beam, base_echogram=sbes)
+            beam.add_layer(...); sbes.add_layer(...)   # already added by name
+            # ...display beam/sbes with their named layers; medians match.
+        """
+        base = base_echogram if base_echogram is not None else self._base
+        base_specs = list(base.layers.specs(self._base_mask)) if (self._base_mask and apply_masks) else []
+        beam_specs = list(beam_echogram.layers.specs(self._beam_mask)) if (self._beam_mask and apply_masks) else []
+        names = self._build_bands(beam_echogram, base, base_specs, beam_specs, ranges=ranges)
+        geom = {}
+        rng = self._ranges if ranges is None else [float(r) for r in ranges]
+        for r, name in zip(rng, names):
+            rb, rbase, depth = self._layer_geometry(base, beam_echogram, name, r)
+            geom[name] = (self._layer_reference, rb, depth, rbase)
+        return geom
+
     # -- internals -------------------------------------------------------
-    def _layer_geometry(self, base, beam, name) -> Tuple[float, float, float]:
-        depth = _median_center(beam.get_layer_bounds(name, "Depth (m)"))
-        range_beam = _safe_center(beam, name, "Range (m)", fallback=depth)
-        range_base = _safe_center(base, name, "Range (m)", fallback=depth)
-        return range_beam, range_base, depth
+    def _build_bands(self, beam, base, base_specs, beam_specs,
+                     ranges: Optional[Sequence[float]] = None):
+        """Create range bands on ``beam`` and transfer them onto ``base``.
+
+        Shared by :meth:`add_beam` (pooling) and :meth:`preview_layers`
+        (inspection) so they always produce identical layers.
+        """
+        rng = self._ranges if ranges is None else [float(r) for r in ranges]
+        names = [f"{r:g}m" for r in rng]
+        for r, name in zip(rng, names):
+            band = Layer(self._layer_reference, r - self._layer_size * 0.5,
+                         r + self._layer_size * 0.5, name=name)
+            beam.add_layer(name, [band] + beam_specs, combine=False)
+            transfer_layer(beam, base, name, reference=self._reference)
+            for spec in base_specs:
+                base.add_layer(name, spec, combine=True)
+        return names
+
+    def _layer_geometry(self, base, beam, name, r: float) -> Tuple[float, float, float]:
+        """Geometry of band ``r`` analytically through each echogram's geometry.
+
+        ``range_beam`` is the nominal band centre (the band is defined there);
+        ``depth`` is that band centre carried into depth on the *beam* echogram
+        (encodes the beam steering angle); ``range_base`` is that depth carried
+        back into range on the *base* echogram (encodes the base geometry, i.e.
+        ~= depth for a vertical echosounder). No layer/mask is involved so shallow
+        bands are not clipped, and every value is a per-ping median.
+        """
+        depth = _convert_reference_center(beam, self._layer_reference, r, self._reference,
+                                          fallback=r)
+        range_base = _convert_reference_center(base, self._reference, depth, "Range (m)",
+                                               fallback=depth)
+        return float(r), range_base, depth
 
     def _assemble(self, channel, angle, geom, base_pool, beam_pool) -> pd.DataFrame:
         centers = self._block_centers
@@ -298,20 +349,28 @@ class CalibrationBuilder:
                 f"n_beams={len(self._store.read_manifest())})")
 
 
-def _median_center(bounds) -> float:
-    lo, hi = bounds
-    center = 0.5 * (np.asarray(lo, dtype=np.float64) + np.asarray(hi, dtype=np.float64))
-    finite = center[np.isfinite(center)]
-    return float(np.median(finite)) if len(finite) else np.nan
+def _convert_reference_center(echogram, src_ref: str, value: float, dst_ref: str,
+                              *, fallback: float) -> float:
+    """Per-ping median of ``value`` (in ``src_ref``) re-expressed in ``dst_ref``.
 
-
-def _safe_center(echogram, name: str, reference: str, *, fallback: float) -> float:
-    """Median band centre in ``reference`` units; ``fallback`` if unavailable."""
+    Converts ``src_ref`` -> sample index -> ``dst_ref`` through the echogram's
+    own per-ping affine geometry (which encodes the beam angle), then takes the
+    median over pings where the geometry is defined. ``fallback`` is returned if
+    the conversion is unavailable or all pings are degenerate. When the source
+    and destination reference are identical no conversion is needed.
+    """
+    if src_ref == dst_ref:
+        return float(value)
     try:
-        value = _median_center(echogram.get_layer_bounds(name, reference))
+        cs = echogram._coord_system
+        n = cs.n_pings
+        vals = np.full(n, float(value), dtype=np.float64)
+        samples = cs.value_to_sample_index(src_ref, vals)
+        out = cs.sample_index_to_value(dst_ref, samples)
+        finite = out[np.isfinite(out)]
+        return float(np.median(finite)) if len(finite) else float(fallback)
     except Exception:
-        value = np.nan
-    return value if np.isfinite(value) else fallback
+        return float(fallback)
 
 
 def _as_unix(t) -> float:

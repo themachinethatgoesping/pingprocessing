@@ -114,6 +114,9 @@ class TestBuilderData:
         _, path = dataset
         data = CalibrationData.open(path)
         table = data.calibration_per_range("CH", 0.0, bootstrap=0)
+        # range_beam must equal the nominal layer centre (1m, 2m, ...)
+        assert np.allclose(table["range_beam"].to_numpy(),
+                           [5.0, 10.0, 15.0, 20.0], atol=1e-6)
         # layers defined in depth -> depth matches nominal range centre
         assert np.allclose(table["depth"].to_numpy(),
                            [5.0, 10.0, 15.0, 20.0], atol=0.3)
@@ -124,6 +127,41 @@ class TestBuilderData:
         s = data.series("CH", 0.0, "10m")
         assert (s["base_count"] > 0).any()
         assert (s["beam_count"] > 0).any()
+
+
+class TestGeometry:
+    def test_range_to_depth_uses_beam_angle(self, tmp_path):
+        # SBES base: depth==range (vertical). MBES beam: slant range, depth=R*cos30.
+        cos30 = np.cos(np.deg2rad(30.0))
+        base = _echo(-50.0)
+        base._coord_system.set_range_extent(np.zeros(120), np.full(120, 30.0))
+        beam = _echo(-60.0)
+        beam._coord_system.set_range_extent(np.zeros(120), np.full(120, 30.0))
+        beam._coord_system.set_depth_extent(np.zeros(120), np.full(120, 30.0 * cos30))
+
+        b = CalibrationBuilder(tmp_path / "c", base, ranges=[10, 20], layer_size=2.0,
+                               layer_reference="Range (m)", reference="Depth (m)",
+                               show_progress=False)
+        b.add_beam("CH", 30.0, beam, show_progress=False)
+        table = b.result().calibration_per_range("CH", 30.0, bootstrap=0)
+        # range_beam stays nominal; depth = R*cos30; range_base ~= depth (vertical sbes)
+        assert np.allclose(table["range_beam"].to_numpy(), [10.0, 20.0], atol=1e-6)
+        assert np.allclose(table["depth"].to_numpy(), [10.0 * cos30, 20.0 * cos30], atol=0.3)
+        assert np.allclose(table["range_base"].to_numpy(), [10.0 * cos30, 20.0 * cos30], atol=0.5)
+
+    def test_preview_layers_match_pooled(self, tmp_path):
+        base = _echo(-50.0)
+        beam = _echo(-60.0)
+        b = CalibrationBuilder(tmp_path / "c", base, ranges=[5, 10], layer_size=2.0,
+                               layer_reference="Depth (m)", show_progress=False)
+        geom = b.preview_layers(beam)
+        # the exact bands add_beam pools are now present on both echograms
+        assert "5m" in beam.layer_names() and "10m" in beam.layer_names()
+        assert "5m" in base.layer_names() and "10m" in base.layer_names()
+        # geometry dict reports nominal range_beam centres
+        assert geom["5m"][1] == pytest.approx(5.0)
+        assert geom["10m"][1] == pytest.approx(10.0)
+
 
     def test_introspection(self, dataset):
         _, path = dataset
