@@ -85,6 +85,11 @@ class LayerProcessor:
         min_count: int = 1,
         show_progress: Union[bool, object] = True,
     ):
+        import warnings
+        warnings.warn(
+            "LayerProcessor is deprecated and kept only to open old results; "
+            "use the calibration subpackage (CalibrationBuilder/CalibrationData).",
+            DeprecationWarning, stacklevel=2)
         self._echograms = self._normalise_echograms(echograms)
         if not self._echograms:
             raise ValueError("LayerProcessor: no echograms provided")

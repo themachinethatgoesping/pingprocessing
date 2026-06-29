@@ -372,134 +372,75 @@ class ConcatBackend(EchogramDataBackend):
     # Image generation
     # =========================================================================
 
-    def _compute_backend_affines(self, backend: EchogramDataBackend, local_pings: np.ndarray):
-        """Compute affine parameters for a specific backend's depth-to-sample mapping.
-        
-        The affine mapping is: sample_idx = round(a + b * y)
-        where y is the depth/range coordinate.
-        
-        Args:
-            backend: The backend to compute affines for.
-            local_pings: Array of local ping indices within this backend.
-            
-        Returns:
-            Tuple of (affine_a, affine_b) arrays for the local pings.
-        """
-        if backend.depth_extents is None:
-            return None, None
-        
-        min_depths, max_depths = backend.depth_extents
-        max_samples = backend.max_sample_counts
-        
-        # Get values for requested pings
-        local_pings = np.asarray(local_pings)
-        n = len(local_pings)
-        
-        affine_a = np.full(n, np.nan, dtype=np.float32)
-        affine_b = np.full(n, np.nan, dtype=np.float32)
-        
-        valid_mask = (local_pings >= 0) & (local_pings < len(min_depths))
-        valid_local = local_pings[valid_mask]
-        
-        if len(valid_local) == 0:
-            return affine_a, affine_b
-        
-        # Resolution per ping: (max_depth - min_depth) / n_samples
-        with np.errstate(divide='ignore', invalid='ignore'):
-            resolutions = (max_depths[valid_local] - min_depths[valid_local]) / (max_samples[valid_local] + 1)
-            resolutions = np.where(max_samples[valid_local] > 0, resolutions, np.nan)
-            
-            # Affine params: sample = a + b * depth
-            b_vals = 1.0 / resolutions
-            a_vals = -min_depths[valid_local] / resolutions
-        
-        affine_a[valid_mask] = a_vals
-        affine_b[valid_mask] = b_vals
-        
-        return affine_a, affine_b
-
     def get_image(self, request: EchogramImageRequest) -> np.ndarray:
         """Build image by delegating to sub-backends.
-        
-        Efficiently determines which backends have data in the requested range
-        and only queries those backends. When in depth mode, computes proper
-        affine parameters for each backend.
+
+        The request already carries the correct per-ping affine (``affine_a`` /
+        ``affine_b``) for the active y-axis, computed by the coordinate system
+        from this concat backend's own (concatenated) per-ping extents. We
+        therefore index those global affines by global ping directly -- the same
+        mapping every other backend uses -- which keeps depth, range, sample
+        number and sample index all correct. (A previous version tried to
+        re-derive a per-backend affine from ``depth_extents`` behind a
+        ``y_coords > 10`` "depth mode" heuristic; that misclassified the range
+        axis as depth and positioned range data at depth offsets.)
         """
         # Create output array
         image = np.full((request.nx, request.ny), request.fill_value, dtype=np.float32)
-        
+
         # Find valid x indices
         valid_x_mask = request.ping_indexer >= 0
         if not np.any(valid_x_mask):
             return image
-        
+
         valid_x_indices = np.where(valid_x_mask)[0]
         valid_pings = request.ping_indexer[valid_x_mask]
-        
-        # Determine if we're in depth mode
+
         y_coords = request.y_coordinates
-        is_depth_mode = (np.nanmax(np.abs(y_coords)) > 10 or 
-                         not np.allclose(y_coords, y_coords.astype(int)))
-        
+
         # Group by backend for efficient access
-        # For each backend, collect (global_ping, x_index) pairs
+        # For each backend, collect (global_ping, local_ping, x_index) tuples
         backend_requests = {i: [] for i in range(len(self._backends))}
-        
+
         for x_idx, global_ping in zip(valid_x_indices, valid_pings):
             backend_idx, local_ping = self._global_to_local(global_ping)
             backend_requests[backend_idx].append((global_ping, local_ping, x_idx))
-        
+
         # Process each backend that has data in the request
         for backend_idx, requests in backend_requests.items():
             if not requests:
                 continue
-            
+
             backend = self._backends[backend_idx]
-            
-            # Build a sub-request for this backend
-            global_pings = np.array([r[0] for r in requests])
+
             local_pings = np.array([r[1] for r in requests])
             x_indices = np.array([r[2] for r in requests])
-            
-            # Compute backend-specific affines if in depth mode
-            if is_depth_mode:
-                backend_affine_a, backend_affine_b = self._compute_backend_affines(
-                    backend, local_pings
-                )
-            else:
-                backend_affine_a = backend_affine_b = None
-            
+
             # Get unique local pings for this backend
             unique_local, inverse = np.unique(local_pings, return_inverse=True)
-            
+
             # Fetch data for unique pings
             for i, local_ping in enumerate(unique_local):
                 column = backend.get_column(local_ping)
                 global_ping = self._local_to_global(backend_idx, local_ping)
-                
-                # Use backend-specific affines in depth mode, or global affines otherwise
-                if is_depth_mode and backend_affine_a is not None:
-                    # Find the first occurrence of this local_ping in our arrays
-                    first_idx = np.where(local_pings == local_ping)[0][0]
-                    a = backend_affine_a[first_idx]
-                    b = backend_affine_b[first_idx]
-                else:
-                    a = request.affine_a[global_ping]
-                    b = request.affine_b[global_ping]
-                
+
+                # Use the request's global affine for this ping (axis-correct).
+                a = request.affine_a[global_ping]
+                b = request.affine_b[global_ping]
+
                 if np.isnan(a) or np.isnan(b):
                     continue
-                
-                sample_indices = np.rint(a + b * request.y_coordinates).astype(np.int32)
+
+                sample_indices = np.rint(a + b * y_coords).astype(np.int32)
                 max_sample = len(column)
-                
+
                 valid_samples = (sample_indices >= 0) & (sample_indices < max_sample)
-                
+
                 # Fill all x positions that use this ping
                 x_positions = x_indices[inverse == i]
                 for x_pos in x_positions:
                     image[x_pos, valid_samples] = column[sample_indices[valid_samples]]
-        
+
         return image
 
     # =========================================================================

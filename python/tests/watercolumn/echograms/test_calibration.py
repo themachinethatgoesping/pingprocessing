@@ -154,13 +154,32 @@ class TestGeometry:
         beam = _echo(-60.0)
         b = CalibrationBuilder(tmp_path / "c", base, ranges=[5, 10], layer_size=2.0,
                                layer_reference="Depth (m)", show_progress=False)
-        geom = b.preview_layers(beam)
+        beam2, base2 = b.add_calibration_layers(beam)
         # the exact bands add_beam pools are now present on both echograms
-        assert "5m" in beam.layer_names() and "10m" in beam.layer_names()
-        assert "5m" in base.layer_names() and "10m" in base.layer_names()
-        # geometry dict reports nominal range_beam centres
-        assert geom["5m"][1] == pytest.approx(5.0)
-        assert geom["10m"][1] == pytest.approx(10.0)
+        assert "5m" in beam2.layer_names() and "10m" in beam2.layer_names()
+        assert "5m" in base2.layer_names() and "10m" in base2.layer_names()
+        # geometry dict reports nominal range_beam centres (ref, range_beam, range_base, depth)
+        assert b.last_layer_geometry["5m"][1] == pytest.approx(5.0)
+        assert b.last_layer_geometry["10m"][1] == pytest.approx(10.0)
+
+    def test_layer_values_match_calibration(self, tmp_path):
+        # The calibration medians equal manual medians from get_wci_layers,
+        # proving the stored values come from exactly the visible layers.
+        base = _echo(-50.0)
+        beam = _echo(-60.0)
+        b = CalibrationBuilder(tmp_path / "c", base, ranges=[10], layer_size=2.0,
+                               layer_reference="Depth (m)", show_progress=False)
+        b.add_beam("CH", 0.0, beam, show_progress=False)
+        beam2, base2 = b.add_calibration_layers(beam)
+        samples = []
+        for nr in range(beam2._coord_system.n_pings):
+            samples.extend(beam2.get_wci_layers(nr)["10m"])
+        manual = np.nanmedian(samples)
+        table = b.result().calibration_per_range("CH", 0.0, bootstrap=0)
+        # base(-50) - manual(-60) = +10; stored beam median == manual median
+        assert manual == pytest.approx(-60.0, abs=0.1)
+        assert np.allclose(table["csv"].to_numpy(), 10.0, atol=0.3)
+
 
 
     def test_introspection(self, dataset):

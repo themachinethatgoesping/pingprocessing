@@ -236,39 +236,57 @@ class CalibrationBuilder:
         return CalibrationData.open(self._store.root)
 
     # -- verification ----------------------------------------------------
-    def preview_layers(self, beam_echogram, *, base_echogram=None,
-                       ranges: Optional[Sequence[float]] = None,
-                       apply_masks: bool = True) -> Dict[str, Tuple[str, float, float]]:
-        """Add the calibration bands to *beam* and *base* for visual inspection.
+    def add_calibration_layers(self, beam_echogram, *, base_echogram=None,
+                               ranges: Optional[Sequence[float]] = None,
+                               apply_masks: bool = True):
+        """Add the calibration range bands as named layers for verification.
 
-        Creates exactly the layers ``add_beam`` would pool, so anything you see
-        in the echogram viewer is the data that gets compared. Returns a dict
-        ``{layer_name: (reference, range_beam, depth, range_base)}`` of the
-        analytic geometry so you can confirm a band sits where expected.
+        Adds exactly the layers ``add_beam`` pools (same band + transfer code) to
+        both echograms and returns ``(beam, base)`` so values can be checked with
+        the normal layer mechanism (``get_wci_layers``, ``build_image_and_layer_images``,
+        ``get_layer_bounds``). The pooled calibration medians equal the per-block
+        medians of these layers.
+
+        Parameters
+        ----------
+        beam_echogram:
+            The beam echogram to band (e.g. one MBES beam).
+        base_echogram:
+            Base echogram to add the matching transferred bands to (defaults to
+            the builder's base).
+        ranges:
+            Which bands to add (e.g. ``[1, 5, 10]``); ``None`` uses all builder ranges.
+        apply_masks:
+            Intersect the configured ``valid`` masks (matches ``add_beam``).
+
+        Returns
+        -------
+        (beam, base):
+            The two echograms with bands ``"1m"``, ``"5m"``, ... added. The
+            analytic geometry per band is also stored in ``last_layer_geometry``.
 
         Example::
 
-            builder.preview_layers(beam, base_echogram=sbes)
-            beam.add_layer(...); sbes.add_layer(...)   # already added by name
-            # ...display beam/sbes with their named layers; medians match.
+            beam, sbes = builder.add_calibration_layers(mbes_beam, ranges=[1, 5, 10])
+            beam.get_wci_layers(0)["5m"]   # samples used for the 5 m band, ping 0
         """
         base = base_echogram if base_echogram is not None else self._base
         base_specs = list(base.layers.specs(self._base_mask)) if (self._base_mask and apply_masks) else []
         beam_specs = list(beam_echogram.layers.specs(self._beam_mask)) if (self._beam_mask and apply_masks) else []
         names = self._build_bands(beam_echogram, base, base_specs, beam_specs, ranges=ranges)
-        geom = {}
         rng = self._ranges if ranges is None else [float(r) for r in ranges]
-        for r, name in zip(rng, names):
-            rb, rbase, depth = self._layer_geometry(base, beam_echogram, name, r)
-            geom[name] = (self._layer_reference, rb, depth, rbase)
-        return geom
+        self.last_layer_geometry = {
+            name: (self._layer_reference,) + self._layer_geometry(base, beam_echogram, name, r)
+            for r, name in zip(rng, names)
+        }
+        return beam_echogram, base
 
     # -- internals -------------------------------------------------------
     def _build_bands(self, beam, base, base_specs, beam_specs,
                      ranges: Optional[Sequence[float]] = None):
         """Create range bands on ``beam`` and transfer them onto ``base``.
 
-        Shared by :meth:`add_beam` (pooling) and :meth:`preview_layers`
+        Shared by :meth:`add_beam` (pooling) and :meth:`add_calibration_layers`
         (inspection) so they always produce identical layers.
         """
         rng = self._ranges if ranges is None else [float(r) for r in ranges]

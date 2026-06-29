@@ -13,7 +13,6 @@ read one column at a time from the backend); everything else is vectorised.
 from __future__ import annotations
 
 import datetime as dt
-from collections import defaultdict
 from typing import Callable, Dict, Sequence, Tuple
 
 import numpy as np
@@ -73,52 +72,13 @@ def pool_layers(
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Pool each named layer's samples into time blocks for one echogram.
 
-    Returns ``{layer_name: (values, counts)}`` where ``values`` is the reduced
-    value per block (NaN where empty) and ``counts`` the number of finite
-    samples per block. Both arrays have length ``len(block_edges) - 1``.
+    Thin wrapper around :meth:`EchogramBuilder.pool_layer_values` (the generic
+    per-layer time-block aggregation), kept here so the calibration core has a
+    single import surface. Returns ``{layer_name: (values, counts)}`` with both
+    arrays of length ``len(block_edges) - 1``.
     """
-    cs = echogram._coord_system
-    times = np.asarray(cs.ping_times, dtype=np.float64)
-    n_blocks = len(block_edges) - 1
-    block_idx = np.searchsorted(block_edges, times, side="right") - 1
-
-    layer_names = list(layer_names)
-    # Hoist band bounds to plain int arrays once (avoids per-ping dict lookups
-    # and scalar int() casts in the hot loop).
-    band0 = [np.asarray(echogram.get_layer_sample_indices(n)[0], dtype=np.int64) for n in layer_names]
-    band1 = [np.asarray(echogram.get_layer_sample_indices(n)[1], dtype=np.int64) for n in layer_names]
-    pools: list = [defaultdict(list) for _ in layer_names]
-
-    n_pings = cs.n_pings
-    get_column = echogram.get_column
-    for nr in range(0, n_pings, step):
-        b = block_idx[nr]
-        if 0 <= b < n_blocks:
-            column = get_column(nr)
-            ncol = column.shape[0]
-            for li in range(len(layer_names)):
-                i0 = band0[li][nr]
-                i1 = band1[li][nr]
-                if i1 > ncol:
-                    i1 = ncol
-                if i1 > i0:
-                    pools[li][b].append(column[i0:i1])
-        if progress is not None:
-            progress.update(1)
-
-    out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-    for li, name in enumerate(layer_names):
-        values = np.full(n_blocks, np.nan, dtype=np.float64)
-        counts = np.zeros(n_blocks, dtype=np.int64)
-        for b, chunks in pools[li].items():
-            pooled = np.concatenate(chunks)
-            finite = np.isfinite(pooled)
-            n_finite = int(finite.sum())
-            counts[b] = n_finite
-            if n_finite > 0:
-                values[b] = reduce(pooled[finite])
-        out[name] = (values, counts)
-    return out
+    return echogram.pool_layer_values(
+        layer_names, block_edges, step=step, reduce=reduce, progress=progress)
 
 
 def pool_values(

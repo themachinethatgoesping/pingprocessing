@@ -29,6 +29,12 @@ class LayerProcessor:
         
         assert_length("LayerProcessor", echograms, [names])
 
+        import warnings
+        warnings.warn(
+            "LayerProcessor is deprecated and kept only to open old results; "
+            "use the calibration subpackage (CalibrationBuilder/CalibrationData).",
+            DeprecationWarning, stacklevel=2)
+
         self.__base_name = names[-1] if base_name is None else base_name
         self.__deltaT = deltaT
         self.__compare_name = None

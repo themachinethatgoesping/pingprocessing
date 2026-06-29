@@ -839,47 +839,55 @@ class CombineBackend(EchogramDataBackend):
     # =========================================================================
 
     def _compute_backend_affines(self, backend: EchogramDataBackend, n_pings: int):
-        """Compute affine parameters for a specific backend's depth-to-sample mapping.
-        
-        The affine mapping is: sample_idx = round(a + b * y)
-        where y is the depth/range coordinate.
-        
-        For depth mode:
-            depth = depth_min + sample_idx * resolution
-            => sample_idx = (depth - depth_min) / resolution
-            => a = -depth_min / resolution, b = 1 / resolution
+        """Compute affine parameters for a backend's value-to-sample mapping.
+
+        The affine mapping is: sample_idx = round(a + b * y) where y is the
+        active y-axis coordinate. The axis is selected by ``self._y_align``:
+        ``"range"`` uses the backend's range extents, anything else (``"depth"``)
+        uses its depth extents. Using the wrong extents (e.g. depth while the
+        view is in range) positions the data at the wrong y-offset.
+
+        For the active axis with per-ping ``(min_y, max_y)`` over ``ms`` samples::
+
+            y = min_y + (max_y - min_y) / ms * sample_idx
+            => sample_idx = (y - min_y) / resolution
+            => a = -min_y / resolution, b = 1 / resolution
         """
-        if backend.depth_extents is None:
+        if self._y_align == "range":
+            extents = backend.range_extents
+        else:
+            extents = backend.depth_extents
+        if extents is None:
             return None, None
-        
-        min_depths, max_depths = backend.depth_extents
+
+        min_vals, max_vals = extents
         max_samples = backend.max_sample_counts
-        
+
         # Ensure arrays are long enough
-        n = min(n_pings, len(min_depths), len(max_depths), len(max_samples))
-        
-        # Resolution per ping: (max_depth - min_depth) / max_samples
+        n = min(n_pings, len(min_vals), len(max_vals), len(max_samples))
+
+        # Resolution per ping: (max_y - min_y) / max_samples
         # max_samples is the max valid sample index (n_samples - 1), matching
         # the coordinate system's convention: value = min + (max-min)/n * sample_idx
-        min_d = np.asarray(min_depths[:n], dtype=np.float64)
-        max_d = np.asarray(max_depths[:n], dtype=np.float64)
+        min_y = np.asarray(min_vals[:n], dtype=np.float64)
+        max_y = np.asarray(max_vals[:n], dtype=np.float64)
         ms = np.asarray(max_samples[:n], dtype=np.float64)
-        
-        # Mark invalid pings: non-finite depths, zero/negative range, zero samples
+
+        # Mark invalid pings: non-finite extents, zero/negative span, zero samples
         invalid = ~(
-            np.isfinite(min_d) & np.isfinite(max_d)
-            & (max_d > min_d) & (ms > 0)
+            np.isfinite(min_y) & np.isfinite(max_y)
+            & (max_y > min_y) & (ms > 0)
         )
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
-            resolutions = (max_d - min_d) / ms
-        
-        # Affine params: sample = a + b * depth
-        # where a = -depth_min / resolution, b = 1 / resolution
+            resolutions = (max_y - min_y) / ms
+
+        # Affine params: sample = a + b * y
+        # where a = -min_y / resolution, b = 1 / resolution
         with np.errstate(divide='ignore', invalid='ignore'):
             affine_b = 1.0 / resolutions
-            affine_a = -min_d / resolutions
-        
+            affine_a = -min_y / resolutions
+
         affine_a[invalid] = np.nan
         affine_b[invalid] = np.nan
         

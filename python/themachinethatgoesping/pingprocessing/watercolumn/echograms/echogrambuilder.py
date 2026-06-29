@@ -1455,8 +1455,49 @@ class EchogramBuilder:
     def _has_data_transforms(self):
         return self._factor != 1.0 or self._offset != 0.0 or self._transform is not None
 
+    def _sync_backend_alignment(self):
+        """Keep a combine backend's x/y alignment in sync with the display axes.
+
+        The :class:`CombineBackend` resolves each sub-backend's per-ping affine
+        through its ``y_align`` (``'depth'`` / ``'range'`` / ``'sample_index'``)
+        and aligns pings across backends through its ``x_align`` (``'time'`` vs
+        ``'ping_index'``). Both are fixed at construction, so a later
+        ``set_y_axis_*`` / ``set_x_axis_*`` (or an axis copied straight onto the
+        coordinate system) would otherwise leave them stale -- e.g. depth affines
+        while the view is in range (range data at the depth origin), or
+        ping-index alignment while the view is time-based (misaligned pings when
+        the sub-backends have different ping rates/timing). Push the current axes
+        onto the backend before each build. No-op for backends without these
+        hooks (mmap, gridded_mmap, concat, image, zarr).
+        """
+        backend = self._backend
+        cs = self._coord_system
+
+        if hasattr(backend, "y_align"):
+            y_name = cs.y_axis_name
+            if y_name == "Depth (m)":
+                y_align = "depth"
+            elif y_name == "Range (m)":
+                y_align = "range"
+            else:
+                y_align = "sample_index"
+            try:
+                backend.y_align = y_align
+            except Exception:
+                pass
+
+        if hasattr(backend, "x_align"):
+            # Match the mapping used by EchogramBuilder.combine(): time-based
+            # x-axes align by time, everything else by ping index.
+            x_align = "time" if cs.x_axis_name in ("Ping time", "Date time") else "ping_index"
+            try:
+                backend.x_align = x_align
+            except Exception:
+                pass
+
     def _build_base_image(self, cs: EchogramCoordinateSystem, nx: int, ny: int) -> np.ndarray:
         """Build the full image on the current grid using the backend fast path."""
+        self._sync_backend_alignment()
         if self._has_oversampling:
             request = cs.make_oversampled_image_request(
                 x_oversampling=self._x_oversampling,
@@ -1799,6 +1840,58 @@ class EchogramBuilder:
         physical reference (e.g. depth).
         """
         return self._layer_store_for(name).bounds(name, reference)
+
+    def pool_layer_values(self, layer_names, block_edges, *, step=1,
+                          reduce=np.nanmedian, progress=None):
+        """Pool named layers' samples into time blocks (reduced per block).
+
+        Generic per-ping aggregation shared with the calibration subpackage: for
+        each named layer the samples inside ``[i0:i1]`` are pooled into the time
+        blocks defined by ``block_edges`` and reduced (median by default). The
+        only per-ping work is the column read; band resolution and block
+        assignment are vectorised. Returns ``{name: (values, counts)}`` with both
+        arrays of length ``len(block_edges) - 1`` (NaN / 0 where empty).
+        """
+        cs = self._coord_system
+        times = np.asarray(cs.ping_times, dtype=np.float64)
+        n_blocks = len(block_edges) - 1
+        block_idx = np.searchsorted(block_edges, times, side="right") - 1
+
+        layer_names = list(layer_names)
+        band0 = [np.asarray(self.get_layer_sample_indices(n)[0], dtype=np.int64) for n in layer_names]
+        band1 = [np.asarray(self.get_layer_sample_indices(n)[1], dtype=np.int64) for n in layer_names]
+        pools = [{} for _ in layer_names]
+
+        n_pings = cs.n_pings
+        get_column = self.get_column
+        for nr in range(0, n_pings, step):
+            b = block_idx[nr]
+            if 0 <= b < n_blocks:
+                column = get_column(nr)
+                ncol = column.shape[0]
+                for li in range(len(layer_names)):
+                    i0 = band0[li][nr]
+                    i1 = band1[li][nr]
+                    if i1 > ncol:
+                        i1 = ncol
+                    if i1 > i0:
+                        pools[li].setdefault(b, []).append(column[i0:i1])
+            if progress is not None:
+                progress.update(1)
+
+        out = {}
+        for li, name in enumerate(layer_names):
+            values = np.full(n_blocks, np.nan, dtype=np.float64)
+            counts = np.zeros(n_blocks, dtype=np.int64)
+            for b, chunks in pools[li].items():
+                pooled = np.concatenate(chunks)
+                finite = np.isfinite(pooled)
+                n_finite = int(finite.sum())
+                counts[b] = n_finite
+                if n_finite > 0:
+                    values[b] = reduce(pooled[finite])
+            out[name] = (values, counts)
+        return out
 
     def iterate_ping_data(self, keep_to_xlimits=True):
         """Iterate over lightweight per-ping accessors (:class:`PingData`)."""
