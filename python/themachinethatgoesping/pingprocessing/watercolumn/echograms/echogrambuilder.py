@@ -1858,24 +1858,44 @@ class EchogramBuilder:
         block_idx = np.searchsorted(block_edges, times, side="right") - 1
 
         layer_names = list(layer_names)
-        band0 = [np.asarray(self.get_layer_sample_indices(n)[0], dtype=np.int64) for n in layer_names]
-        band1 = [np.asarray(self.get_layer_sample_indices(n)[1], dtype=np.int64) for n in layer_names]
+        bands = [self.get_layer_sample_indices(n) for n in layer_names]
+        band0 = [np.asarray(b[0], dtype=np.int64) for b in bands]
+        band1 = [np.asarray(b[1], dtype=np.int64) for b in bands]
         pools = [{} for _ in layer_names]
 
         n_pings = cs.n_pings
+        n_layers = len(layer_names)
+
+        # Only pings that land in a block *and* have at least one non-empty band
+        # can contribute. Skipping the rest avoids the (often very expensive,
+        # e.g. on-the-fly WCI decoding for from_pings echograms) per-ping column
+        # read for pings that would add nothing. This never changes the result:
+        # a skipped ping is either out of the time grid or empty in every layer.
+        contributes = (block_idx >= 0) & (block_idx < n_blocks)
+        any_band = np.zeros(n_pings, dtype=bool)
+        for li in range(n_layers):
+            any_band |= band1[li] > band0[li]
+        contributes &= any_band
+
+        # Iterate only the contributing pings (respecting ``step``). For a base
+        # echogram that spans far more time than the block grid this avoids
+        # looping over millions of out-of-window pings on every call.
+        candidate = np.nonzero(contributes)[0]
+        if step > 1:
+            candidate = candidate[(candidate % step) == 0]
+
         get_column = self.get_column
-        for nr in range(0, n_pings, step):
+        for nr in candidate:
             b = block_idx[nr]
-            if 0 <= b < n_blocks:
-                column = get_column(nr)
-                ncol = column.shape[0]
-                for li in range(len(layer_names)):
-                    i0 = band0[li][nr]
-                    i1 = band1[li][nr]
-                    if i1 > ncol:
-                        i1 = ncol
-                    if i1 > i0:
-                        pools[li].setdefault(b, []).append(column[i0:i1])
+            column = get_column(nr)
+            ncol = column.shape[0]
+            for li in range(n_layers):
+                i0 = band0[li][nr]
+                i1 = band1[li][nr]
+                if i1 > ncol:
+                    i1 = ncol
+                if i1 > i0:
+                    pools[li].setdefault(b, []).append(column[i0:i1])
             if progress is not None:
                 progress.update(1)
 

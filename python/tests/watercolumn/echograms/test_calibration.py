@@ -83,6 +83,141 @@ class TestPooling:
 
 
 # ---------------------------------------------------------------------------
+# pool_layer_values: per-ping aggregation + the no-contribution skip
+# ---------------------------------------------------------------------------
+
+
+def _ramp_echo(n_pings=12, n_samples=300, dmin=0.0, dmax=30.0,
+               t0=T0, t1=T0 + 660):
+    """Echogram whose every sample has a distinct value (per ping & sample).
+
+    A non-constant column makes per-block medians sensitive to exactly which
+    pings/samples were pooled, so a brute-force comparison is meaningful.
+    """
+    times = np.linspace(t0, t1, n_pings)
+    img = (np.arange(n_pings)[:, None] * 1000.0
+           + np.arange(n_samples)[None, :]).astype(np.float32)
+    backend = ImageBackend.from_image(img, times, y_min=dmin, y_max=dmax, y_axis="depth")
+    eb = EchogramBuilder.from_backend(backend)
+    eb.set_x_axis_date_time()
+    eb.set_y_axis_depth()
+    return eb, times
+
+
+def _bruteforce_pool(eb, layer_names, block_edges, reduce=np.nanmedian):
+    """Reference pooler that reads *every* in-grid ping (no skip optimisation)."""
+    cs = eb._coord_system
+    times = np.asarray(cs.ping_times, dtype=np.float64)
+    n_blocks = len(block_edges) - 1
+    block_idx = np.searchsorted(block_edges, times, side="right") - 1
+    bands = [eb.get_layer_sample_indices(n) for n in layer_names]
+    pools = {n: {} for n in layer_names}
+    for nr in range(cs.n_pings):
+        b = int(block_idx[nr])
+        if 0 <= b < n_blocks:
+            col = eb.get_column(nr)
+            ncol = col.shape[0]
+            for name, (i0a, i1a) in zip(layer_names, bands):
+                i0 = int(i0a[nr])
+                i1 = min(int(i1a[nr]), ncol)
+                if i1 > i0:
+                    pools[name].setdefault(b, []).append(col[i0:i1])
+    out = {}
+    for name in layer_names:
+        vals = np.full(n_blocks, np.nan)
+        cnts = np.zeros(n_blocks, dtype=np.int64)
+        for b, ch in pools[name].items():
+            p = np.concatenate(ch)
+            f = np.isfinite(p)
+            cnts[b] = int(f.sum())
+            if f.any():
+                vals[b] = reduce(p[f])
+        out[name] = (vals, cnts)
+    return out
+
+
+def _count_reads(eb):
+    """Wrap ``eb.get_column`` to count calls; returns the mutable counter list."""
+    orig = eb.get_column
+    counter = [0]
+
+    def wrapper(nr):
+        counter[0] += 1
+        return orig(nr)
+
+    eb.get_column = wrapper
+    return counter
+
+
+def _assert_pool_equal(a, b):
+    assert set(a) == set(b)
+    for name in a:
+        va, ca = a[name]
+        vb, cb = b[name]
+        np.testing.assert_array_equal(ca, cb)
+        np.testing.assert_allclose(va, vb, equal_nan=True)
+
+
+class TestPoolLayerValuesSkip:
+    def test_matches_bruteforce(self):
+        eb, times = _ramp_echo()
+        eb.add_layer("band", Layer.depth(5.0, 10.0))
+        edges, _ = _pooling.make_time_blocks(times[0], times[-1], 120.0)
+        got = eb.pool_layer_values(["band"], edges)
+        ref = _bruteforce_pool(eb, ["band"], edges)
+        _assert_pool_equal(got, ref)
+        # sanity: at least one block actually pooled samples
+        assert got["band"][1].sum() > 0
+
+    def test_skips_out_of_grid_pings(self):
+        eb, times = _ramp_echo()
+        eb.add_layer("band", Layer.depth(5.0, 10.0))  # non-empty for every ping
+        # Grid that only spans pings 3..8 -> pings 0..2 and 9..11 are out of grid.
+        edges = np.array([times[3] - 1.0, times[6] + 1.0, times[8] + 1.0])
+        counter = _count_reads(eb)
+        got = eb.pool_layer_values(["band"], edges)
+        in_grid = ((times >= edges[0]) & (times < edges[-1])).sum()
+        assert counter[0] == in_grid
+        assert counter[0] < len(times)  # genuinely skipped some reads
+        _assert_pool_equal(got, _bruteforce_pool(eb, ["band"], edges))
+
+    def test_skips_empty_band_pings(self):
+        eb, times = _ramp_echo()
+        n = len(times)
+        # Even pings: a real depth band; odd pings: a band far beyond the data
+        # (resolves to an empty sample range) -> only even pings contribute.
+        lows = np.where(np.arange(n) % 2 == 0, 5.0, 500.0)
+        highs = np.where(np.arange(n) % 2 == 0, 10.0, 510.0)
+        eb.add_layer("band", Layer.depth(lows, highs))
+        edges, _ = _pooling.make_time_blocks(times[0], times[-1], 120.0)
+        counter = _count_reads(eb)
+        got = eb.pool_layer_values(["band"], edges)
+        assert counter[0] == (np.arange(n) % 2 == 0).sum()
+        _assert_pool_equal(got, _bruteforce_pool(eb, ["band"], edges))
+
+    def test_all_empty_reads_nothing(self):
+        eb, times = _ramp_echo()
+        eb.add_layer("band", Layer.depth(500.0, 510.0))  # empty for every ping
+        edges, _ = _pooling.make_time_blocks(times[0], times[-1], 120.0)
+        counter = _count_reads(eb)
+        values, counts = eb.pool_layer_values(["band"], edges)["band"]
+        assert counter[0] == 0
+        assert counts.sum() == 0
+        assert np.isnan(values).all()
+
+    def test_multi_layer_reads_once_per_contributing_ping(self):
+        eb, times = _ramp_echo()
+        # Two non-empty bands: each contributing ping must be read exactly once.
+        eb.add_layer("shallow", Layer.depth(3.0, 8.0))
+        eb.add_layer("deep", Layer.depth(15.0, 22.0))
+        edges, _ = _pooling.make_time_blocks(times[0], times[-1], 120.0)
+        counter = _count_reads(eb)
+        got = eb.pool_layer_values(["shallow", "deep"], edges)
+        assert counter[0] == len(times)  # all pings contribute, read once each
+        _assert_pool_equal(got, _bruteforce_pool(eb, ["shallow", "deep"], edges))
+
+
+# ---------------------------------------------------------------------------
 # builder + data end to end
 # ---------------------------------------------------------------------------
 
