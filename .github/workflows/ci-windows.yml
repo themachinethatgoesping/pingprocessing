@@ -127,6 +127,28 @@ jobs:
         cd ..
         #rm -rv boost*
 
+    - name: configure boost environment for meson
+      shell: pwsh
+      run: |
+        $boostRoot = 'C:\Boost'
+        if (-not (Test-Path $boostRoot)) {
+          throw "Boost root directory '$boostRoot' does not exist."
+        }
+
+        $boostIncludeDir = Get-ChildItem -Path (Join-Path $boostRoot 'include') -Directory -Filter 'boost-*' | Select-Object -First 1
+        if ($null -eq $boostIncludeDir) {
+          throw "No versioned Boost include directory found in '$boostRoot\\include'."
+        }
+
+        $boostLibraryDir = Join-Path $boostRoot 'lib'
+        if (-not (Test-Path $boostLibraryDir)) {
+          throw "Boost library directory '$boostLibraryDir' does not exist."
+        }
+
+        "BOOST_ROOT=$boostRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "BOOST_INCLUDEDIR=$($boostIncludeDir.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "BOOST_LIBRARYDIR=$boostLibraryDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
     - name: install dependencies (meson & python)
       run: pip install meson meson-python pytest numpy 
       #run: pip install meson meson-python pytest numpy ninja
