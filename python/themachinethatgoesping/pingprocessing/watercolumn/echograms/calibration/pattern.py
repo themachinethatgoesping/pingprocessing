@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
+from collections import defaultdict
 
 from .data import CalibrationData
 from .models import PchipBlendChangePoint
@@ -119,39 +120,31 @@ class CalibrationPattern:
         return a, offsets
 
     # -- apply to pings --------------------------------------------------
-    def build_calibrations(self, pings) -> dict:
-        """Build ``{channel: WaterColumnCalibration}`` with the offset applied.
-
-        Mirrors the notebook workflow: take each channel's existing Av
-        calibration, set the per-beamangle-and-range offset from this pattern,
-        and store it back as the Sv calibration.
-        """
-        cals: dict = {}
-        for ping in pings:
-            ch = ping.get_channel_id()
-            if ch in cals or ch not in self._interp:
-                continue
-            cal = ping.file_data.get_watercolumn_calibration()
-            av = cal.get_av_calibration()
-            av.set_offset_per_beamangle_and_range(self._interp[ch])
-            cal.set_sv_calibration(av)
-            cals[ch] = cal
-        return cals
 
     def apply_to_pings(self, pings, *, show_progress: bool = True) -> dict:
         """Apply the pattern as an Sv calibration onto ``pings`` (in place)."""
-        cals = self.build_calibrations(pings)
-        for ch, cal in cals.items():
-            try:
-                cals[ch] = cal.pre_hashed()
-            except Exception:
-                pass
+        #cals = self.build_calibrations(pings)
+        
         iterator = pings
         if show_progress:
             from tqdm.auto import tqdm
             iterator = tqdm(pings, desc="apply calibration")
+            
+        cals = defaultdict(dict)
         for ping in iterator:
             ch = ping.get_channel_id()
-            if ch in cals:
-                ping.watercolumn.update_calibration(cals[ch])
+            if ch not in self._interp:
+                continue
+                
+            ping.load(True)
+            cal = ping.file_data.get_watercolumn_calibration()
+            old_hash = cal.hash()
+            if old_hash not in cals[ch]:
+                av = cal.get_av_calibration()
+                av.set_offset_per_beamangle_and_range(self._interp[ch])
+                cal.set_sv_calibration(av)
+                cals[ch][old_hash] = cal.pre_hashed()
+                
+            ping.watercolumn.update_calibration(cals[ch][old_hash])
+
         return cals
