@@ -125,7 +125,7 @@ jobs:
         .\bootstrap.bat ${{matrix.toolset}}
         .\b2.exe install --variant=release --threading=multi --link=static ${{matrix.boost-modules}}
         New-Item -ItemType Directory -Path C:\Boost\include\boost_${{matrix.boost-version_}} -Force | Out-Null
-        Copy-Item -Path .\boost -Destination C:\Boost\include\boost_${{matrix.boost-version_}}\boost -Recurse -Force
+        Copy-Item -Path .\boost -Destination C:\Boost\include\boost_${{matrix.boost-version_}} -Recurse -Force
         cd ..
         #rm -rv boost*
 
