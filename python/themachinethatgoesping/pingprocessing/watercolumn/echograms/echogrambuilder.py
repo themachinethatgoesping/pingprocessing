@@ -465,7 +465,7 @@ class EchogramBuilder:
 
             backends.sort(key=_start_time)
         
-        concat_backend = ConcatBackend(backends, gap_handling=gap_handling)
+        concat_backend = ConcatBackend(backends, gap_handling=gap_handling, sort_by_time=sort_by_time)
         result = cls(concat_backend)
         # Coordinate-system params added after construction (e.g. detect_bottom
         # results referenced by 'Ping index') are not part of the backend and

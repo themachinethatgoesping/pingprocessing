@@ -14,6 +14,27 @@ from .storage_mode import StorageAxisMode
 from ..indexers import EchogramImageRequest
 
 
+def _make_strictly_increasing(times: np.ndarray, eps: float = 1e-4) -> np.ndarray:
+    """Return a copy of ``times`` nudged to be strictly increasing.
+
+    Assumes ``times`` is already non-decreasing. Equal / zero-gap timestamps
+    (common when overlapping echograms are concatenated) are pushed forward by
+    ``eps`` seconds so the downstream strictly-increasing time interpolator
+    accepts them.
+    """
+    t = np.asarray(times, dtype=np.float64).copy()
+    if t.size < 2:
+        return t
+    bad = np.where(np.diff(t) <= 0)[0]
+    # Each pass fixes the first collision in every run of equal values; a run of
+    # N equal timestamps needs at most N-1 passes, which is tiny for real ping
+    # timelines (typically just duplicated pairs).
+    while bad.size > 0:
+        t[bad + 1] = t[bad] + eps
+        bad = np.where(np.diff(t) <= 0)[0]
+    return t
+
+
 class ConcatBackend(EchogramDataBackend):
     """Virtual backend that concatenates multiple backends along X (ping) axis.
     
@@ -36,6 +57,7 @@ class ConcatBackend(EchogramDataBackend):
         self,
         backends: List[EchogramDataBackend],
         gap_handling: str = "preserve",
+        sort_by_time: bool = False,
     ):
         """Initialize ConcatBackend.
         
@@ -45,6 +67,10 @@ class ConcatBackend(EchogramDataBackend):
             gap_handling: How to handle gaps between backends:
                 - "preserve": Keep real time gaps (x-axis shows true times)
                 - "continuous": Virtual continuous (ignore gaps between files)
+            sort_by_time: If True, reorder all pings into a single strictly
+                increasing timeline. Needed when backends overlap in time
+                (sorting inputs by start time alone leaves the concatenated
+                times non-monotonic, which the coordinate system rejects).
         
         Raises:
             ValueError: If backends list is empty or has incompatible metadata.
@@ -57,7 +83,15 @@ class ConcatBackend(EchogramDataBackend):
         
         self._backends = backends
         self._gap_handling = gap_handling
-        
+        self._sort_by_time = sort_by_time
+
+        # Per-ping time ordering. ``_order`` maps a public (sorted) ping index
+        # to its physical position in the backend concatenation; ``_inv_order``
+        # is the inverse. ``None`` means the public order already equals the
+        # physical concatenation order (fast path).
+        self._order = None
+        self._inv_order = None
+
         # Validate and collect metadata
         self._validate_backends()
         
@@ -66,6 +100,10 @@ class ConcatBackend(EchogramDataBackend):
         
         # Combine metadata from all backends
         self._compute_combined_metadata()
+
+        # Reorder pings into a strictly increasing timeline when requested.
+        if self._sort_by_time:
+            self._apply_time_ordering()
 
     def _validate_backends(self):
         """Validate that backends are compatible for concatenation."""
@@ -193,6 +231,62 @@ class ConcatBackend(EchogramDataBackend):
         
         return result
 
+    def _apply_time_ordering(self):
+        """Reorder pings so the combined timeline is strictly increasing.
+
+        Sorting inputs by their start time (as done by ``concat``) is not
+        enough when backends overlap in time (e.g. the same recording exported
+        under two paths): the concatenated ping times then step backwards at a
+        backend boundary, which the coordinate system's time feature (a
+        strictly-increasing interpolator) rejects.
+
+        This performs a stable global sort of all pings by time and applies the
+        resulting permutation to every per-ping array. Exact-duplicate / zero
+        gap timestamps are nudged apart so the timeline is strictly increasing.
+        The permutation is routed through ``_global_to_local`` so data access
+        stays correct; it is left as ``None`` (fast path) when the concatenated
+        timeline is already sorted.
+        """
+        times = np.asarray(self._ping_times, dtype=np.float64)
+        if times.size < 2:
+            return
+
+        if np.any(np.diff(times) < 0):
+            order = np.argsort(times, kind="stable")
+            times = times[order]
+        else:
+            order = None
+
+        # The time feature interpolator forbids equal (zero-gap) x values.
+        if np.any(np.diff(times) <= 0):
+            times = _make_strictly_increasing(times)
+
+        if order is None:
+            # Physical order already time-sorted; publish the (possibly nudged)
+            # times and keep the identity mapping.
+            self._ping_times = times
+            return
+
+        # Apply the permutation to every per-ping array so ping_times, extents
+        # and data access all refer to the same ping.
+        self._ping_times = times
+        self._max_sample_counts = self._max_sample_counts[order]
+        self._sample_nr_min = self._sample_nr_min[order]
+        self._sample_nr_max = self._sample_nr_max[order]
+        if self._range_min is not None:
+            self._range_min = self._range_min[order]
+            self._range_max = self._range_max[order]
+        if self._depth_min is not None:
+            self._depth_min = self._depth_min[order]
+            self._depth_max = self._depth_max[order]
+        if self._latitudes is not None:
+            self._latitudes = self._latitudes[order]
+            self._longitudes = self._longitudes[order]
+
+        self._order = order
+        self._inv_order = np.empty(order.size, dtype=np.int64)
+        self._inv_order[order] = np.arange(order.size, dtype=np.int64)
+
     def _global_to_local(self, global_ping: int) -> Tuple[int, int]:
         """Convert global ping index to (backend_index, local_ping_index).
         
@@ -200,16 +294,22 @@ class ConcatBackend(EchogramDataBackend):
         """
         if global_ping < 0 or global_ping >= self._n_pings:
             raise IndexError(f"Ping index {global_ping} out of range [0, {self._n_pings})")
-        
+
+        # Map the public (sorted) index back to its physical concat position.
+        physical = global_ping if self._order is None else int(self._order[global_ping])
+
         # Binary search: find which backend contains this ping
-        backend_idx = bisect_right(self._cumulative_pings, global_ping) - 1
-        local_ping = global_ping - self._cumulative_pings[backend_idx]
+        backend_idx = bisect_right(self._cumulative_pings, physical) - 1
+        local_ping = physical - self._cumulative_pings[backend_idx]
         
         return backend_idx, local_ping
 
     def _local_to_global(self, backend_idx: int, local_ping: int) -> int:
-        """Convert (backend_index, local_ping_index) to global ping index."""
-        return self._cumulative_pings[backend_idx] + local_ping
+        """Convert (backend_index, local_ping_index) to global (public) ping index."""
+        physical = self._cumulative_pings[backend_idx] + local_ping
+        if self._inv_order is None:
+            return physical
+        return int(self._inv_order[physical])
 
     # =========================================================================
     # Metadata properties
@@ -333,6 +433,12 @@ class ConcatBackend(EchogramDataBackend):
 
     def get_chunk(self, start_ping: int, end_ping: int) -> np.ndarray:
         """Get a chunk of WCI data spanning potentially multiple backends."""
+        # When pings were reordered by time, a contiguous public range no longer
+        # maps to contiguous per-backend ranges; fall back to the per-ping
+        # gather (which honours the permutation via get_column).
+        if self._order is not None:
+            return super().get_chunk(start_ping, end_ping)
+
         # Find which backends are involved
         start_backend, start_local = self._global_to_local(start_ping)
         end_backend, end_local = self._global_to_local(end_ping - 1)

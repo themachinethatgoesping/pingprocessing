@@ -152,3 +152,75 @@ def test_depth_only_builder_has_res_ranges_none_not_attribute_error():
     # attribute (None) rather than raising AttributeError.
     b = EchogramBuilder.from_backend(_make_backend([100.0, 101.0, 102.0]))
     assert b.coord_system.res_ranges is None
+
+
+# ---------------------------------------------------------------------------
+# concat(sort_by_time=True) must produce a strictly increasing timeline even
+# when backends overlap in time. Sorting inputs by start time alone leaves the
+# concatenated ping times non-monotonic, which the coordinate system's time
+# feature (a strictly-increasing interpolator) rejects. These reproduce that
+# crash and verify the per-ping time ordering keeps data access consistent.
+# ---------------------------------------------------------------------------
+
+
+def _make_valued_backend(times, row_values, n_samples=8):
+    """Backend whose every sample in ping i equals row_values[i] (so a column
+    can be traced back to the ping it came from)."""
+    times = np.asarray(times, dtype=np.float64)
+    rows = np.asarray(row_values, dtype=np.float32).reshape(len(times), 1)
+    image = np.repeat(rows, n_samples, axis=1)
+    return ImageBackend.from_image(
+        image, times, y_min=0.0, y_max=20.0, y_axis="depth"
+    )
+
+
+def test_concat_sort_by_time_interleaves_overlapping_backends():
+    # Even vs odd timestamps -> the two backends must interleave ping-by-ping.
+    a = _make_valued_backend([0.0, 2.0, 4.0], [0.0, 2.0, 4.0])
+    b = _make_valued_backend([1.0, 3.0, 5.0], [1.0, 3.0, 5.0])
+
+    combined = EchogramBuilder.concat([a, b], sort_by_time=True)
+    backend = combined.backend
+
+    times = np.asarray(backend.ping_times, dtype=np.float64)
+    assert np.all(np.diff(times) > 0)  # strictly increasing
+    np.testing.assert_array_equal(times, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    # Each public column must carry the value of the ping at that time.
+    for g in range(6):
+        assert backend.get_column(g)[0] == times[g]
+
+
+def test_concat_sort_by_time_handles_fully_duplicate_backends():
+    # Real-world trigger: the same recording exported under two paths, so both
+    # backends carry identical timestamps. Previously raised
+    # "X list is not sorted in ascending order!" from set_ping_times.
+    times = [100.0, 101.0, 102.0]
+    a = _make_valued_backend(times, [10.0, 11.0, 12.0])
+    b = _make_valued_backend(times, [10.0, 11.0, 12.0])
+
+    combined = EchogramBuilder.concat([a, b], sort_by_time=True)
+    pt = np.asarray(combined.backend.ping_times, dtype=np.float64)
+
+    assert len(pt) == 6  # no pings dropped
+    assert np.all(np.diff(pt) > 0)  # duplicates nudged to strictly increasing
+
+    # The full display path (time feature + image) must not raise.
+    combined.set_x_axis_date_time(max_steps=64)
+    combined.set_y_axis_depth(max_steps=64)
+    image, _ = combined.build_image()
+    assert np.isfinite(image).any()
+
+
+def test_concat_sort_by_time_leaves_sorted_timeline_untouched():
+    # Non-overlapping, already-ordered inputs must not be permuted or nudged.
+    a = _make_valued_backend([100.0, 101.0, 102.0], [1.0, 2.0, 3.0])
+    b = _make_valued_backend([200.0, 201.0, 202.0], [4.0, 5.0, 6.0])
+
+    combined = EchogramBuilder.concat([a, b], sort_by_time=True)
+    backend = combined.backend
+
+    assert backend._order is None  # fast path, no permutation
+    np.testing.assert_array_equal(
+        np.asarray(backend.ping_times, dtype=np.float64),
+        [100.0, 101.0, 102.0, 200.0, 201.0, 202.0],
+    )
