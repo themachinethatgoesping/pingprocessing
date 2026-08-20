@@ -34,7 +34,7 @@ def get_bottom_directions_wci(
         pingoff = sc.get_target("Transducer")
     except:
         print("Warning: No transducer target found in sensor configuration. Using default values.")
-        pingoff = navigation.datastructures.PositionalOffsets()
+        pingoff = navigation.datastructures.SensorPose()
     posoff = sc.get_position_source()
 
     # deal with unavailable geolocation by using default values.
@@ -87,7 +87,7 @@ def get_bottom_directions_bottom(
         pingoff = sc.get_target("Transducer")
     except:
         print("Warning: No transducer target found in sensor configuration. Using default values.")
-        pingoff = navigation.datastructures.PositionalOffsets()
+        pingoff = navigation.datastructures.SensorPose()
 
     posoff = sc.get_position_source()
     # deal with unavailable geolocation by using default values.
