@@ -12,6 +12,8 @@ try:
     import rasterio
     from rasterio.windows import Window, from_bounds
     from rasterio.enums import Resampling
+    from rasterio.vrt import WarpedVRT
+    from rasterio.crs import CRS as RioCRS
     HAS_RASTERIO = True
 except ImportError:
     HAS_RASTERIO = False
@@ -43,6 +45,8 @@ class GeoTiffBackend(MapDataBackend):
         feature_name: Optional[str] = None,
         band: int = 1,
         preload_stats: bool = True,
+        reproject_to_latlon: bool = True,
+        target_crs: str = "EPSG:4326",
     ):
         """Open a GeoTiff file.
         
@@ -52,6 +56,11 @@ class GeoTiffBackend(MapDataBackend):
                          filename or defaults to 'raster'.
             band: Band number to read (1-indexed). Default is 1.
             preload_stats: If True, compute min/max from overviews or sampling.
+            reproject_to_latlon: If True (default), a raster stored in a
+                         projected CRS (e.g. UTM) is reprojected on the fly to
+                         ``target_crs`` so it aligns with the lat/lon map view.
+            target_crs: CRS to reproject into when the source is not already
+                         in it (default EPSG:4326 / WGS84 lat/lon).
         """
         if not HAS_RASTERIO:
             raise ImportError(
@@ -62,8 +71,20 @@ class GeoTiffBackend(MapDataBackend):
         self._path = Path(path)
         self._band = band
         
-        # Open the file
-        self._ds = rasterio.open(str(path), 'r')
+        # Open the file. The map view renders tracks/tiles/markers in
+        # geographic (lat/lon) space, so a raster stored in a projected CRS
+        # (e.g. UTM metres) must be reprojected on the fly; otherwise it is
+        # placed at raw projected coordinates far outside the visible extent.
+        self._base_ds = rasterio.open(str(path), 'r')
+        self._vrt = None
+        self._ds = self._base_ds
+        if reproject_to_latlon and self._base_ds.crs is not None:
+            target = RioCRS.from_user_input(target_crs)
+            if self._base_ds.crs != target:
+                self._vrt = WarpedVRT(
+                    self._base_ds, crs=target, resampling=Resampling.bilinear,
+                )
+                self._ds = self._vrt
         
         # Infer feature name
         if feature_name is None:
@@ -107,9 +128,10 @@ class GeoTiffBackend(MapDataBackend):
     
     def _compute_stats(self) -> None:
         """Compute min/max statistics from overviews or sampling."""
-        # Try to read from file statistics
-        if self._ds.tags(self._band):
-            tags = self._ds.tags(self._band)
+        # Try to read from file statistics. Values are geometry-independent,
+        # so read them from the source dataset even when reprojecting.
+        if self._base_ds.tags(self._band):
+            tags = self._base_ds.tags(self._band)
             if 'STATISTICS_MINIMUM' in tags and 'STATISTICS_MAXIMUM' in tags:
                 self._min_value = float(tags['STATISTICS_MINIMUM'])
                 self._max_value = float(tags['STATISTICS_MAXIMUM'])
@@ -192,9 +214,11 @@ class GeoTiffBackend(MapDataBackend):
             'path': str(self._path),
             'band': self._band,
             'crs': str(self._ds.crs),
-            'driver': self._ds.driver,
-            'has_overviews': len(self._ds.overviews(self._band)) > 0,
-            'overview_factors': self._ds.overviews(self._band),
+            'source_crs': str(self._base_ds.crs),
+            'reprojected': self._vrt is not None,
+            'driver': self._base_ds.driver,
+            'has_overviews': len(self._base_ds.overviews(self._band)) > 0,
+            'overview_factors': self._base_ds.overviews(self._band),
         }
     
     # =========================================================================
@@ -412,10 +436,16 @@ class GeoTiffBackend(MapDataBackend):
         return values
     
     def close(self) -> None:
-        """Close the rasterio dataset."""
-        if self._ds is not None:
-            self._ds.close()
-            self._ds = None
+        """Close the rasterio dataset (and any reprojection VRT)."""
+        vrt = getattr(self, "_vrt", None)
+        if vrt is not None:
+            vrt.close()
+            self._vrt = None
+        base = getattr(self, "_base_ds", None)
+        if base is not None:
+            base.close()
+            self._base_ds = None
+        self._ds = None
     
     def __del__(self):
         """Ensure dataset is closed on garbage collection."""
