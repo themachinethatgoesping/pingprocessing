@@ -30,7 +30,14 @@ Example:
 from .coordinate_system import MapCoordinateSystem, BoundingBox
 from .map_builder import MapBuilder, MapLayer
 from .backends import MapDataBackend, GeoTiffBackend
-from .tile_builder import TileBuilder, TileSource, TILE_SOURCES, list_available_sources
+from .tile_builder import (
+    TileBuilder,
+    TileSource,
+    TILE_SOURCES,
+    OVERLAY_SOURCES,
+    list_available_sources,
+    list_overlay_sources,
+)
 
 __all__ = [
     "MapCoordinateSystem",
@@ -42,5 +49,7 @@ __all__ = [
     "TileBuilder",
     "TileSource",
     "TILE_SOURCES",
+    "OVERLAY_SOURCES",
     "list_available_sources",
+    "list_overlay_sources",
 ]
