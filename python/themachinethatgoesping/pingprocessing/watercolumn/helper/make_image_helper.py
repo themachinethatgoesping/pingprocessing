@@ -47,7 +47,11 @@ def get_bottom_directions_wci(
     bottom_direction_sample_numbers = np.array(selection.get_last_sample_number_per_beam())
     
     bottomdirections = geoprocessing.datastructures.SampleDirectionsTime_1([selection.get_number_of_beams()])
-    bottomdirections.crosstrack_angle = ping.watercolumn.get_beam_crosstrack_angles(selection) - geolocation.roll
+    bottomdirections.crosstrack_angle = ping.watercolumn.get_beam_crosstrack_angles(selection)
+    if ping.watercolumn.has_beam_crosstrack_angles_in_world_frame():
+        # World-frame angles (e.g. kmall/kongsbergall re-vertical): subtract roll so the
+        # raytracer's sensor-orientation rotation restores the original gravity-frame direction.
+        bottomdirections.crosstrack_angle = bottomdirections.crosstrack_angle - geolocation.roll
     bottomdirections.alongtrack_angle = ping.watercolumn.get_beam_alongtrack_angles(selection)
     bottomdirections.two_way_travel_time = bottom_direction_sample_numbers * ping.watercolumn.get_sample_interval()
 
