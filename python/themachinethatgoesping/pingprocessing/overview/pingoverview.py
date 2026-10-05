@@ -269,6 +269,12 @@ class PingOverview:
         ping : Ping
             A ping to add to the overview.
         """
+        # Grouped/dual-head pings are stored as a dict {channel_id: ping};
+        # use any member as representative for the overview.
+        if isinstance(ping, dict):
+            ping = next(iter(ping.values()), None)
+            if ping is None:
+                return
         self.variables["timestamp"].append(ping.get_timestamp())
         self.variables["datetime"].append(ping.get_datetime())
 
