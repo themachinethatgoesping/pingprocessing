@@ -43,10 +43,10 @@ if get_option('build_pythonmodule').enabled()
   # nanobind: split mode uses a header-only frontend dependency + abi3 stable
   # ABI (the libnanobind backend lives in a separate 'nanobind_backend' module
   # imported at runtime); classic mode links libnanobind into the extension.
+  # split_mode defaults to enabled only for the top-level themachinethatgoesping
+  # package; standalone subproject builds default to classic (see meson_options).
   # See https://nanobind.readthedocs.io/en/latest/split_mode.html
-  # Only the top-level themachinethatgoesping package coordinates the shared
-  # backend, so a standalone subproject build (its own CI) stays in classic mode.
-  if get_option('split_mode').allowed() and meson.is_subproject()
+  if get_option('split_mode').allowed()
     nanobind_subp = subproject('nanobind')
     nanobind_dep = nanobind_subp.get_variable('nanobind_frontend_dep')
     nanobind_limited_api = nanobind_subp.get_variable('nanobind_stable_abi')
