@@ -155,8 +155,9 @@ class __WCI_scaling_infos:
                 bottom_directions.append(bd)
                 bottom_direction_sample_numbers.append(bdsn)
                 geolocations.append(geolocation)
-                ping_sensor_configurations.append(ping.get_sensor_configuration())
-                ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
+                sc = ping.get_sensor_configuration()
+                ping_sensor_configurations.append(sc)
+                ping_offsets.append(sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id())))
 
         if not valid_pings:
             raise ValueError("No valid pings found. (BeamSampleSelection empty for all pings)")
@@ -256,8 +257,10 @@ class __WCI_scaling_infos:
                 bottom_directions.append(bd)
                 bottom_direction_sample_numbers.append(bdsn)
                 geolocations.append(geolocation)
-                ping_sensor_configurations.append(ping.get_sensor_configuration())
-                ping_offsets.append(ping_sensor_configurations[-1].get_target("Transducer"))
+                sc = ping.get_sensor_configuration()
+                ping_sensor_configurations.append(sc)
+                ping_offsets.append(sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id())))
+
 
                 # compute limits of the create image
                 tr_y = ping_offsets[-1].y

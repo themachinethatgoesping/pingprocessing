@@ -31,9 +31,10 @@ def get_bottom_directions_wci(
     # Get sensor configuration.
     sc = ping.get_sensor_configuration()
     try:
-        pingoff = sc.get_target("Transducer")
-    except:
+        pingoff = sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id()))
+    except Exception as e:
         print("Warning: No transducer target found in sensor configuration. Using default values.")
+        print(f"Exception occurred: {e}")
         pingoff = navigation.datastructures.SensorPose()
     posoff = sc.get_position_source()
 
@@ -88,9 +89,10 @@ def get_bottom_directions_bottom(
     """
     sc = ping.get_sensor_configuration()
     try:
-        pingoff = sc.get_target("Transducer")
-    except:
+        pingoff = sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id()))
+    except Exception as e:
         print("Warning: No transducer target found in sensor configuration. Using default values.")
+        print(f"Exception occurred: {e}")
         pingoff = navigation.datastructures.SensorPose()
 
     posoff = sc.get_position_source()
