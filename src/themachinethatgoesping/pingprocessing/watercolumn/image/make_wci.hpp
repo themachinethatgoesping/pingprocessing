@@ -35,7 +35,7 @@ xt::xtensor<float, 2> make_wci(
     }
 
     size_t samples = xt::amax(ping->watercolumn().get_number_of_samples_per_beam())();
-    size_t beams = ping->watercolumn().get_number_of_beams();
+    size_t beams = ping->watercolumn().get_number_of_beams_legacy();
 
     std::array<size_t, 2> shape = { samples, beams};
 

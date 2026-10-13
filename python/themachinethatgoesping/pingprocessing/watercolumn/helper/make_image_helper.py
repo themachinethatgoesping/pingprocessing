@@ -1,11 +1,12 @@
 import numpy as np
 import themachinethatgoesping.navigation as navigation
 import themachinethatgoesping.echosounders as echosounders
+import themachinethatgoesping.algorithms as algorithms
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
 
 def get_bottom_directions_wci(
     ping: echosounders.filetemplates.I_Ping, 
-    selection: echosounders.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
+    selection: algorithms.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
     """
     Retrieve bottom positions/directions/sample numbers from a water column ping.
     Note: this function is an approximation (for performance reasons). As such, it 
@@ -15,7 +16,7 @@ def get_bottom_directions_wci(
     ----------
     ping : echosounders.filetemplates.I_Ping
         Ping to retrieve bottom positions/directions/sample numbers from.
-    selection : echosounders.pingtools.BeamSelection, optional
+    selection : algorithms.pingtools.BeamSelection, optional
         A beam selection to retrieve the directions from, by default None.
 
     Returns
@@ -48,7 +49,7 @@ def get_bottom_directions_wci(
     bottom_direction_sample_numbers = np.array(selection.get_last_sample_number_per_beam())
     
     bottomdirections = geoprocessing.datastructures.SampleDirectionsTime_1([selection.get_number_of_beams()])
-    bottomdirections.crosstrack_angle = ping.watercolumn.get_beam_crosstrack_angles(selection)
+    bottomdirections.crosstrack_angle = ping.watercolumn.get_beam_crosstrack_angles_legacy(selection)
     if ping.watercolumn.has_beam_crosstrack_angles_in_world_frame():
         # World-frame angles (e.g. kmall/kongsbergall re-vertical): subtract roll so the
         # raytracer's sensor-orientation rotation restores the original gravity-frame direction.
@@ -57,7 +58,7 @@ def get_bottom_directions_wci(
     bottomdirections.two_way_travel_time = bottom_direction_sample_numbers * ping.watercolumn.get_sample_interval()
 
     # TODO: Get sound velocity from SVP.
-    c = ping.watercolumn.get_sound_speed_at_transducer()
+    c = ping.watercolumn.get_sound_speed_at_transducer_legacy()
 
     # Raytrace to bottom assuming constant sound velocity profile.
     rt = geoprocessing.raytracers.RTConstantSVP(geolocation, c)
@@ -71,7 +72,7 @@ def get_bottom_directions_wci(
 
 def get_bottom_directions_bottom(
     ping: echosounders.filetemplates.I_Ping,
-    selection: echosounders.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
+    selection: algorithms.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
     """
     Retrieve bottom positions/directions/sample numbers from a bottom ping.
 
@@ -79,7 +80,7 @@ def get_bottom_directions_bottom(
     ----------
     ping : echosounders.filetemplates.I_Ping
         Ping to retrieve bottom positions/directions/sample numbers from.
-    selection : echosounders.pingtools.BeamSelection, optional
+    selection : algorithms.pingtools.BeamSelection, optional
         A beam selection to filter beams, by default None (all beams).
 
     Returns

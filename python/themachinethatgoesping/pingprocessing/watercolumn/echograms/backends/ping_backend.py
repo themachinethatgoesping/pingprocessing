@@ -157,12 +157,12 @@ class PingDataBackend(EchogramDataBackend):
             if len(sel.get_beam_numbers()) == 0:
                 continue
 
-            c = ping.watercolumn.get_sound_speed_at_transducer()
+            c = ping.watercolumn.get_sound_speed_at_transducer_legacy()
             range_res = sample_interval * c * 0.5
 
             if force_angle is None:
                 angle_factor = np.cos(
-                    np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
+                    np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles_legacy()[sel.get_beam_numbers()]))
                 )
             else:
                 angle_factor = np.cos(np.radians(force_angle))
@@ -226,8 +226,8 @@ class PingDataBackend(EchogramDataBackend):
             main_sample_interval_s.append(sample_interval)
             
             # Extract main frequency and pulse duration for this ping
-            tx = ping.watercolumn.get_tx_signal_parameters()
-            ntx = np.unique(ping.watercolumn.get_tx_sector_per_beam(sel))
+            tx = ping.watercolumn.get_tx_signal_parameters_legacy()
+            ntx = np.unique(ping.watercolumn.get_tx_sector_per_beam_legacy(sel))
 
             main_frequency_per_ping.append(np.nanmean([tx[n].get_center_frequency() for n in ntx]))
             main_pulse_duration_s.append(np.nanmean([tx[n].get_effective_pulse_duration() for n in ntx]))

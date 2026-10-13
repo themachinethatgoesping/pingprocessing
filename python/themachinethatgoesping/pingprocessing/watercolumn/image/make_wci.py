@@ -351,7 +351,7 @@ def make_beam_sample_image(
         W = []
         nbeams = 0
         nsamples = 0
-        for p in reversed(sorted(ping.values(), key=lambda p: np.mean(p.watercolumn.get_beam_crosstrack_angles()))):
+        for p in reversed(sorted(ping.values(), key=lambda p: np.mean(p.watercolumn.get_beam_crosstrack_angles_legacy()))):
             w, e = make_beam_sample_image(
                 p,
                 hmin=hmin,
@@ -543,8 +543,8 @@ def make_wci_dual_head(
         raise ValueError("ping_group must contain exactly one or two pings.")
 
     ping1, ping2 = pings
-    if np.nanmedian(ping1.watercolumn.get_beam_crosstrack_angles()) < np.nanmedian(
-        ping2.watercolumn.get_beam_crosstrack_angles()
+    if np.nanmedian(ping1.watercolumn.get_beam_crosstrack_angles_legacy()) < np.nanmedian(
+        ping2.watercolumn.get_beam_crosstrack_angles_legacy()
     ):
         ping1, ping2 = ping2, ping1
 

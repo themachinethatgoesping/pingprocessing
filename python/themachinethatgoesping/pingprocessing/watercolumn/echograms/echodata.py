@@ -200,8 +200,8 @@ class EchoData:
         for nr, ping in enumerate(tqdm(pings, disable=(not verbose), delay=1)):
             # change angle selection
             if apply_pss_to_bottom and ping.has_bottom():
-                aw = ping.watercolumn.get_beam_crosstrack_angles()
-                ab = ping.bottom.get_beam_crosstrack_angles()
+                aw = ping.watercolumn.get_beam_crosstrack_angles_legacy()
+                ab = ping.bottom.get_beam_crosstrack_angles_legacy()
                 ad = np.median(aw - ab)
                 pss_ = pss.copy()
                 pss_.select_beam_range_by_angles(pss.get_min_beam_angle() + ad, pss.get_max_beam_angle() + ad)
@@ -214,10 +214,10 @@ class EchoData:
             if len(sel.get_beam_numbers()) == 0:
                 continue
 
-            c = ping.watercolumn.get_sound_speed_at_transducer()
+            c = ping.watercolumn.get_sound_speed_at_transducer_legacy()
             range_res = ping.watercolumn.get_sample_interval() * c * 0.5
             angle_factor = np.cos(
-                np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles()[sel.get_beam_numbers()]))
+                np.radians(np.mean(ping.watercolumn.get_beam_crosstrack_angles_legacy()[sel.get_beam_numbers()]))
             )
             min_r[nr] = sel.get_first_sample_number_ensemble() * range_res
             max_r[nr] = sel.get_last_sample_number_ensemble() * range_res

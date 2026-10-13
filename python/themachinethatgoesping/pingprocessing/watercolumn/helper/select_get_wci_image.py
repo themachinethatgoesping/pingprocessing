@@ -1,11 +1,12 @@
 import numpy as np
 import themachinethatgoesping.echosounders as echosounders
+import themachinethatgoesping.algorithms as algorithms
 
 def apply_pss(ping, pss, apply_pss_to_bottom):
-    if apply_pss_to_bottom and ping.has_bottom() and ping.bottom.has_beam_crosstrack_angles():
-        if ping.bottom.get_number_of_beams() != ping.watercolumn.get_number_of_beams():
-            aw = ping.watercolumn.get_beam_crosstrack_angles()
-            ab = ping.bottom.get_beam_crosstrack_angles()
+    if apply_pss_to_bottom and ping.has_bottom() and ping.bottom.has_beam_crosstrack_angles_legacy():
+        if ping.bottom.get_number_of_beams_legacy() != ping.watercolumn.get_number_of_beams_legacy():
+            aw = ping.watercolumn.get_beam_crosstrack_angles_legacy()
+            ab = ping.bottom.get_beam_crosstrack_angles_legacy()
 
             ad = np.median(aw) - np.median(ab)
             pss_ = pss.copy()
@@ -25,7 +26,7 @@ def apply_pss(ping, pss, apply_pss_to_bottom):
         else:
             sel = pss.apply_selection(ping.bottom)
             if len(sel.get_beam_numbers()) == 0:
-                return echosounders.pingtools.BeamSampleSelection()
+                return algorithms.pingtools.BeamSampleSelection()
             pss_ = pss.copy()
             pss_.clear_beam_angle_range()
             pss_.select_beam_range_by_numbers(sel.get_beam_numbers()[0], sel.get_beam_numbers()[-1], pss.get_beam_step())
