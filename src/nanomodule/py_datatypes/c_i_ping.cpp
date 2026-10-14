@@ -10,7 +10,7 @@
 #include <themachinethatgoesping/tools_nanobind/datetime.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_ping.hpp>
-#include "i_ping.hpp"
+#include "c_i_ping.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {

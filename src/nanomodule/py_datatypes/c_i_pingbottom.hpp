@@ -14,8 +14,8 @@
 #include <xtensor-python/nanobind/pytensor.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingbottom.hpp>
-#include "i_mbesrawdetectioninfos.hpp"
-#include "i_pingcommon.hpp"
+#include "c_i_mbesrawdetectioninfos.hpp"
+#include "c_i_pingcommon.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {

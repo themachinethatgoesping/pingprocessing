@@ -11,7 +11,7 @@
 #include <themachinethatgoesping/tools_nanobind/enumhelper.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingcommon.hpp>
-#include "i_pingcommon.hpp"
+#include "c_i_pingcommon.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {

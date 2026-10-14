@@ -11,7 +11,7 @@
 #include <xtensor-python/nanobind/pytensor.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingwatercolumn.hpp>
-#include "i_pingwatercolumn.hpp"
+#include "c_i_pingwatercolumn.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {

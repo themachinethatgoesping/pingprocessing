@@ -11,7 +11,7 @@
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingfiledata.hpp>
 
-#include "i_pingfiledata.hpp"
+#include "c_i_pingfiledata.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {

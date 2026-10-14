@@ -10,7 +10,7 @@
 #include <themachinethatgoesping/tools_nanobind/classhelper.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingbottom.hpp>
-#include "i_pingbottom.hpp"
+#include "c_i_pingbottom.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {
