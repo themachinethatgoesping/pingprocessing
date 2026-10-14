@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -79,12 +80,23 @@ class I_PingWatercolumn
   public:
     using t_base = I_PingCommon;
 
-    I_PingWatercolumn();
+    /**
+     * @brief Construct a new I_PingWatercolumn.
+     *
+     * @param ping_info shared PingInfo object (channel id, timestamp, sensor configuration,
+     * navigation). The echosounder ping implementations hand the owning ping's PingInfo pointer
+     * here so that the watercolumn can access the same sensor configuration / navigation /
+     * geolocation.
+     */
+    explicit I_PingWatercolumn(std::shared_ptr<PingInfo> ping_info = nullptr);
     ~I_PingWatercolumn() override;
 
     std::map<t_pingfeature, std::function<bool()>> primary_feature_functions() const override;
     std::map<t_pingfeature, std::function<bool()>> secondary_feature_functions() const override;
     std::map<t_pingfeature, std::function<bool()>> feature_group_functions() const override;
+
+    // mbesrawdetectioninfos interface
+    //virtual double get_ref_pingtime() const; 
 
     virtual bool has_tx_signal_parameters_legacy() const;
     virtual bool has_number_of_tx_sectors_legacy() const;

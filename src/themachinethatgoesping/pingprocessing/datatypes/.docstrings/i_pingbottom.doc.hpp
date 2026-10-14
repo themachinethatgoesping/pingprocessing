@@ -1,4 +1,4 @@
-//sourcehash: d2491333c3fd7f4048229321481f8d4052dd4e1d6ff6d5e905fe1125b57c01c7
+//sourcehash: 8885a7fc5c7ec74944b8655f0c39bf156149ca47b49dca7e238c3f4dd405582d
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -43,7 +43,17 @@
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingBottom = R"doc(Interface for all ping bottom detection functions)doc";
 
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingBottom_I_PingBottom = R"doc()doc";
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingBottom_I_PingBottom =
+R"doc(Construct a new I_PingBottom.
+
+Args:
+    ping_info: shared PingInfo object (channel id, timestamp, sensor
+               configuration, navigation). The echosounder ping
+               implementations hand the owning ping's PingInfo pointer
+               here so that the bottom can access the same sensor
+               configuration / navigation / geolocation.
+
+)doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingBottom_class_name = R"doc()doc";
 

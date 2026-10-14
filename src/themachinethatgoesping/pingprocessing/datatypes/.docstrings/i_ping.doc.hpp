@@ -1,4 +1,4 @@
-//sourcehash: 868d02518ea4c63fec9516ef5219aa045ac39bff2a3d76db00244fc886706d52
+//sourcehash: eb6850b557a77c955a4fa9c28469b07c2f68bc7e3c41485ee1b27ec3e82af5d9
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -41,15 +41,26 @@
 #endif
 
 
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping = R"doc()doc";
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping =
+R"doc(Interface for all ping objects.
+
+The channel id, timestamp, sensor configuration and navigation
+interpolator are stored in a shared PingInfo object
+(I_PingCommon::_ping_info). The accessors below are thin native
+wrappers that delegate to that PingInfo. The same PingInfo pointer is
+shared with the bottom() and watercolumn() sub-objects (done by the
+echosounder ping implementations), so they can access the same sensor
+configuration / navigation / geolocation.)doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_I_Ping = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_I_Ping_2 = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_I_Ping_3 = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_bottom = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_bottom_2 = R"doc()doc";
-
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_channel_id = R"doc(channel id of the transducer)doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_class_name = R"doc()doc";
 
@@ -116,13 +127,13 @@ static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Pin
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_loaded = R"doc()doc";
 
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_navigation_interpolator_latlon = R"doc()doc";
-
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_navigation_interpolator_set = R"doc()doc";
-
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_not_implemented = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_not_implemented_not_implemented = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_operator_assign = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_operator_assign_2 = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_primary_feature_functions = R"doc()doc";
 
@@ -147,10 +158,6 @@ static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Pin
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_secondary_feature_functions = R"doc()doc";
 
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_sensor_configuration = R"doc()doc";
-
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_sensor_configuration_set = R"doc()doc";
-
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_set_channel_id = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_set_navigation_interpolator_latlon = R"doc()doc";
@@ -162,8 +169,6 @@ static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Pin
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_set_sensor_configuration_flyweight = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_set_timestamp = R"doc()doc";
-
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_timestamp = R"doc(Unix timestamp in seconds (saved in UTC0))doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Ping_watercolumn = R"doc()doc";
 

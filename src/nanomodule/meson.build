@@ -15,6 +15,7 @@ sources = [
   'py_datatypes/c_i_pingcommon.cpp',
   'py_datatypes/c_i_pingfiledata.cpp',
   'py_datatypes/c_i_pingwatercolumn.cpp',
+  'py_datatypes/c_pinginfo.cpp',
   'py_datatypes/module.cpp',
   'py_datatypes/py_calibration/c_amplitudecalibration.cpp',
   'py_datatypes/py_calibration/c_multisectorwatercolumncalibration.cpp',

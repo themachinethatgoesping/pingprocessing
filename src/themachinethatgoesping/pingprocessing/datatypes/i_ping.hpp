@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -25,6 +26,7 @@
 #include "i_pingbottom.hpp"
 #include "i_pingcommon.hpp"
 #include "i_pingwatercolumn.hpp"
+#include "pinginfo.hpp"
 #include <themachinethatgoesping/navigation/navigationinterpolatorlatlon.hpp>
 #include <themachinethatgoesping/tools/classhelper/objectprinter.hpp>
 
@@ -32,33 +34,36 @@ namespace themachinethatgoesping {
 namespace pingprocessing {
 namespace datatypes {
 
+/**
+ * @brief Interface for all ping objects.
+ *
+ * The channel id, timestamp, sensor configuration and navigation interpolator are stored in a
+ * shared PingInfo object (I_PingCommon::_ping_info). The accessors below are thin native wrappers
+ * that delegate to that PingInfo. The same PingInfo pointer is shared with the bottom() and
+ * watercolumn() sub-objects (done by the echosounder ping implementations), so they can access the
+ * same sensor configuration / navigation / geolocation.
+ */
 class I_Ping : public I_PingCommon
 {
-    bool _sensor_configuration_set    = false;
-    bool _navigation_interpolator_set = false;
-
   public:
     using t_base = I_PingCommon;
 
-    protected:
-        std::string class_name() const override;
-
-  public:
-    boost::flyweights::flyweight<std::string> _channel_id; ///< channel id of the transducer
-    double _timestamp = 0; ///< Unix timestamp in seconds (saved in UTC0)
-    boost::flyweights::flyweight<navigation::SensorConfiguration> _sensor_configuration;
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>
-        _navigation_interpolator_latlon;
+  protected:
+    std::string class_name() const override;
 
     std::map<t_pingfeature, std::function<bool()>> primary_feature_functions() const override;
-    std::map<t_pingfeature, std::function<bool()>> secondary_feature_functions() const;
-    std::map<t_pingfeature, std::function<bool()>> feature_group_functions() const;
+    std::map<t_pingfeature, std::function<bool()>> secondary_feature_functions() const override;
+    std::map<t_pingfeature, std::function<bool()>> feature_group_functions() const override;
 
   public:
-    I_Ping()          = default;
-    virtual ~I_Ping() = default;
+    I_Ping();
+    I_Ping(const I_Ping& other);
+    I_Ping(I_Ping&& other)            = default;
+    I_Ping& operator=(const I_Ping& other);
+    I_Ping& operator=(I_Ping&& other) = default;
+    ~I_Ping() override                = default;
 
-    //------ features -----
+    //------ features (delegated to the shared PingInfo) -----
     bool   has_timestamp() const;
     void   set_timestamp(double timestamp);
     double get_timestamp() const;
@@ -86,7 +91,7 @@ class I_Ping : public I_PingCommon
     bool has_sensor_configuration() const;
     void set_sensor_configuration(const navigation::SensorConfiguration& sensor_configuration);
     void set_sensor_configuration_flyweight(
-        boost::flyweight<navigation::SensorConfiguration> sensor_configuration);
+        boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration);
 
     bool                                            has_navigation_interpolator_latlon() const;
     bool                                            has_sensor_data_latlon() const;
@@ -97,7 +102,7 @@ class I_Ping : public I_PingCommon
         const navigation::NavigationInterpolatorLatLon& nav_interpolator);
 
     void set_navigation_interpolator_latlon(
-        boost::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator);
+        boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator);
 
     void load(bool force = false) override;
     void release() override;
@@ -116,7 +121,7 @@ class I_Ping : public I_PingCommon
   protected:
     struct not_implemented : public std::runtime_error
     {
-    not_implemented(std::string_view method_name, std::string_view name);
+        not_implemented(std::string_view method_name, std::string_view name);
     };
 
   public:

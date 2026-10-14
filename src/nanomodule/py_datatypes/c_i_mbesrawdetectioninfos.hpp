@@ -15,10 +15,11 @@
 #include <nanobind/stl/vector.h>
 
 #include <themachinethatgoesping/tools_nanobind/classhelper.hpp>
+#include <themachinethatgoesping/tools_nanobind/datetime.hpp>
 #include <xtensor-python/nanobind/pytensor.hpp>
 
-#include <themachinethatgoesping/algorithms/geoprocessing/raytracers2/mbesrawdetectiondata.hpp>
 #include <themachinethatgoesping/algorithms/geoprocessing/raytracers2/i_mbesrawdetectioninfos.hpp>
+#include <themachinethatgoesping/algorithms/geoprocessing/raytracers2/mbesrawdetectiondata.hpp>
 
 namespace themachinethatgoesping {
 namespace pingprocessing {
@@ -27,7 +28,12 @@ namespace py_datatypes {
 namespace py_i_mbesrawdetectioninfos {
 
 #define DOC_I_MBESRawDetectionInfos(ARG)                                                           \
-    DOC(themachinethatgoesping, algorithms, geoprocessing, raytracers2, I_MBESRawDetectionInfos, ARG)
+    DOC(themachinethatgoesping,                                                                    \
+        algorithms,                                                                                \
+        geoprocessing,                                                                             \
+        raytracers2,                                                                               \
+        I_MBESRawDetectionInfos,                                                                   \
+        ARG)
 
 namespace pingtools = themachinethatgoesping::algorithms::pingtools;
 
@@ -44,6 +50,18 @@ void add_interface(T_PyClass& cls)
     cls.def("get_ref_pingtime",
             &T_BaseClass::get_ref_pingtime,
             DOC_I_MBESRawDetectionInfos(get_ref_pingtime));
+    cls.def("has_datetime",
+            &T_BaseClass::has_ref_pingtime,
+            "Return true if the reference timestamp is available that can be converted to a datetime");
+    cls.def(
+        "get_ref_datetime",
+        [](T_BaseClass& self, double timezone_offset_hours) {
+            return themachinethatgoesping::tools::nanobind_helper::unixtime_to_datetime(
+                self.get_ref_pingtime(), timezone_offset_hours);
+        },
+        nb::arg("timezone_offset_hours") = 0.,
+        "Return the timestamp as datetime object");
+
     cls.def("get_ref_pose", &T_BaseClass::get_ref_pose, DOC_I_MBESRawDetectionInfos(get_ref_pose));
     cls.def("get_surface_sound_speed",
             &T_BaseClass::get_surface_sound_speed,
@@ -107,11 +125,11 @@ void add_interface(T_PyClass& cls)
     cls.def("get_soundings_rx_times",
             nb::overload_cast<>(&T_BaseClass::get_soundings_rx_times),
             DOC_I_MBESRawDetectionInfos(get_soundings_rx_times));
-    cls.def("get_soundings_rx_times",
-            nb::overload_cast<const pingtools::BeamSelection&>(
-                &T_BaseClass::get_soundings_rx_times),
-            DOC_I_MBESRawDetectionInfos(get_soundings_rx_times_2),
-            nb::arg("beam_selection"));
+    cls.def(
+        "get_soundings_rx_times",
+        nb::overload_cast<const pingtools::BeamSelection&>(&T_BaseClass::get_soundings_rx_times),
+        DOC_I_MBESRawDetectionInfos(get_soundings_rx_times_2),
+        nb::arg("beam_selection"));
 
     cls.def("get_beam_numbers_per_tx_sector",
             nb::overload_cast<>(&T_BaseClass::get_beam_numbers_per_tx_sector),

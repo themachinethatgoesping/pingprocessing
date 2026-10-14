@@ -22,7 +22,10 @@ std::string I_PingWatercolumn::class_name() const
     return "I_PingWatercolumn";
 }
 
-I_PingWatercolumn::I_PingWatercolumn() = default;
+I_PingWatercolumn::I_PingWatercolumn(std::shared_ptr<PingInfo> ping_info)
+{
+    _ping_info = std::move(ping_info);
+}
 
 I_PingWatercolumn::~I_PingWatercolumn() = default;
 
@@ -82,6 +85,7 @@ std::map<t_pingfeature, std::function<bool()>> I_PingWatercolumn::secondary_feat
         std::bind(&I_PingWatercolumn::has_watercolumn_calibration, this);
     features[t_pingfeature::multisectorwatercolumn_calibration] =
         std::bind(&I_PingWatercolumn::has_multisectorwatercolumn_calibration, this);
+
     return features;
 }
 

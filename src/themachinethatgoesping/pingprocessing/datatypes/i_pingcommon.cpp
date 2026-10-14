@@ -16,6 +16,21 @@ namespace datatypes {
 
 I_PingCommon::I_PingCommon() = default;
 
+bool I_PingCommon::has_ping_info() const
+{
+    return bool(_ping_info);
+}
+
+const std::shared_ptr<PingInfo>& I_PingCommon::get_ping_info() const
+{
+    return _ping_info;
+}
+
+void I_PingCommon::set_ping_info(std::shared_ptr<PingInfo> ping_info)
+{
+    _ping_info = std::move(ping_info);
+}
+
 std::string I_PingCommon::class_name() const
 {
     return "I_PingCommon";
@@ -28,7 +43,11 @@ std::map<t_pingfeature, std::function<bool()>> I_PingCommon::primary_feature_fun
 
 std::map<t_pingfeature, std::function<bool()>> I_PingCommon::secondary_feature_functions() const
 {
-    return {};
+    std::map<t_pingfeature, std::function<bool()>> features;
+    // the shared ping info (channel id, timestamp, sensor configuration, navigation) is a feature
+    // common to all ping objects (I_Ping, I_PingBottom, I_PingWatercolumn)
+    __PING_REGISTER_FEATURE__(features, ping_info);
+    return features;
 }
 
 std::map<t_pingfeature, std::function<bool()>> I_PingCommon::feature_group_functions() const

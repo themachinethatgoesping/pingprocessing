@@ -4,17 +4,45 @@
 
 #include "i_ping.hpp"
 
+#include <memory>
 #include <utility>
 
 #include <themachinethatgoesping/tools/timeconv.hpp>
 
 #include "i_pingbottom.hpp"
 #include "i_pingwatercolumn.hpp"
+#include "pinginfo.hpp"
 
 namespace themachinethatgoesping {
 namespace pingprocessing {
 namespace datatypes {
 
+// ----- constructors -----
+I_Ping::I_Ping()
+{
+    _ping_info = std::make_shared<PingInfo>();
+}
+
+I_Ping::I_Ping(const I_Ping& other)
+    : I_PingCommon(other)
+{
+    // Give the copy its own, independent PingInfo (deep copy of the data). This is required by the
+    // echosounder deep_copy() pattern (each ping gets its own channel id / sensor configuration) and
+    // keeps the previous "copy == independent ping info" semantics.
+    _ping_info = std::make_shared<PingInfo>(other._ping_info ? *other._ping_info : PingInfo());
+}
+
+I_Ping& I_Ping::operator=(const I_Ping& other)
+{
+    if (this != &other)
+    {
+        I_PingCommon::operator=(other);
+        _ping_info = std::make_shared<PingInfo>(other._ping_info ? *other._ping_info : PingInfo());
+    }
+    return *this;
+}
+
+// ----- feature functions -----
 std::map<t_pingfeature, std::function<bool()>> I_Ping::primary_feature_functions() const
 {
     auto features = t_base ::primary_feature_functions();
@@ -51,96 +79,89 @@ std::string I_Ping::class_name() const
     return "I_Ping";
 }
 
+// ----- features (delegated to the shared PingInfo) -----
 bool I_Ping::has_timestamp() const
 {
-    return _timestamp > 0;
+    return _ping_info->has_timestamp();
 }
 
 void I_Ping::set_timestamp(double timestamp)
 {
-    _timestamp = timestamp;
+    _ping_info->set_timestamp(timestamp);
 }
 
 double I_Ping::get_timestamp() const
 {
-    return _timestamp;
+    return _ping_info->get_timestamp();
 }
 
 bool I_Ping::has_channel_id() const
 {
-    return !_channel_id.get().empty();
+    return _ping_info->has_channel_id();
 }
 const std::string& I_Ping::get_channel_id() const
 {
-    return _channel_id.get();
+    return _ping_info->get_channel_id();
 }
 void I_Ping::set_channel_id(const std::string& channel_id)
 {
-    _channel_id = channel_id;
+    _ping_info->set_channel_id(channel_id);
 }
 bool I_Ping::has_geolocation() const
 {
-    return has_sensor_configuration() && has_navigation_interpolator_latlon();
+    return _ping_info->has_geolocation();
 }
 navigation::datastructures::GeolocationLatLon I_Ping::get_geolocation(
     std::optional<std::string> target_id) const
 {
-    const auto& sc = get_sensor_configuration();
-
-    return sc.compute_target_position(
-        target_id.value_or(sc.get_transducer_transmit_receive_id(_channel_id.get()).first),
-        get_sensor_data_latlon());
+    return _ping_info->get_geolocation(std::move(target_id));
 }
 const navigation::SensorConfiguration& I_Ping::get_sensor_configuration() const
 {
-    return _sensor_configuration.get();
+    return _ping_info->get_sensor_configuration();
 }
 uint64_t I_Ping::get_sensor_configuration_base_hash() const
 {
-    return get_sensor_configuration().binary_hash();
+    return _ping_info->get_sensor_configuration_base_hash();
 }
 bool I_Ping::has_sensor_configuration() const
 {
-    return _sensor_configuration_set;
+    return _ping_info->has_sensor_configuration();
 }
 void I_Ping::set_sensor_configuration(const navigation::SensorConfiguration& sensor_configuration)
 {
-    _sensor_configuration     = sensor_configuration;
-    _sensor_configuration_set = true;
+    _ping_info->set_sensor_configuration(sensor_configuration);
 }
 void I_Ping::set_sensor_configuration_flyweight(
-    boost::flyweight<navigation::SensorConfiguration> sensor_configuration)
+    boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration)
 {
-    _sensor_configuration     = std::move(sensor_configuration); // avoid reference counting
-    _sensor_configuration_set = true;
+    _ping_info->set_sensor_configuration_flyweight(std::move(sensor_configuration));
 }
 bool I_Ping::has_navigation_interpolator_latlon() const
 {
-    return _navigation_interpolator_set;
+    return _ping_info->has_navigation_interpolator_latlon();
 }
 bool I_Ping::has_sensor_data_latlon() const
 {
-    return has_navigation_interpolator_latlon();
+    return _ping_info->has_sensor_data_latlon();
 }
 navigation::datastructures::SensordataLatLon I_Ping::get_sensor_data_latlon() const
 {
-    return get_navigation_interpolator_latlon().get_sensor_data(get_timestamp());
+    return _ping_info->get_sensor_data_latlon();
 }
 const navigation::NavigationInterpolatorLatLon& I_Ping::get_navigation_interpolator_latlon() const
 {
-    return _navigation_interpolator_latlon.get();
+    return _ping_info->get_navigation_interpolator_latlon();
 }
 void I_Ping::set_navigation_interpolator_latlon(
     const navigation::NavigationInterpolatorLatLon& nav_interpolator)
 {
-    _navigation_interpolator_latlon = nav_interpolator;
-    _navigation_interpolator_set    = true;
+    _ping_info->set_navigation_interpolator_latlon(nav_interpolator);
 }
 void I_Ping::set_navigation_interpolator_latlon(
-    boost::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator)
+    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator)
 {
-    _navigation_interpolator_latlon = std::move(nav_interpolator); // avoid reference counting
-    _navigation_interpolator_set    = true;
+    _ping_info->set_navigation_interpolator_latlon(std::move(nav_interpolator));
 }
 void I_Ping::load(bool force)
 {
@@ -218,10 +239,10 @@ tools::classhelper::ObjectPrinter I_Ping::__printer__(unsigned int float_precisi
     printer.register_section("Ping infos");
 
     std::string time_str =
-        tools::timeconv::unixtime_to_datestring(this->_timestamp, 2, "%d/%m/%Y %H:%M:%S");
+        tools::timeconv::unixtime_to_datestring(this->get_timestamp(), 2, "%d/%m/%Y %H:%M:%S");
 
     printer.register_string("Channel id", this->get_channel_id());
-    printer.register_value("Time info", time_str, std::to_string(this->_timestamp));
+    printer.register_value("Time info", time_str, std::to_string(this->get_timestamp()));
 
     // print features
     printer.append(t_base::__printer__(float_precision, superscript_exponents));

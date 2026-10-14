@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,6 +37,8 @@
 /* themachinethatgoesping includes */
 #include <themachinethatgoesping/tools/classhelper/objectprinter.hpp>
 #include <themachinethatgoesping/tools/classhelper/option.hpp>
+
+#include "pinginfo.hpp"
 
 /**
  * @namespace themachinethatgoesping
@@ -56,6 +59,7 @@ enum class t_pingfeature : uint8_t
     navigation_interpolator_latlon,
     sensor_data_latlon,
     geolocation,
+    ping_info,
 
     /* I_Ping feature groups */
     file_data,
@@ -128,9 +132,43 @@ class I_PingCommon
     virtual std::map<t_pingfeature, std::function<bool()>> secondary_feature_functions() const;
     virtual std::map<t_pingfeature, std::function<bool()>> feature_group_functions() const;
 
+    /**
+     * @brief Per-ping meta information (channel id, timestamp, sensor configuration, navigation).
+     *
+     * This is a shared pointer so that an I_Ping and its I_PingBottom / I_PingWatercolumn
+     * sub-objects can share the exact same PingInfo instance (the echosounder ping implementations
+     * hand the same pointer to the bottom and watercolumn during creation).
+     */
+    std::shared_ptr<PingInfo> _ping_info;
+
   public:
     I_PingCommon();
     virtual ~I_PingCommon() = default;
+
+    // ----- ping info -----
+
+    /**
+     * @brief Check if a PingInfo object is attached to this ping object.
+     *
+     * @return true if a PingInfo is attached, false otherwise
+     */
+    bool has_ping_info() const;
+
+    /**
+     * @brief Get the shared PingInfo object (channel id, timestamp, sensor configuration,
+     * navigation).
+     *
+     * @return const std::shared_ptr<PingInfo>&
+     */
+    const std::shared_ptr<PingInfo>& get_ping_info() const;
+
+    /**
+     * @brief Set (share) the PingInfo object.
+     *
+     * @param ping_info shared pointer to the PingInfo object
+     */
+    void set_ping_info(std::shared_ptr<PingInfo> ping_info);
+
 
     // ----- interface functions -----
 

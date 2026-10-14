@@ -1,4 +1,4 @@
-//sourcehash: 666541c405e431a66e3d4677f142b7551c86b02668e15e683a2b008d181fda55
+//sourcehash: c32a5f357e073e028e36a7e632c11ff31258ded29cbfb6ca15ab43a1d01966ee
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -89,6 +89,15 @@ Returns:
 
 )doc";
 
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_get_ping_info =
+R"doc(Get the shared PingInfo object (channel id, timestamp, sensor
+configuration, navigation).
+
+Returns:
+    const std::shared_ptr<PingInfo>&
+
+)doc";
+
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_has_all_of_features =
 R"doc(Check if all of the specified features are available
 
@@ -120,6 +129,14 @@ R"doc(Check if any of the registered features is available
 
 Returns:
     true false
+
+)doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_has_ping_info =
+R"doc(Check if a PingInfo object is attached to this ping object.
+
+Returns:
+    true if a PingInfo is attached, false otherwise
 
 )doc";
 
@@ -157,6 +174,15 @@ static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_Pin
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_not_implemented = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_not_implemented_not_implemented = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_ping_info =
+R"doc(Per-ping meta information (channel id, timestamp, sensor
+configuration, navigation).
+
+This is a shared pointer so that an I_Ping and its I_PingBottom /
+I_PingWatercolumn sub-objects can share the exact same PingInfo
+instance (the echosounder ping implementations hand the same pointer
+to the bottom and watercolumn during creation).)doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_possible_feature_groups = R"doc()doc";
 
@@ -213,6 +239,14 @@ Returns:
 
 )doc";
 
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingCommon_set_ping_info =
+R"doc(Set (share) the PingInfo object.
+
+Args:
+    ping_info: shared pointer to the PingInfo object
+
+)doc";
+
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature_amplitudes = R"doc()doc";
@@ -248,6 +282,8 @@ static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pin
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature_number_of_soundings = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature_number_of_tx_sectors_legacy = R"doc()doc";
+
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature_ping_info = R"doc()doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_t_pingfeature_power = R"doc()doc";
 

@@ -13,6 +13,7 @@ namespace pymodule {
 namespace py_datatypes {
 
 // -- submodule declarations --
+void init_c_pinginfo(nb::module_& m);          // py_datatypes/c_pinginfo.cpp
 void init_c_i_pingcommon(nb::module_& m);      // py_datatypes/c_i_pingcommon.cpp
 void init_c_i_pingfiledata(nb::module_& m);    // py_datatypes/c_i_pingfiledata.cpp
 void init_c_i_ping(nb::module_& m);            // py_datatypes/c_i_ping.cpp
@@ -35,6 +36,9 @@ void init_m_datatypes(nb::module_& m)
     py_calibration::init_c_amplitudecalibration(subm);
     py_calibration::init_c_watercolumncalibration(subm);
     py_calibration::init_c_multisectorwatercolumncalibration(subm);
+
+    // ping info (must be registered before the ping interfaces that expose it)
+    init_c_pinginfo(subm);
 
     // ping interfaces
     init_c_i_pingcommon(subm);

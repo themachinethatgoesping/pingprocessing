@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -58,7 +60,10 @@ std::map<t_pingfeature, std::function<bool()>> I_PingBottom::feature_group_funct
 	return t_base::feature_group_functions();
 }
 
-I_PingBottom::I_PingBottom() = default;
+I_PingBottom::I_PingBottom(std::shared_ptr<PingInfo> ping_info)
+{
+	_ping_info = std::move(ping_info);
+}
 
 I_PingBottom::~I_PingBottom() = default;
 

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -47,7 +48,14 @@ class I_PingBottom
   public:
     using t_base = I_PingCommon;
 
-    I_PingBottom();
+    /**
+     * @brief Construct a new I_PingBottom.
+     *
+     * @param ping_info shared PingInfo object (channel id, timestamp, sensor configuration,
+     * navigation). The echosounder ping implementations hand the owning ping's PingInfo pointer
+     * here so that the bottom can access the same sensor configuration / navigation / geolocation.
+     */
+    explicit I_PingBottom(std::shared_ptr<PingInfo> ping_info = nullptr);
     ~I_PingBottom() override;
 
     std::map<t_pingfeature, std::function<bool()>> primary_feature_functions() const override;

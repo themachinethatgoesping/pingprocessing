@@ -6,15 +6,19 @@
 #pragma once
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/variant.h>
 
+#include <stdexcept>
+
 #include <themachinethatgoesping/tools_nanobind/classhelper.hpp>
 #include <themachinethatgoesping/tools_nanobind/enumhelper.hpp>
 
 #include <themachinethatgoesping/pingprocessing/datatypes/i_pingcommon.hpp>
+#include <themachinethatgoesping/pingprocessing/datatypes/pinginfo.hpp>
 
 namespace themachinethatgoesping {
 namespace pingprocessing {
@@ -120,6 +124,29 @@ void I_PingCommon_add_interface(T_PyClass& cls)
             nb::arg("force") = false);
     cls.def("release", &T_BaseClass::release, DOC_I_PingCommon(release));
     cls.def("loaded", &T_BaseClass::loaded, DOC_I_PingCommon(loaded));
+
+    // ----- shared ping info (channel id, timestamp, sensor configuration, navigation) -----
+    cls.def("has_ping_info", &T_BaseClass::has_ping_info, DOC_I_PingCommon(has_ping_info));
+    cls.def(
+        "get_ping_info",
+        [](T_BaseClass& self) -> datatypes::PingInfo& {
+            const auto& ping_info = self.get_ping_info();
+            if (!ping_info)
+                throw std::runtime_error("ping_info is not set for this ping object");
+            return *ping_info;
+        },
+        DOC_I_PingCommon(get_ping_info),
+        nb::rv_policy::reference_internal);
+    cls.def_prop_ro(
+        "ping_info",
+        [](T_BaseClass& self) -> datatypes::PingInfo& {
+            const auto& ping_info = self.get_ping_info();
+            if (!ping_info)
+                throw std::runtime_error("ping_info is not set for this ping object");
+            return *ping_info;
+        },
+        DOC_I_PingCommon(get_ping_info),
+        nb::rv_policy::reference_internal);
 
     cls __PYCLASS_DEFAULT_COPY__(T_BaseClass)
         __PYCLASS_DEFAULT_PRINTING__(T_BaseClass);

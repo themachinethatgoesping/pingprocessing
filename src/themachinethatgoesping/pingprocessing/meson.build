@@ -13,6 +13,7 @@ sources = [
   'datatypes/i_pingcommon.cpp',
   'datatypes/i_pingfiledata.cpp',
   'datatypes/i_pingwatercolumn.cpp',
+  'datatypes/pinginfo.cpp',
   'datatypes/pingcontainer.cpp',
   'datatypes/calibration/amplitudecalibration.cpp',
   'datatypes/calibration/multisectorwatercolumncalibration.cpp',
@@ -29,6 +30,7 @@ headers = [
   'datatypes/i_pingcommon.hpp',
   'datatypes/i_pingfiledata.hpp',
   'datatypes/i_pingwatercolumn.hpp',
+  'datatypes/pinginfo.hpp',
   'datatypes/pingcontainer.hpp',
   'datatypes/calibration/amplitudecalibration.hpp',
   'datatypes/calibration/calibrationinfo.hpp',
@@ -43,6 +45,7 @@ headers = [
   'datatypes/.docstrings/i_pingcommon.doc.hpp',
   'datatypes/.docstrings/i_pingfiledata.doc.hpp',
   'datatypes/.docstrings/i_pingwatercolumn.doc.hpp',
+  'datatypes/.docstrings/pinginfo.doc.hpp',
   'datatypes/.docstrings/pingcontainer.doc.hpp',
 ]
 

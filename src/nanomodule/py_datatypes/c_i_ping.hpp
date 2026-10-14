@@ -34,9 +34,9 @@ void I_Ping_add_interface(T_PyClass& cls)
     py_i_pingcommon::I_PingCommon_add_interface<T_BaseClass>(cls);
 
     cls.def("has_timestamp", &T_BaseClass::has_timestamp, DOC_I_Ping(has_timestamp));
-    cls.def("get_timestamp", &T_BaseClass::get_timestamp, DOC_I_Ping(timestamp));
+    cls.def("get_timestamp", &T_BaseClass::get_timestamp, DOC_I_Ping(get_timestamp));
     cls.def(
-        "set_timestamp", &T_BaseClass::set_timestamp, DOC_I_Ping(timestamp), nb::arg("timestamp"));
+        "set_timestamp", &T_BaseClass::set_timestamp, DOC_I_Ping(set_timestamp), nb::arg("timestamp"));
     cls.def("has_datetime",
             &T_BaseClass::has_timestamp,
             "Return true if the timestamp is available that can be converted to a datetime");
@@ -58,10 +58,10 @@ void I_Ping_add_interface(T_PyClass& cls)
         "Set the timestamp using a datetime object");
 
     cls.def("has_channel_id", &T_BaseClass::has_channel_id, DOC_I_Ping(has_channel_id));
-    cls.def("get_channel_id", &T_BaseClass::get_channel_id, DOC_I_Ping(channel_id));
+    cls.def("get_channel_id", &T_BaseClass::get_channel_id, DOC_I_Ping(get_channel_id));
     cls.def("set_channel_id",
             &T_BaseClass::set_channel_id,
-            DOC_I_Ping(channel_id),
+            DOC_I_Ping(set_channel_id),
             nb::arg("channel_id"));
 
     cls.def("has_sensor_configuration",
@@ -76,19 +76,19 @@ void I_Ping_add_interface(T_PyClass& cls)
 
     cls.def("get_sensor_configuration",
             &T_BaseClass::get_sensor_configuration,
-            DOC_I_Ping(sensor_configuration),
+            DOC_I_Ping(get_sensor_configuration),
             nb::rv_policy::reference_internal);
     cls.def("get_sensor_configuration_base_hash",
             &T_BaseClass::get_sensor_configuration_base_hash,
             DOC_I_Ping(get_sensor_configuration_base_hash));
     cls.def("set_sensor_configuration",
             &T_BaseClass::set_sensor_configuration,
-            DOC_I_Ping(sensor_configuration),
+            DOC_I_Ping(set_sensor_configuration),
             nb::arg("sensor_configuration"));
 
     cls.def("get_navigation_interpolator_latlon",
             &T_BaseClass::get_navigation_interpolator_latlon,
-            DOC_I_Ping(navigation_interpolator_latlon),
+            DOC_I_Ping(get_navigation_interpolator_latlon),
             nb::rv_policy::reference_internal);
     cls.def("set_navigation_interpolator_latlon",
             nb::overload_cast<const navigation::NavigationInterpolatorLatLon&>(

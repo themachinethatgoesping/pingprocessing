@@ -1,4 +1,4 @@
-//sourcehash: 19d9665e1b48f1d767b90a6fbb65da187d1cbf91d53e0e2be1db23668b8c7859
+//sourcehash: 53b86ac36be3dacbb5911b17101a8629943b4e929a6acd84c7490ac99bbb0378
 
 /*
   This file contains docstrings for use in the Python bindings.
@@ -52,7 +52,17 @@ This class represents an interface for accessing watercolumn ping
 data. It inherits from the I_PingCommon class and provides additional
 functions and variables specific to watercolumn pings.)doc";
 
-static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingWatercolumn_I_PingWatercolumn = R"doc()doc";
+static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingWatercolumn_I_PingWatercolumn =
+R"doc(Construct a new I_PingWatercolumn.
+
+Args:
+    ping_info: shared PingInfo object (channel id, timestamp, sensor
+               configuration, navigation). The echosounder ping
+               implementations hand the owning ping's PingInfo pointer
+               here so that the watercolumn can access the same sensor
+               configuration / navigation / geolocation.
+
+)doc";
 
 static const char *mkd_doc_themachinethatgoesping_pingprocessing_datatypes_I_PingWatercolumn_beam_sample_selection_all = R"doc()doc";
 
