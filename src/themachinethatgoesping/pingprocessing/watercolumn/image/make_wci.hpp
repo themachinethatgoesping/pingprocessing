@@ -12,7 +12,7 @@
 
 #include <xtensor/containers/xtensor.hpp>
 
-#include <themachinethatgoesping/echosounders/filetemplates/datatypes/i_ping.hpp>
+#include <themachinethatgoesping/pingprocessing/datatypes/i_ping.hpp>
 
 /**
  * @brief Some dummy
@@ -26,7 +26,7 @@ namespace image {
 
 
 xt::xtensor<float, 2> make_wci(
-    std::shared_ptr<echosounders::filetemplates::datatypes::I_Ping> ping)
+    std::shared_ptr<pingprocessing::datatypes::I_Ping> ping)
 {
     // check ping
     if (!ping->has_watercolumn())

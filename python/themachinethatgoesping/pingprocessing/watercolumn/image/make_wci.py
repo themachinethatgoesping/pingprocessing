@@ -6,6 +6,7 @@ from typing import Tuple
 import themachinethatgoesping.navigation as navigation
 import themachinethatgoesping.echosounders as echosounders
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
 
 # themachinethatgoesping.pingtools imports
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
@@ -334,7 +335,7 @@ class __WCI_scaling_infos:
 
 
 def make_beam_sample_image(
-    ping: echosounders.filetemplates.I_Ping,
+    ping: datatypes.I_Ping,
     hmin: float = None,
     hmax: float = None,
     vmin: float = None,
@@ -384,7 +385,7 @@ def make_beam_sample_image(
 
 
 def make_wci(
-    ping: echosounders.filetemplates.I_Ping,
+    ping: datatypes.I_Ping,
     horizontal_pixels: int,
     hmin: float = None,
     hmax: float = None,
@@ -489,7 +490,7 @@ def make_wci(
 
 
 def make_wci_dual_head(
-    ping_group: echosounders.filetemplates.I_Ping,
+    ping_group: datatypes.I_Ping,
     horizontal_pixels: int,
     hmin: float = None,
     hmax: float = None,

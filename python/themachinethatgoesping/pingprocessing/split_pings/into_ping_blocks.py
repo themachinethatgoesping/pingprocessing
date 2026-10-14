@@ -4,8 +4,8 @@ import numpy as np
 
 import themachinethatgoesping as theping
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-from themachinethatgoesping.echosounders import filetemplates
-I_Ping = filetemplates.I_Ping
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
+I_Ping = datatypes.I_Ping
 
 from typing import List, Dict, Union
 from collections import defaultdict

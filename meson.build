@@ -25,14 +25,19 @@ boost_dep = dependency('boost', static: get_option('dynamic_boost').disabled())
 # themachinethatgoesping
 # tools
 tools_dep = dependency('themachinethatgoesping_tools', required: false)
-echosounders_dep = dependency('themachinethatgoesping_echosounders', required: false)
+navigation_dep = dependency('themachinethatgoesping_navigation', required: false)
+algorithms_dep = dependency('themachinethatgoesping_algorithms', required: false)
 
 if not tools_dep.found()
     tools_dep = subproject('tools', default_options: ['cpp_std=' + get_option('cpp_std')]).get_variable('tools_dep')
 endif
 
-if not echosounders_dep.found()
-    tools_dep = subproject('echosounders', default_options: ['cpp_std=' + get_option('cpp_std')]).get_variable('echosounders_dep')
+if not navigation_dep.found()
+    navigation_dep = subproject('navigation', default_options: ['cpp_std=' + get_option('cpp_std')]).get_variable('navigation_dep')
+endif
+
+if not algorithms_dep.found()
+    algorithms_dep = subproject('algorithms', default_options: ['cpp_std=' + get_option('cpp_std')]).get_variable('algorithms_dep')
 endif
 
 # -- python modules --

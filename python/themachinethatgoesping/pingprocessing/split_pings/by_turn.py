@@ -27,9 +27,9 @@ import numpy as np
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
-from themachinethatgoesping.echosounders import filetemplates
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
 
-I_Ping = filetemplates.I_Ping
+I_Ping = datatypes.I_Ping
 
 
 # ──────────────────────────── helpers ────────────────────────────

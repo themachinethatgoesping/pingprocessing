@@ -1,12 +1,12 @@
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping.navigation as nav
-from themachinethatgoesping.echosounders import filetemplates
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
 from collections import defaultdict
 from typing import Callable, List, Dict
 import numpy as np
 import math
-I_Ping = filetemplates.I_Ping
+I_Ping = datatypes.I_Ping
 
 def by_time_blocks(
     pings: List[I_Ping],

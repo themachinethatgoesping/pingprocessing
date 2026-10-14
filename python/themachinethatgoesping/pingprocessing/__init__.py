@@ -2,15 +2,19 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-# Import all symbols from the C++ module
-#from themachinethatgoesping.pingprocessing_nanopy import *  # flake8: noqa
+import sys as _sys
 
-# Dynamically expose all C++ submodules
-#from themachinethatgoesping.tools._submodule_helper import expose_submodules
+# Import the C++ module (which, at import time, pulls in its dependency modules so their
+# types are registered). We intentionally do NOT `import *` here: that would pull the C++
+# 'watercolumn' submodule into this package namespace and shadow the python 'watercolumn'
+# subpackage imported below.
 from themachinethatgoesping import pingprocessing_nanopy
 
-#globals().update(expose_submodules(pingprocessing_nanopy, 'themachinethatgoesping.pingprocessing'))
-#del pingprocessing_nanopy, expose_submodules
+# Expose the C++ 'datatypes' submodule (the format-independent ping interfaces + calibration
+# classes) as a proper, importable submodule: themachinethatgoesping.pingprocessing.datatypes.
+from themachinethatgoesping.pingprocessing_nanopy import datatypes  # flake8: noqa
+_sys.modules['themachinethatgoesping.pingprocessing.datatypes'] = datatypes
+del pingprocessing_nanopy, _sys
 
 # Python folders
 from . import core
@@ -18,11 +22,8 @@ from . import filter_pings
 from . import split_pings
 from . import group_pings
 from . import overview
-from . import watercolumn #as watercolumn_ext  # flake8: noqa
+from . import watercolumn  # flake8: noqa
 from . import testing
-
-# overwrite watercolumn module using the loaded python extension
-#watercolumn = watercolumn_ext
 
 __version__ = "@PROJECT_VERSION@"
 

@@ -1,11 +1,11 @@
 import numpy as np
 import themachinethatgoesping.navigation as navigation
-import themachinethatgoesping.echosounders as echosounders
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
 import themachinethatgoesping.algorithms as algorithms
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
 
 def get_bottom_directions_wci(
-    ping: echosounders.filetemplates.I_Ping, 
+    ping: datatypes.I_Ping, 
     selection: algorithms.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
     """
     Retrieve bottom positions/directions/sample numbers from a water column ping.
@@ -14,7 +14,7 @@ def get_bottom_directions_wci(
 
     Parameters
     ----------
-    ping : echosounders.filetemplates.I_Ping
+    ping : datatypes.I_Ping
         Ping to retrieve bottom positions/directions/sample numbers from.
     selection : algorithms.pingtools.BeamSelection, optional
         A beam selection to retrieve the directions from, by default None.
@@ -71,14 +71,14 @@ def get_bottom_directions_wci(
     return xyz, bottom_directions, bottom_direction_sample_numbers
 
 def get_bottom_directions_bottom(
-    ping: echosounders.filetemplates.I_Ping,
+    ping: datatypes.I_Ping,
     selection: algorithms.pingtools.BeamSelection = None) -> (geoprocessing.datastructures.XYZ_1, geoprocessing.datastructures.SampleDirectionsRange_1, np.ndarray):
     """
     Retrieve bottom positions/directions/sample numbers from a bottom ping.
 
     Parameters
     ----------
-    ping : echosounders.filetemplates.I_Ping
+    ping : datatypes.I_Ping
         Ping to retrieve bottom positions/directions/sample numbers from.
     selection : algorithms.pingtools.BeamSelection, optional
         A beam selection to filter beams, by default None (all beams).

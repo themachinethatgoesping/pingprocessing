@@ -1,11 +1,11 @@
 from collections import OrderedDict
 from typing import Dict, List
-from themachinethatgoesping.echosounders import filetemplates
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 
 # Import necessary modules and types
 
-I_Ping = filetemplates.I_Ping
+I_Ping = datatypes.I_Ping
 
 
 def sort_ping_groups(ping_groups: List[Dict[str, I_Ping]]) -> List[Dict[str, I_Ping]]:
@@ -31,7 +31,7 @@ def sort_ping_groups(ping_groups: List[Dict[str, I_Ping]]) -> List[Dict[str, I_P
 
 
 def dual_head(
-    pings: List[filetemplates.I_Ping],
+    pings: List[datatypes.I_Ping],
     progress: bool = False,
     sort: bool = True,
 ) -> List[Dict[str, I_Ping]]:

@@ -3,8 +3,8 @@ from collections import defaultdict
 import numpy as np
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
-from themachinethatgoesping.echosounders import filetemplates
-I_Ping = filetemplates.I_Ping
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
+I_Ping = datatypes.I_Ping
 
 from typing import List, Dict
 from collections import defaultdict

@@ -10,6 +10,15 @@ sources = [
   'module.cpp',
   'watercolumn/module.cpp',
   'watercolumn/image/module.cpp',
+  'py_datatypes/c_i_ping.cpp',
+  'py_datatypes/c_i_pingbottom.cpp',
+  'py_datatypes/c_i_pingcommon.cpp',
+  'py_datatypes/c_i_pingfiledata.cpp',
+  'py_datatypes/c_i_pingwatercolumn.cpp',
+  'py_datatypes/module.cpp',
+  'py_datatypes/py_calibration/c_amplitudecalibration.cpp',
+  'py_datatypes/py_calibration/c_multisectorwatercolumncalibration.cpp',
+  'py_datatypes/py_calibration/c_watercolumncalibration.cpp',
 ]
 
 # define python module
@@ -32,6 +41,14 @@ py_pingprocessing = pymod.extension_module(
     limited_api : nanobind_limited_api,
     override_options: ['unity=off']
 )
+
+# Expose the nanobind binding-helper headers in this nanomodule so that the echosounders
+# nanomodule (which now depends on pingprocessing) can reuse shared template helpers such as
+# py_datatypes/py_calibration/c_multisectorwatercolumncalibration.hpp (init_multisectorcalibration)
+# to bind its format-specific derived calibration types.
+pingprocessing_nanobind_dep = declare_dependency(
+  include_directories : include_directories('.')
+  )
 
 
 

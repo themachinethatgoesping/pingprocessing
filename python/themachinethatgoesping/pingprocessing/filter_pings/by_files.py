@@ -3,8 +3,8 @@ from tqdm.auto import tqdm
 from pathlib import Path
 import os
 
-from themachinethatgoesping.echosounders import filetemplates
-Ping = filetemplates.I_Ping
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
+Ping = datatypes.I_Ping
 
 def by_folders(pings: List[Ping], folders: List[str], progress_delay: int = 5) -> List[Ping]:
     """

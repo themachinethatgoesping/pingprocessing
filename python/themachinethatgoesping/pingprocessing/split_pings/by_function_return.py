@@ -7,8 +7,8 @@ from typing import Callable, List, Dict
 
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
 import themachinethatgoesping.navigation as nav
-from themachinethatgoesping.echosounders import filetemplates
-I_Ping = filetemplates.I_Ping
+from themachinethatgoesping.pingprocessing_nanopy import datatypes
+I_Ping = datatypes.I_Ping
 
 def by_function_return(
     pings: List[I_Ping], 

@@ -8,6 +8,15 @@ headerdir = projectnamespace + '/pingprocessing'
 
 # -- source files --
 sources = [
+  'datatypes/i_ping.cpp',
+  'datatypes/i_pingbottom.cpp',
+  'datatypes/i_pingcommon.cpp',
+  'datatypes/i_pingfiledata.cpp',
+  'datatypes/i_pingwatercolumn.cpp',
+  'datatypes/pingcontainer.cpp',
+  'datatypes/calibration/amplitudecalibration.cpp',
+  'datatypes/calibration/multisectorwatercolumncalibration.cpp',
+  'datatypes/calibration/watercolumncalibration.cpp',
 ]
 
 headers = [
@@ -15,6 +24,26 @@ headers = [
   'watercolumn/echograms/.docstrings/echogrambase.doc.hpp',
   'watercolumn/image/make_wci.hpp',
   'watercolumn/image/.docstrings/make_wci.doc.hpp',
+  'datatypes/i_ping.hpp',
+  'datatypes/i_pingbottom.hpp',
+  'datatypes/i_pingcommon.hpp',
+  'datatypes/i_pingfiledata.hpp',
+  'datatypes/i_pingwatercolumn.hpp',
+  'datatypes/pingcontainer.hpp',
+  'datatypes/calibration/amplitudecalibration.hpp',
+  'datatypes/calibration/calibrationinfo.hpp',
+  'datatypes/calibration/multisectorwatercolumncalibration.hpp',
+  'datatypes/calibration/watercolumncalibration.hpp',
+  'datatypes/calibration/.docstrings/amplitudecalibration.doc.hpp',
+  'datatypes/calibration/.docstrings/calibrationinfo.doc.hpp',
+  'datatypes/calibration/.docstrings/multisectorwatercolumncalibration.doc.hpp',
+  'datatypes/calibration/.docstrings/watercolumncalibration.doc.hpp',
+  'datatypes/.docstrings/i_ping.doc.hpp',
+  'datatypes/.docstrings/i_pingbottom.doc.hpp',
+  'datatypes/.docstrings/i_pingcommon.doc.hpp',
+  'datatypes/.docstrings/i_pingfiledata.doc.hpp',
+  'datatypes/.docstrings/i_pingwatercolumn.doc.hpp',
+  'datatypes/.docstrings/pingcontainer.doc.hpp',
 ]
 
 # -- check if there are source files to compile --
@@ -25,7 +54,8 @@ if sources.length() > 0
     pingprocessing_lib = static_library(libname,sources,
                           dependencies : [
                             boost_dep, 
-                            echosounders_dep,
+                            algorithms_dep,
+                            navigation_dep,
                             tools_dep
                             ],
                           override_options: [
@@ -38,7 +68,8 @@ if sources.length() > 0
     pingprocessing_lib = library(libname,sources,
                           dependencies : [
                             boost_dep, 
-                            echosounders_dep,
+                            algorithms_dep,
+                            navigation_dep,
                             tools_dep
                             ],
                           override_options: [
@@ -64,7 +95,8 @@ endif
 pingprocessing_dep = declare_dependency(
   dependencies : [
     boost_dep,
-    echosounders_dep,
+    algorithms_dep,
+                            navigation_dep,
     tools_dep
   ],
   link_with : link_with,
