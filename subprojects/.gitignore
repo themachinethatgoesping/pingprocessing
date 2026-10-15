@@ -14,9 +14,7 @@ hinnant-date.wrap
 
 #inherited wrap and folders
 flat_map*
-algorithms*
 frozen*
-navigation*
 sse2neon*
 pugixml*
 pybind11*
@@ -34,5 +32,6 @@ xxhash_cpp*
 #inherited repos
 tools-*
 meta-*
-echosounders-*
+algorithms-*
+navigation-*
 
