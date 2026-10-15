@@ -66,8 +66,21 @@ def get_bottom_directions_wci(
     bottom_directions = geoprocessing.datastructures.SampleDirectionsRange_1([selection.get_number_of_beams()])
     bottom_directions.crosstrack_angle = bottomdirections.crosstrack_angle
     bottom_directions.alongtrack_angle = bottomdirections.alongtrack_angle
-    bottom_directions.range = xyz.true_range    
-    
+
+    # A beam without a valid bottom detection yields a range of 0. The water-column
+    # backtracer (BacktracedWCI) builds a per-beam range->sample interpolator from
+    # {0, range}; a zero range makes that {0, 0} (duplicate x), which raises
+    # ERROR[Interpolation::_check_XY] and aborts the ENTIRE image build. Such beams
+    # have no in-range samples anyway, so replace non-positive/invalid ranges with a
+    # tiny positive value: the affected beams then simply contribute no samples
+    # instead of crashing the build (important when a PingSampleSelector such as
+    # select_max_bottom_range_percent includes outer beams that lack a bottom).
+    bottom_range = np.asarray(xyz.true_range).copy()
+    invalid_range = ~np.isfinite(bottom_range) | (bottom_range <= 0.0)
+    if invalid_range.any():
+        bottom_range[invalid_range] = 1e-3
+    bottom_directions.range = bottom_range
+
     return xyz, bottom_directions, bottom_direction_sample_numbers
 
 def get_bottom_directions_bottom(
@@ -114,6 +127,14 @@ def get_bottom_directions_bottom(
     
     bt = geoprocessing.backtracers.BTConstantSVP(geolocation, pingoff.x, pingoff.y)
     bottom_directions = bt.backtrace_points(xyz)
+    # Guard against degenerate (zero / non-finite) ranges that would make the
+    # backtracer's per-beam {0, range} interpolator collapse to {0, 0} and abort
+    # the whole image build (see get_bottom_directions_wci for details).
+    bottom_range = np.asarray(bottom_directions.range).copy()
+    invalid_range = ~np.isfinite(bottom_range) | (bottom_range <= 0.0)
+    if invalid_range.any():
+        bottom_range[invalid_range] = 1e-3
+        bottom_directions.range = bottom_range
     if selection is not None:
         bottom_direction_sample_numbers = ping.watercolumn.get_bottom_range_samples(selection)
     else:

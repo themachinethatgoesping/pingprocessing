@@ -64,3 +64,47 @@ class TestWCIViewer:
                 #viewer = theping.widgets.WCIViewer(pings)
 
         #viewer = theping.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))
+
+    def test_wci_build_with_bottom_range_pss_should_not_crash(self):
+        """Regression test: a PingSampleSelector that limits the water column to a
+        bottom-range percentage over the full swath includes outer beams without a
+        valid bottom detection. Those beams have range 0, which previously made the
+        backtracer build a degenerate {0, 0} range->sample interpolator and abort
+        the whole image build (ERROR[Interpolation::_check_XY]). The water-column
+        viewer swallows that exception, so the image silently stops updating.
+        """
+        import numpy as np
+        from themachinethatgoesping.pingprocessing.watercolumn.image.make_wci import (
+            make_wci_dual_head,
+        )
+
+        pss = theping.echosounders.pingtools.PingSampleSelector()
+        pss.select_max_bottom_range_percent(102)
+        pss.select_beam_range_by_angles(-90, 90, 2)
+
+        n_tested = 0
+        for ending, subfolders in self.find_files().items():
+            if ending not in (".all", ".wcd"):
+                continue
+            for folder, files in subfolders.items():
+                pings = [p for p in self.get_pings(files) if p.has_watercolumn()]
+                for ping in pings:
+                    # Must not raise even when some selected beams have no bottom.
+                    wci, extent = make_wci_dual_head(
+                        ping,
+                        horizontal_pixels=256,
+                        wci_value="sv/av/pv/rv",
+                        linear_mean=True,
+                        apply_pss_to_bottom=False,
+                        ping_sample_selector=pss,
+                        mp_cores=1,
+                    )
+                    assert np.isfinite(wci).any()
+                    n_tested += 1
+
+        if n_tested == 0:
+            import pytest
+
+            pytest.skip("no kongsberg water-column test files available")
+
+        #viewer = theping.widgets.WCIViewer(self.get_pings(self.files_all+self.files_wcd))
