@@ -18,6 +18,7 @@
 
 #include <boost/container_hash/hash.hpp>
 #include <boost/flyweight.hpp>
+#include <boost/flyweight/intermodule_holder.hpp>
 
 /* themachinethatgoesping includes */
 #include <themachinethatgoesping/navigation/navigationinterpolatorlatlon.hpp>
@@ -78,10 +79,13 @@ class PingInfo
     double _timestamp = 0; ///< Unix timestamp in seconds (saved in UTC0)
 
     /// Deduplicated string metadata (channel id, ...). Not exposed directly.
-    boost::flyweights::flyweight<PingInfoData> _data;
+    boost::flyweights::flyweight<PingInfoData, boost::flyweights::intermodule_holder> _data;
 
-    boost::flyweights::flyweight<navigation::SensorConfiguration> _sensor_configuration;
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>
+    boost::flyweights::flyweight<navigation::SensorConfiguration,
+                                 boost::flyweights::intermodule_holder>
+        _sensor_configuration;
+    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon,
+                                 boost::flyweights::intermodule_holder>
         _navigation_interpolator_latlon;
 
   public:
@@ -137,7 +141,7 @@ class PingInfo
     bool                                            has_navigation_interpolator_latlon() const;
     const navigation::NavigationInterpolatorLatLon& get_navigation_interpolator_latlon() const;
     void                                            set_navigation_interpolator_latlon(
-        const navigation::NavigationInterpolatorLatLon& navigation_interpolator_latlon);
+                                                   const navigation::NavigationInterpolatorLatLon& navigation_interpolator_latlon);
     void set_navigation_interpolator_latlon(
         boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>
             navigation_interpolator_latlon);
