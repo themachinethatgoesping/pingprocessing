@@ -13,7 +13,9 @@ from themachinethatgoesping import pingprocessing_nanopy
 # Expose the C++ 'datatypes' submodule (the format-independent ping interfaces + calibration
 # classes) as a proper, importable submodule: themachinethatgoesping.pingprocessing.datatypes.
 from themachinethatgoesping.pingprocessing_nanopy import datatypes  # flake8: noqa
+from themachinethatgoesping.pingprocessing_nanopy import pingtools  # flake8: noqa
 _sys.modules['themachinethatgoesping.pingprocessing.datatypes'] = datatypes
+_sys.modules['themachinethatgoesping.pingprocessing.pingtools'] = pingtools
 del pingprocessing_nanopy, _sys
 
 # Python folders

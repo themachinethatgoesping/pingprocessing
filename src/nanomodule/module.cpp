@@ -8,6 +8,7 @@ namespace nb = nanobind;
 #include <xtensor-python/nanobind/pytensor.hpp> // Numpy bindings
 
 #include "py_datatypes/module.hpp"
+#include "py_pingtools/module.hpp"
 #include "watercolumn/module.hpp"
 
 // declare modules
@@ -24,6 +25,7 @@ NB_MODULE(MODULE_NAME, m)
     m.attr("__version__") = MODULE_VERSION;
 
     py_datatypes::init_m_datatypes(m);
+    py_pingtools::init_m_pingtools(m);
     py_watercolumn::init_m_watercolumn(m);
 }
 

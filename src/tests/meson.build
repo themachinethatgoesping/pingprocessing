@@ -7,8 +7,9 @@
 testcomponent = 'pingprocessing'
 
 sources = [
-  'tutorial.test.cpp',
   'pinginfo.test.cpp',
+  'tutorial.test.cpp',
+  'pingtools/pingsampleselector.test.cpp',
 ]
 
 foreach source : sources

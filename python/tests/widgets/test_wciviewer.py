@@ -78,7 +78,7 @@ class TestWCIViewer:
             make_wci_dual_head,
         )
 
-        pss = theping.echosounders.pingtools.PingSampleSelector()
+        pss = theping.pingprocessing.pingtools.PingSampleSelector()
         pss.select_max_bottom_range_percent(102)
         pss.select_beam_range_by_angles(-90, 90, 2)
 

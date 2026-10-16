@@ -7,6 +7,7 @@ import themachinethatgoesping.navigation as navigation
 import themachinethatgoesping.echosounders as echosounders
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
 from themachinethatgoesping.pingprocessing_nanopy import datatypes
+from themachinethatgoesping.pingprocessing_nanopy import pingtools
 
 # themachinethatgoesping.pingtools imports
 from themachinethatgoesping.pingprocessing.core.progress import get_progress_iterator
@@ -112,7 +113,7 @@ class __WCI_scaling_infos:
         y_coordinates: float = None,
         z_coordinates: float = None,
         from_bottom_xyz=False,  # this does not yet work,
-        ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+        ping_sample_selector=pingtools.PingSampleSelector(),
         apply_pss_to_bottom=False,
     ):
         if not is_iterable(pings):
@@ -209,7 +210,7 @@ class __WCI_scaling_infos:
         vmin: float = None,
         vmax: float = None,
         from_bottom_xyz=False,  # this does not yet work,
-        ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+        ping_sample_selector=pingtools.PingSampleSelector(),
         apply_pss_to_bottom: bool = False,
     ):
         if not is_iterable(pings):
@@ -341,7 +342,7 @@ def make_beam_sample_image(
     vmin: float = None,
     vmax: float = None,
     wci_value: str = "sv/av/pv/rv",
-    ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+    ping_sample_selector=pingtools.PingSampleSelector(),
     apply_pss_to_bottom: bool = False,
     mp_cores: int = 1,
     **kwargs,
@@ -395,7 +396,7 @@ def make_wci(
     z_coordinates: float = None,
     from_bottom_xyz: bool = False,
     wci_value: str = "sv/av/pv/rv",
-    ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+    ping_sample_selector=pingtools.PingSampleSelector(),
     apply_pss_to_bottom: bool = False,
     mp_cores: int = 1,
     **kwargs,
@@ -500,7 +501,7 @@ def make_wci_dual_head(
     z_coordinates=None,
     from_bottom_xyz: bool = False,
     wci_value: str = "sv/av/pv/rv",
-    ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+    ping_sample_selector=pingtools.PingSampleSelector(),
     apply_pss_to_bottom: bool = False,
     mp_cores: int = 1,
     **kwargs,
@@ -666,7 +667,7 @@ def make_wci_stack(
     vmax: float = None,
     from_bottom_xyz: bool = False,
     wci_value: str = "sv/av/pv/rv",
-    ping_sample_selector=echosounders.pingtools.PingSampleSelector(),
+    ping_sample_selector=pingtools.PingSampleSelector(),
     apply_pss_to_bottom: bool = False,
     progress=None,
     mp_cores: int = 1,

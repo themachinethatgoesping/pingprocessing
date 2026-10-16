@@ -5,9 +5,6 @@ from . import layers
 from . import calibration
 from . import backends
 
-# functions
-from .echodata import EchoData
-
 # backends (convenience exports)
 from .backends import EchogramDataBackend, PingDataBackend, ZarrDataBackend
 

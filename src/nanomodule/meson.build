@@ -20,6 +20,8 @@ sources = [
   'py_datatypes/py_calibration/c_amplitudecalibration.cpp',
   'py_datatypes/py_calibration/c_multisectorwatercolumncalibration.cpp',
   'py_datatypes/py_calibration/c_watercolumncalibration.cpp',
+  'py_pingtools/c_pingsampleselector.cpp',
+  'py_pingtools/module.cpp',
 ]
 
 # define python module

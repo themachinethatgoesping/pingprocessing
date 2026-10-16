@@ -117,7 +117,7 @@ class PingDataBackend(EchogramDataBackend):
             PingDataBackend instance.
         """
         if pss is None:
-            pss = echosounders.pingtools.PingSampleSelector()
+            pss = pingprocessing.pingtools.PingSampleSelector()
 
         # Pre-allocate arrays
         n_pings = len(pings)

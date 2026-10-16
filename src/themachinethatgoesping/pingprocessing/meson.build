@@ -8,13 +8,14 @@ headerdir = projectnamespace + '/pingprocessing'
 
 # -- source files --
 sources = [
+  'pingtools/pingsampleselector.cpp',
   'datatypes/i_ping.cpp',
   'datatypes/i_pingbottom.cpp',
   'datatypes/i_pingcommon.cpp',
   'datatypes/i_pingfiledata.cpp',
   'datatypes/i_pingwatercolumn.cpp',
-  'datatypes/pinginfo.cpp',
   'datatypes/pingcontainer.cpp',
+  'datatypes/pinginfo.cpp',
   'datatypes/calibration/amplitudecalibration.cpp',
   'datatypes/calibration/multisectorwatercolumncalibration.cpp',
   'datatypes/calibration/watercolumncalibration.cpp',
@@ -25,13 +26,15 @@ headers = [
   'watercolumn/echograms/.docstrings/echogrambase.doc.hpp',
   'watercolumn/image/make_wci.hpp',
   'watercolumn/image/.docstrings/make_wci.doc.hpp',
+  'pingtools/pingsampleselector.hpp',
+  'pingtools/.docstrings/pingsampleselector.doc.hpp',
   'datatypes/i_ping.hpp',
   'datatypes/i_pingbottom.hpp',
   'datatypes/i_pingcommon.hpp',
   'datatypes/i_pingfiledata.hpp',
   'datatypes/i_pingwatercolumn.hpp',
-  'datatypes/pinginfo.hpp',
   'datatypes/pingcontainer.hpp',
+  'datatypes/pinginfo.hpp',
   'datatypes/calibration/amplitudecalibration.hpp',
   'datatypes/calibration/calibrationinfo.hpp',
   'datatypes/calibration/multisectorwatercolumncalibration.hpp',
@@ -45,8 +48,8 @@ headers = [
   'datatypes/.docstrings/i_pingcommon.doc.hpp',
   'datatypes/.docstrings/i_pingfiledata.doc.hpp',
   'datatypes/.docstrings/i_pingwatercolumn.doc.hpp',
-  'datatypes/.docstrings/pinginfo.doc.hpp',
   'datatypes/.docstrings/pingcontainer.doc.hpp',
+  'datatypes/.docstrings/pinginfo.doc.hpp',
 ]
 
 # -- check if there are source files to compile --

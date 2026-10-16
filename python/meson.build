@@ -41,7 +41,6 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/__init__.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/coordinate_system.py',
-  'themachinethatgoesping/pingprocessing/watercolumn/echograms/echodata.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/echogrambuilder.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/indexers.py',
   'themachinethatgoesping/pingprocessing/watercolumn/echograms/calibration/__init__.py',

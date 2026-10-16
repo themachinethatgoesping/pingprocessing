@@ -7,14 +7,14 @@
 # pylint: disable=no-self-use
 
 import themachinethatgoesping.pingprocessing as pingproc
-# import themachinethatgoesping.echosounders.simradraw as simradraw
-# import themachinethatgoesping.echosounders.kongsbergall as kongsbergall
 
 from themachinethatgoesping.pingprocessing import core
 from themachinethatgoesping.pingprocessing import filter_pings
 from themachinethatgoesping.pingprocessing import group_pings
 from themachinethatgoesping.pingprocessing import split_pings
 from themachinethatgoesping.pingprocessing import overview
+from themachinethatgoesping.pingprocessing import datatypes
+from themachinethatgoesping.pingprocessing import pingtools
 
 from themachinethatgoesping.pingprocessing import watercolumn
 from themachinethatgoesping.pingprocessing.watercolumn import echograms
