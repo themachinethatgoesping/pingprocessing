@@ -79,14 +79,16 @@ class PingInfo
     double _timestamp = 0; ///< Unix timestamp in seconds (saved in UTC0)
 
     /// Deduplicated string metadata (channel id, ...). Not exposed directly.
-    boost::flyweights::flyweight<PingInfoData, boost::flyweights::intermodule_holder> _data;
+    boost::flyweights::flyweight<PingInfoData
+    //,boost::flyweights::intermodule_holder
+                                 > _data;
 
-    boost::flyweights::flyweight<navigation::SensorConfiguration,
-                                 boost::flyweights::intermodule_holder>
-        _sensor_configuration;
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon,
-                                 boost::flyweights::intermodule_holder>
-        _navigation_interpolator_latlon;
+    boost::flyweights::flyweight<navigation::SensorConfiguration
+    //,boost::flyweights::intermodule_holder
+                                 > _sensor_configuration;
+    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon
+                //,boost::flyweights::intermodule_holder
+                                 > _navigation_interpolator_latlon;
 
   public:
     PingInfo()  = default;
