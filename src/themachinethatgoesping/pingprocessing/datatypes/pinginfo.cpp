@@ -46,11 +46,9 @@ void PingInfo::set_channel_id(std::string_view channel_id)
 }
 
 // ----- combined setter -----
-void PingInfo::set_data(
-    std::string_view                                              channel_id,
-    boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration,
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>
-        navigation_interpolator_latlon)
+void PingInfo::set_data(std::string_view             channel_id,
+                        SensorConfigurationFlyweight sensor_configuration,
+                        NavigationInterpolatorLatLonFlyweight navigation_interpolator_latlon)
 {
     _data                           = PingInfoData{ std::string(channel_id) };
     _sensor_configuration           = std::move(sensor_configuration); // avoid reference counting
@@ -75,7 +73,7 @@ void PingInfo::set_sensor_configuration(
     _sensor_configuration = sensor_configuration;
 }
 void PingInfo::set_sensor_configuration_flyweight(
-    boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration)
+    SensorConfigurationFlyweight sensor_configuration)
 {
     _sensor_configuration = std::move(sensor_configuration); // avoid reference counting
 }
@@ -100,8 +98,7 @@ void PingInfo::set_navigation_interpolator_latlon(
     _navigation_interpolator_latlon = navigation_interpolator_latlon;
 }
 void PingInfo::set_navigation_interpolator_latlon(
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>
-        navigation_interpolator_latlon)
+    NavigationInterpolatorLatLonFlyweight navigation_interpolator_latlon)
 {
     _navigation_interpolator_latlon = std::move(navigation_interpolator_latlon);
 }

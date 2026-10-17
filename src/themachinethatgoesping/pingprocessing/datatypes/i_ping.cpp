@@ -133,7 +133,7 @@ void I_Ping::set_sensor_configuration(const navigation::SensorConfiguration& sen
     _ping_info->set_sensor_configuration(sensor_configuration);
 }
 void I_Ping::set_sensor_configuration_flyweight(
-    boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration)
+    SensorConfigurationFlyweight sensor_configuration)
 {
     _ping_info->set_sensor_configuration_flyweight(std::move(sensor_configuration));
 }
@@ -159,7 +159,7 @@ void I_Ping::set_navigation_interpolator_latlon(
     _ping_info->set_navigation_interpolator_latlon(nav_interpolator);
 }
 void I_Ping::set_navigation_interpolator_latlon(
-    boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator)
+    NavigationInterpolatorLatLonFlyweight nav_interpolator)
 {
     _ping_info->set_navigation_interpolator_latlon(std::move(nav_interpolator));
 }

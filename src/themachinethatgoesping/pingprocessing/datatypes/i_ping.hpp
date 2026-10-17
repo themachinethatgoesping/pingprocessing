@@ -91,7 +91,7 @@ class I_Ping : public I_PingCommon
     bool has_sensor_configuration() const;
     void set_sensor_configuration(const navigation::SensorConfiguration& sensor_configuration);
     void set_sensor_configuration_flyweight(
-        boost::flyweights::flyweight<navigation::SensorConfiguration> sensor_configuration);
+        SensorConfigurationFlyweight sensor_configuration);
 
     bool                                            has_navigation_interpolator_latlon() const;
     bool                                            has_sensor_data_latlon() const;
@@ -102,7 +102,7 @@ class I_Ping : public I_PingCommon
         const navigation::NavigationInterpolatorLatLon& nav_interpolator);
 
     void set_navigation_interpolator_latlon(
-        boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon> nav_interpolator);
+        NavigationInterpolatorLatLonFlyweight nav_interpolator);
 
     void load(bool force = false) override;
     void release() override;

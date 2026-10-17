@@ -71,9 +71,8 @@ void init_c_pinginfo(nanobind::module_& m)
            const navigation::NavigationInterpolatorLatLon& navigation_interpolator_latlon) {
             self.set_data(
                 channel_id,
-                boost::flyweights::flyweight<navigation::SensorConfiguration>(sensor_configuration),
-                boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>(
-                    navigation_interpolator_latlon));
+                SensorConfigurationFlyweight(sensor_configuration),
+                NavigationInterpolatorLatLonFlyweight(navigation_interpolator_latlon));
         },
         DOC_PingInfo(set_data),
         nb::arg("channel_id"),

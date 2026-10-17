@@ -98,8 +98,8 @@ TEST_CASE("PingInfo: combined set_data sets channel id, sensor configuration and
 
     PingInfo pi;
     pi.set_data("TRX-2",
-                boost::flyweights::flyweight<navigation::SensorConfiguration>(sc),
-                boost::flyweights::flyweight<navigation::NavigationInterpolatorLatLon>(nav));
+                SensorConfigurationFlyweight(sc),
+                NavigationInterpolatorLatLonFlyweight(nav));
 
     REQUIRE(pi.get_channel_id() == "TRX-2");
     REQUIRE(pi.has_sensor_configuration());
