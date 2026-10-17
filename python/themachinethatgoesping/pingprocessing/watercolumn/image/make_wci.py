@@ -4,7 +4,6 @@ from typing import Tuple
 
 # themachinethatgoesping imports
 import themachinethatgoesping.navigation as navigation
-import themachinethatgoesping.echosounders as echosounders
 import themachinethatgoesping.algorithms.geoprocessing as geoprocessing
 from themachinethatgoesping.pingprocessing_nanopy import datatypes
 from themachinethatgoesping.pingprocessing_nanopy import pingtools

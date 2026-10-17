@@ -7,17 +7,6 @@
 /* generated doc strings */
 #include ".docstrings/echogrambase.doc.hpp"
 
-/* generated doc strings */
-#include ".docstrings/make_wci.doc.hpp"
-
-#include <memory>
-
-
-#include <xtensor/containers/xtensor.hpp>
-#include <xtensor-python/pytensor.hpp> // Numpy bindings
-
-#include <themachinethatgoesping/echosounders/filetemplates/datatypes/i_ping.hpp>
-
 /**
  * @brief Some dummy
  *
@@ -39,9 +28,6 @@ class EchogramBase {
     public:
     EchogramBase() = default;
 };
-
-}
-
 
 }
 }

@@ -6,7 +6,6 @@ import numpy as np
 from tqdm.auto import tqdm
 import warnings
 
-from themachinethatgoesping import echosounders
 from themachinethatgoesping.algorithms.geoprocessing.functions import to_raypoints
 from themachinethatgoesping.algorithms.gridding import ForwardGridder1D
 
@@ -17,7 +16,7 @@ from ...helper import make_image_helper
 
 
 class PingDataBackend(EchogramDataBackend):
-    """Backend that reads data from echosounders ping objects.
+    """Backend that reads data from pingprocessing ping objects.
     
     This backend wraps ping objects and provides access to water column data
     through the EchogramDataBackend interface.

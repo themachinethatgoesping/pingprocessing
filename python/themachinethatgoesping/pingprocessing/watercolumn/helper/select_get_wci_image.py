@@ -1,5 +1,4 @@
 import numpy as np
-import themachinethatgoesping.echosounders as echosounders
 import themachinethatgoesping.algorithms as algorithms
 
 def apply_pss(ping, pss, apply_pss_to_bottom):

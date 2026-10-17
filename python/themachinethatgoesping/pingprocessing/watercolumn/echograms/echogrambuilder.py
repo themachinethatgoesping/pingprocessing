@@ -16,7 +16,6 @@ import datetime as dt
 from tqdm.auto import tqdm
 
 # external Ping packages
-from themachinethatgoesping import echosounders
 from themachinethatgoesping import algorithms
 
 # internal Ping.pingprocessing packages

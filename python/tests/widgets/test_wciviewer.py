@@ -1,9 +1,16 @@
 import os
 import logging
 import themachinethatgoesping as theping
-from themachinethatgoesping.echosounders import kongsbergall, simradraw
 
 LOGGER = logging.getLogger(__name__)
+
+try:
+    from themachinethatgoesping.echosounders import kongsbergall, simradraw
+except ImportError:
+    # skip the tests in this file, create clear message for this
+    LOGGER.warning("Skipping tests in this file because echosounders library is not available.")
+    import pytest
+    pytest.skip("Skipping tests in this file because echosounders library is not available.", allow_module_level=True)
 
 
 class TestWCIViewer:
