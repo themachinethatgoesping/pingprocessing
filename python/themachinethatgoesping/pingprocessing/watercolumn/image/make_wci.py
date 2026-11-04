@@ -384,6 +384,7 @@ def make_beam_sample_image(
     return wci, [-0.5, wci.shape[0] + 0.5, wci.shape[1] + 0.5, -0.5]
 
 
+
 def make_wci(
     ping: datatypes.I_Ping,
     horizontal_pixels: int,
@@ -446,11 +447,54 @@ def make_wci(
         except ValueError:
             return np.empty((0, 0), dtype=np.float32), (0, 0, 0, 0)
 
-    # t.append(time()) # 4
-    # bt = geoprocessing.backtracers.BTConstantSVP(
-    #     scaling_infos.geolocation, scaling_infos.ping_offsets.x, scaling_infos.ping_offsets.y
-    # )
-    # geolocation x is x location in image as well for now
+    if True:
+        
+        sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+
+        if sel.empty():
+            wci = np.empty((len(scaling_infos.y_coordinates), len(scaling_infos.z_coordinates)), dtype=np.float32)
+            wci.fill(np.nan)
+
+        else:
+            wci = wchelper.select_get_wci_image(ping, sel, wci_value, mp_cores=mp_cores)
+           
+            max_samples = scaling_infos.bottom_direction_sample_numbers
+            sstep = sel.get_sample_step_ensemble()
+            geo = scaling_infos.geolocation
+
+            range_sample_numbers = np.asarray(max_samples, dtype=float) / sstep
+            # Beams without a valid bottom detection have range clamped to 1e-3m in
+            # get_bottom_directions_wci. Their selection holds last_sample_number = 0
+            # (102% × 0 = 0 samples), so range_sample_numbers[b] = 0.
+            # Passing 0 to from_angles_and_range causes:
+            #   slope = endpoint / 0  →  inf   (for most angles)
+            #   beam_tan = y_slope / z_slope = inf * (1/inf) = NaN   (IEEE 754: inf×0=NaN)
+            # NaN in beam_tan → UB in std::stable_sort → all-NaN output for the whole image.
+            # Clamp to at least 1 subsampled-sample: those degenerate beams map every pixel
+            # to sample numbers far outside [first_sample, first_sample+n_samples) (range
+            # is only 1e-3 m ≈ sensor origin) and silently contribute NaN, which is correct.
+            invalid_rsn = ~np.isfinite(range_sample_numbers) | (range_sample_numbers <= 0)
+            if invalid_rsn.any():
+                range_sample_numbers[invalid_rsn] = 1.0
+            
+            bsg = geoprocessing.datastructures.BeamSampleGeometry.from_angles_and_range(
+                alongtrack_angles=scaling_infos.bottom_directions.alongtrack_angle + geo.pitch,
+                crosstrack_angles=scaling_infos.bottom_directions.crosstrack_angle + geo.roll,
+                ranges=scaling_infos.bottom_directions.range,
+                range_sample_numbers=range_sample_numbers,
+                first_sample_numbers=[sel.get_first_sample_number_ensemble()/sstep]*sel.get_number_of_beams(),
+                number_of_samples=[sel.get_number_of_samples_ensemble()]*sel.get_number_of_beams()
+            )
+
+            wci = bsg.backward_bilinear(wci,
+                                    scaling_infos.y_coordinates-scaling_infos.ping_offsets.y,
+                                    scaling_infos.z_coordinates-scaling_infos.geolocation.z,
+                                    supersampling=1,
+                                    mp_cores=mp_cores)
+
+        return wci, tuple(scaling_infos.extent)
+    
+    
     bt = geoprocessing.backtracers.BTConstantSVP(scaling_infos.geolocation, 0, scaling_infos.ping_offsets.y)
 
     # t.append(time()) # 5
