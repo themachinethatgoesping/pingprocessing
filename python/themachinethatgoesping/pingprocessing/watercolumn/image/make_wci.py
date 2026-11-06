@@ -94,6 +94,7 @@ class __WCI_scaling_infos:
         extent,
         ping_offsets,
         ping_sensor_configurations,
+        beam_sample_selections
     ):
         self.xyz = xyz
         self.bottom_directions = bottom_directions
@@ -104,6 +105,7 @@ class __WCI_scaling_infos:
         self.geolocation = geolocation
         self.ping_offsets = ping_offsets
         self.ping_sensor_configurations = ping_sensor_configurations
+        self.beam_sample_selections = beam_sample_selections
 
     @classmethod
     def from_pings_and_coordinates(
@@ -126,6 +128,7 @@ class __WCI_scaling_infos:
         geolocations = []
         ping_offsets = []
         ping_sensor_configurations = []
+        beam_sample_selections = []
 
         valid_pings = False
         for ping_dict in iterator:
@@ -159,6 +162,7 @@ class __WCI_scaling_infos:
                 sc = ping.get_sensor_configuration()
                 ping_sensor_configurations.append(sc)
                 ping_offsets.append(sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id())))
+                beam_sample_selections.append(selection)
 
         if not valid_pings:
             raise ValueError("No valid pings found. (BeamSampleSelection empty for all pings)")
@@ -186,6 +190,7 @@ class __WCI_scaling_infos:
                 ping_offsets=ping_offsets[0],
                 ping_sensor_configurations=ping_sensor_configurations[0],
                 extent=extent,
+                beam_sample_selections=beam_sample_selections[0]
             )
         return cls(
             xyz=xyzs,
@@ -197,6 +202,7 @@ class __WCI_scaling_infos:
             ping_offsets=ping_offsets,
             ping_sensor_configurations=ping_sensor_configurations,
             extent=extent,
+            beam_sample_selections=beam_sample_selections,
         )
 
     @classmethod
@@ -228,6 +234,7 @@ class __WCI_scaling_infos:
         geolocations = []
         ping_offsets = []
         ping_sensor_configurations = []
+        beam_sample_selections = []
 
         valid_pings = False
         for ping_dict in iterator:
@@ -261,7 +268,7 @@ class __WCI_scaling_infos:
                 sc = ping.get_sensor_configuration()
                 ping_sensor_configurations.append(sc)
                 ping_offsets.append(sc.get_target(*sc.get_transducer_transmit_receive_id(ping.get_channel_id())))
-
+                beam_sample_selections.append(selection)
 
                 # compute limits of the create image
                 tr_y = ping_offsets[-1].y
@@ -320,6 +327,7 @@ class __WCI_scaling_infos:
                 ping_offsets=ping_offsets[0],
                 ping_sensor_configurations=ping_sensor_configurations[0],
                 extent=extent,
+                beam_sample_selections=beam_sample_selections[0],
             )
         return cls(
             xyz=xyzs,
@@ -331,6 +339,7 @@ class __WCI_scaling_infos:
             ping_offsets=ping_offsets,
             ping_sensor_configurations=ping_sensor_configurations,
             extent=extent,
+            beam_sample_selections=beam_sample_selections,
         )
 
 
@@ -449,7 +458,8 @@ def make_wci(
 
     if True:
         
-        sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+        #sel = wchelper.apply_pss(ping, ping_sample_selector, apply_pss_to_bottom)
+        sel = scaling_infos.beam_sample_selections
 
         if sel.empty():
             wci = np.empty((len(scaling_infos.y_coordinates), len(scaling_infos.z_coordinates)), dtype=np.float32)
@@ -460,7 +470,7 @@ def make_wci(
            
             max_samples = scaling_infos.bottom_direction_sample_numbers
             sstep = sel.get_sample_step_ensemble()
-            geo = scaling_infos.geolocation
+            #geo = scaling_infos.geolocation
 
             range_sample_numbers = np.asarray(max_samples, dtype=float) / sstep
             # Beams without a valid bottom detection have range clamped to 1e-3m in
@@ -478,17 +488,31 @@ def make_wci(
                 range_sample_numbers[invalid_rsn] = 1.0
             
             bsg = geoprocessing.datastructures.BeamSampleGeometry.from_angles_and_range(
-                alongtrack_angles=scaling_infos.bottom_directions.alongtrack_angle + geo.pitch,
-                crosstrack_angles=scaling_infos.bottom_directions.crosstrack_angle + geo.roll,
+                alongtrack_angles=scaling_infos.bottom_directions.alongtrack_angle,
+                crosstrack_angles=scaling_infos.bottom_directions.crosstrack_angle,
                 ranges=scaling_infos.bottom_directions.range,
                 range_sample_numbers=range_sample_numbers,
                 first_sample_numbers=[sel.get_first_sample_number_ensemble()/sstep]*sel.get_number_of_beams(),
                 number_of_samples=[sel.get_number_of_samples_ensemble()]*sel.get_number_of_beams()
             )
 
+            #n = ping.get_navigation_interpolator_latlon()
+            sc = ping.get_sensor_configuration()
+            sd = ping.get_sensor_data_latlon()
+            pose = sc.compute_target_pose(ping.get_channel_id(),sd, sd.heading)
+
+            bsg = bsg.with_rigid_transform(
+                yaw_deg=0,
+                pitch_deg = pose.pitch,
+                roll_deg = pose.roll,
+                tx = pose.x,
+                ty = pose.y,
+                tz = pose.z
+            )
+
             wci = bsg.backward_bilinear(wci,
-                                    scaling_infos.y_coordinates-scaling_infos.ping_offsets.y,
-                                    scaling_infos.z_coordinates-scaling_infos.geolocation.z,
+                                    scaling_infos.y_coordinates,
+                                    scaling_infos.z_coordinates,
                                     supersampling=1,
                                     mp_cores=mp_cores)
 
