@@ -497,18 +497,19 @@ def make_wci(
             )
 
             #n = ping.get_navigation_interpolator_latlon()
-            sc = ping.get_sensor_configuration()
-            sd = ping.get_sensor_data_latlon()
-            pose = sc.compute_target_pose(ping.get_channel_id(),sd, sd.heading)
+            if ping.has_sensor_data_latlon():
+                sc = ping.get_sensor_configuration()
+                sd = ping.get_sensor_data_latlon()
+                pose = sc.compute_target_pose(ping.get_channel_id(),sd, sd.heading)
 
-            bsg = bsg.with_rigid_transform(
-                yaw_deg=0,
-                pitch_deg = pose.pitch,
-                roll_deg = pose.roll,
-                tx = pose.x,
-                ty = pose.y,
-                tz = pose.z
-            )
+                bsg = bsg.with_rigid_transform(
+                    yaw_deg=0,
+                    pitch_deg = pose.pitch,
+                    roll_deg = pose.roll,
+                    tx = pose.x,
+                    ty = pose.y,
+                    tz = pose.z
+                )
 
             wci = bsg.backward_bilinear(wci,
                                     scaling_infos.y_coordinates,
