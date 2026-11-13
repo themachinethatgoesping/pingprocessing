@@ -371,6 +371,38 @@ void I_PingWatercolumn_add_interface(T_PyClass& cls)
         nb::arg("mp_cores") = 1);
 }
 
+/**
+ * @brief Re-bind get_watercolumn_calibration() with the concrete ping water column type so it returns
+ * the format's specialized calibration type (covariant) instead of the generic one inherited from the
+ * I_PingWatercolumn python base. Use together with the I_PingWatercolumnCalibration CRTP base.
+ */
+template<typename T_PingWatercolumn, typename T_PyClass>
+void PingWatercolumn_add_watercolumn_calibration(T_PyClass& cls)
+{
+    namespace nb = nanobind;
+    cls.def("get_watercolumn_calibration",
+            nb::overload_cast<>(&T_PingWatercolumn::get_watercolumn_calibration, nb::const_),
+            DOC_I_PingWatercolumn(get_watercolumn_calibration));
+}
+
+/**
+ * @brief Re-bind the specialized single- and multi-sector calibration accessors plus
+ * update_calibration(). Use together with the I_PingWatercolumnMultiSectorCalibration CRTP base.
+ */
+template<typename T_PingWatercolumn, typename T_PyClass>
+void PingWatercolumn_add_multisectorwatercolumn_calibration(T_PyClass& cls)
+{
+    namespace nb = nanobind;
+    PingWatercolumn_add_watercolumn_calibration<T_PingWatercolumn>(cls);
+    cls.def("get_multisectorwatercolumn_calibration",
+            &T_PingWatercolumn::get_multisectorwatercolumn_calibration,
+            DOC_I_PingWatercolumn(get_multisectorwatercolumn_calibration));
+    cls.def("update_calibration",
+            &T_PingWatercolumn::update_calibration,
+            "Replace the ping's calibration with the given (deduplicated) multi-sector calibration.",
+            nb::arg("calibration"));
+}
+
 }
 }
 }
