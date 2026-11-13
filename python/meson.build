@@ -75,7 +75,6 @@ sources = [
   'themachinethatgoesping/pingprocessing/watercolumn/helper/select_get_wci_image.py',
   'themachinethatgoesping/pingprocessing/core/__init__.py',
   'themachinethatgoesping/pingprocessing/core/asserts.py',
-  'themachinethatgoesping/pingprocessing/core/helper.py',
   'themachinethatgoesping/pingprocessing/core/progress.py',
   'themachinethatgoesping/pingprocessing/testing/__init__.py',
   'themachinethatgoesping/pingprocessing/testing/find_test_files.py',

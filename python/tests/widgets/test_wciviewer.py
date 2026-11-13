@@ -57,7 +57,7 @@ class TestWCIViewer:
 
         pings = fm.get_pings()
         del fm
-        theping.pingprocessing.core.clear_memory()
+        theping.tools.helper.clear_memory()
 
         assert len(pings) > 0
 

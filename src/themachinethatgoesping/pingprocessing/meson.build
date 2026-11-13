@@ -33,6 +33,7 @@ headers = [
   'datatypes/i_pingcommon.hpp',
   'datatypes/i_pingfiledata.hpp',
   'datatypes/i_pingwatercolumn.hpp',
+  'datatypes/i_pingwatercolumncalibration.hpp',
   'datatypes/pingcontainer.hpp',
   'datatypes/pinginfo.hpp',
   'datatypes/calibration/amplitudecalibration.hpp',
@@ -48,6 +49,7 @@ headers = [
   'datatypes/.docstrings/i_pingcommon.doc.hpp',
   'datatypes/.docstrings/i_pingfiledata.doc.hpp',
   'datatypes/.docstrings/i_pingwatercolumn.doc.hpp',
+  'datatypes/.docstrings/i_pingwatercolumncalibration.doc.hpp',
   'datatypes/.docstrings/pingcontainer.doc.hpp',
   'datatypes/.docstrings/pinginfo.doc.hpp',
 ]
